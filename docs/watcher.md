@@ -123,8 +123,13 @@ watcher.
 ## Busy sessions
 
 A notification arriving mid-turn is not lost: it lands in the conversation flow and is
-handled after the current step. Idle sessions are woken. Proven both ways in production;
-delivery on one machine is within a few seconds of the file appearing.
+handled after the current step. Idle sessions are woken. Both cases have been observed
+repeatedly in production, on purpose and by accident.
+
+What we can say about latency on one machine: at the default 5 s poll, delivery lands within
+seconds of the file appearing — in a deliberate busy-session test, under a minute end to end.
+That is an **observation, not a measured distribution**: we have never instrumented it, and
+you should treat it as an order of magnitude rather than a figure.
 
 ## Limits
 

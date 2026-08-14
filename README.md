@@ -39,9 +39,11 @@ watcher only ever reads them.
   background monitor whose stdout lines become notifications. If that primitive changes, the
   push layer disappears and the channel degrades to scan-at-session-start — which still
   works. That degradation path is the design, not an afterthought.
-- **Not a product.** No installer, no tests, no versioning policy — a declared snapshot of a
-  system that is in daily use elsewhere. That is also why the scripts carry more "why" than
-  "what" in their comments: the reasoning is the part you cannot re-derive from the code.
+- **Not a product.** No versioning policy, no support, no stability promise — a declared
+  snapshot of a system that is in daily use elsewhere. It does have an installer and a test
+  suite, because we need them ourselves; what it does not have is anyone on call for you.
+  That is also why the scripts carry more "why" than "what" in their comments: the reasoning
+  is the part you cannot re-derive from the code.
 
 ## What problem this solves
 
@@ -51,6 +53,7 @@ fail in specific ways:
 
 | approach | fails because |
 |---|---|
+| **git** — a branch, an issue tracker, a file in a shared repo | the obvious one, and it nearly works: durable, ordered, already there. But a message has to reach a working copy you do not control, so someone must pull; two sessions editing one file is a merge conflict, which is exactly what write-once avoids; and nothing tells the other session that anything happened. Issues add a network round-trip and a second place to look |
 | ad-hoc files (`REPLY-topic.md`) | no owner, no status, nobody scans them — a real answer sat unread for two weeks |
 | native cross-session messaging | ephemeral, same machine only, nothing for a session that is not running |
 | a daemon / socket bus | another moving part to keep alive; still no cross-device, no history |
@@ -80,8 +83,11 @@ tests/run.sh        test suite (see Tests below)
 
 1. Create a shared folder with a `threads/` subdirectory, and export
    `SESSION_BRIDGE_DIR=/path/to/it` on every machine that takes part.
-2. Copy the **whole `bridge/` directory** somewhere stable. Both scripts have to stay
-   together — `install-watcher.sh` refuses to run without `watch-bridge.sh` beside it.
+   [`example-bridge/`](example-bridge/) shows what it looks like once it has content —
+   worth thirty seconds before you invent a structure of your own.
+2. Copy the **whole `bridge/` directory** somewhere stable, and `cd` there — the commands
+   below are run from that copy. Both scripts have to stay together: `install-watcher.sh`
+   refuses to run without `watch-bridge.sh` beside it.
 3. Edit the **SITE BLOCK in both scripts**. In `watch-bridge.sh` it is only a fallback
    (`SESSION_BRIDGE_DIR` overrides it), but in `install-watcher.sh` it is the path that
    ends up in every session's arming paragraph — leave the example values there and your
@@ -94,6 +100,24 @@ tests/run.sh        test suite (see Tests below)
    itself** the permission to run the watcher. Use `-n` first to see what it would do.
 5. Write a message file (recipe in [docs/protocol.md](docs/protocol.md)) and watch the
    other session wake up.
+
+**When you first run `watch-bridge.sh` by hand** — to try it out, to see the output — use a
+made-up id and switch the reaping off:
+
+```bash
+WATCH_BRIDGE_NO_REAP=1 bash watch-bridge.sh testid 1
+```
+
+The reaper matches on the **id alone**, not on the script path or the bridge directory, so
+`bash watch-bridge.sh <a real session id>` from a shell reaches into that session's live
+watcher — even from another directory, even pointed at a throw-away bridge. This is the one
+mistake in here that bites immediately; see the warning at the top.
+
+Note on the participant table: if your bridge folder contains a `README.md` with a table of
+participant ids (ours does — it is where the fleet is documented), `install-watcher.sh`
+checks new ids against it and refuses unknown ones, which catches typos. Without such a file
+the check is simply skipped. So adding a README to your bridge folder later switches that
+check on; `-f` forces an id through.
 
 Read [docs/protocol.md](docs/protocol.md) before writing the first message. Two rules there
 are load-bearing and cheap to get wrong: **never edit a message file**, and **never type a

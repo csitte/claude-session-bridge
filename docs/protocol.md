@@ -8,6 +8,8 @@ something broke without it.
 
 ```
 <shared-dir>/
+  README.md                       OPTIONAL — the protocol as your fleet runs it, and a
+                                  table of participant ids (see below)
   threads/
     <slug>/                       one directory per topic; the slug IS the id
       thread.md                   immutable header (title, participants, why)
@@ -18,6 +20,14 @@ something broke without it.
 
 There is no counter, no index that has to be correct, and no lock. Thread ids are human
 slugs. Message order is the lexical order of the filenames.
+
+**About that optional README.** Ours holds this protocol in the form our fleet actually runs
+it, plus a table of participant ids — rows like ``| `app` | what the session does | where it
+works |``. It has one mechanical consequence worth knowing before you create it:
+`install-watcher.sh` validates ids against that table **if the file exists** and refuses
+unknown ones, which catches a typo before it becomes a second arming paragraph nobody
+notices. Without the file the check is silently skipped. So adding a README to your bridge
+folder later switches a gate on that was not there before; `-f` forces an id through.
 
 ## The core rule
 
