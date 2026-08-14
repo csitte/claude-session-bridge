@@ -203,6 +203,23 @@ else
 fi
 
 # ---------- Summary ----------
+# Guard against the quietest failure mode there is: the paragraph names the SITE BLOCK
+# paths, but this script may live somewhere else entirely — and then every session would
+# arm a path that does not exist, silently, at every start. Cheap to check here,
+# expensive to debug later.
+if [[ "$script" != "$script_pc" && "$script" != "$script_nb" ]]; then
+  cat >&2 <<EOF
+
+NOTE: the paragraph written into CLAUDE.md points at
+  $script_pc   (machine A)
+  $script_nb   (machine B)
+but this script lives at
+  $script
+If neither path is where watch-bridge.sh will live on the target machine, edit the
+SITE BLOCK near the top of install-watcher.sh and re-run with -u.
+EOF
+fi
+
 cat <<EOF
 
 Done for '$me'. From the next session start on, the session arms itself.

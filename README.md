@@ -73,23 +73,72 @@ docs/lessons.md     what six weeks of operating this taught us (with numbers)
 bridge/             the watcher and its installer
 launcher/           fleet start/stop scripts and the session manager (Windows)
 example-bridge/     a synthetic thread showing the on-disk shape
+tests/run.sh        test suite (see Tests below)
 ```
 
 ## Quickstart (bridge + watcher only)
 
-1. Create a shared folder with a `threads/` subdirectory. Point every machine at it and
-   export `SESSION_BRIDGE_DIR=/path/to/it`.
-2. Copy `bridge/watch-bridge.sh` somewhere stable and edit the SITE BLOCK near the bottom
-   (or rely on `SESSION_BRIDGE_DIR`, which overrides it).
-3. Give each session an id and add the arming paragraph to its `CLAUDE.md` — see
-   [docs/watcher.md](docs/watcher.md). `bridge/install-watcher.sh` does this for you,
-   including the permission allow-rules, which are the part people forget: a session
-   **cannot grant itself** the permission to run the watcher.
-4. Write a message file and watch the other session wake up.
+1. Create a shared folder with a `threads/` subdirectory, and export
+   `SESSION_BRIDGE_DIR=/path/to/it` on every machine that takes part.
+2. Copy the **whole `bridge/` directory** somewhere stable. Both scripts have to stay
+   together — `install-watcher.sh` refuses to run without `watch-bridge.sh` beside it.
+3. Edit the **SITE BLOCK in both scripts**. In `watch-bridge.sh` it is only a fallback
+   (`SESSION_BRIDGE_DIR` overrides it), but in `install-watcher.sh` it is the path that
+   ends up in every session's arming paragraph — leave the example values there and your
+   sessions will arm a path that does not exist. The installer warns you if the block
+   does not match its own location.
+4. For each session: give it an id and run
+   `bash install-watcher.sh <id> /path/to/project`. It writes the arming paragraph into
+   that project's **existing** `CLAUDE.md` (it will not create one) and adds the
+   permission allow-rules — the part people forget, because a session **cannot grant
+   itself** the permission to run the watcher. Use `-n` first to see what it would do.
+5. Write a message file (recipe in [docs/protocol.md](docs/protocol.md)) and watch the
+   other session wake up.
 
 Read [docs/protocol.md](docs/protocol.md) before writing the first message. Two rules there
 are load-bearing and cheap to get wrong: **never edit a message file**, and **never type a
 timestamp**.
+
+## Tests
+
+```bash
+bash tests/run.sh            # all
+bash tests/run.sh watcher    # delivery only
+```
+
+Everything runs against a throw-away bridge in a temp directory, and the suite refuses to
+start unless `SESSION_BRIDGE_DIR` points inside it and `WATCH_BRIDGE_NO_REAP=1` is set — a
+test run must never be able to reap a watcher belonging to one of your live sessions.
+
+The suite covers the addressing rules in detail (lists, broadcast, the prefix traps, own
+posts, the start baseline) and the installer's file surgery (placement, idempotence,
+`-u` update, dry-run, CRLF files, unknown ids, allow-rules). CI runs it on Linux **and**
+Windows: the delivery core is plain POSIX shell, so the Linux job is what backs the claim
+above that the core is portable while the process hygiene is not.
+
+## Porting this to your system — an open invitation
+
+The design is not Windows-specific; our implementation is. If you run macOS or Linux, you
+have something we do not have and cannot fake, and the parts that need you are small and
+well isolated:
+
+- **Process hygiene** — `--status`, detecting a live vs. an orphaned watcher, and the
+  reaping step all go through PowerShell/WMI in `watcher_inventory()`. A `pgrep`/`ps`
+  equivalent would make the whole watcher native. The rest of the file is already
+  portable, and the Linux CI job proves it runs there today.
+- **The launcher** — mintty windows, `taskkill`, a WinForms session manager. The *idea*
+  (data/mechanics split, a start prompt that forces the first turn) transfers to tmux,
+  iTerm, or a systemd user unit without much left over.
+- **A second sync transport.** We use Google Drive because it happened to be there.
+  Syncthing, Dropbox or a shared network mount should all work — the write-once rule is
+  what makes any of them safe, and it would be good to have that confirmed by someone who
+  actually runs one.
+
+Contributions in that direction are explicitly welcome, including ones that restructure
+our code to make room for a second platform. See [CONTRIBUTING.md](CONTRIBUTING.md).
+What we cannot do is review a port against reality: we have no macOS or Linux machine
+running this, so a port lives or dies by its author's testing — which is exactly why the
+test suite exists.
 
 ## License
 

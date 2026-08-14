@@ -31,6 +31,7 @@ while IFS= read -r line; do
   line="${line#"${line%%[![:space:]]*}"}"   # trim left
   [[ "$line" == "#off "* ]] || continue
   quoted="${line#\#off }"
+  # shellcheck disable=SC2086,SC2294  # same dequoting the shell does when sourcing the conf
   eval "entry=$quoted"   # resolves \" exactly as the shell does when sourcing
   if [[ "${entry%%|*}" == "$name" ]]; then
     if cc_launch "$entry"; then exit 0; else exit 1; fi

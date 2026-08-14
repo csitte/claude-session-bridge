@@ -187,6 +187,7 @@ fm_field() { # $1=field $2=file
 # unpushed, including as part of a list.
 addressed() { # $1=to-field
   local t
+  # shellcheck disable=SC2086  # word splitting is the point: split the list on commas
   for t in ${1//,/ }; do
     [[ "$t" == "$me" ]] && return 0
   done
@@ -211,6 +212,7 @@ while true; do
     # message — otherwise everyone answers a group message with the same thing.
     # Who holds the ball is still said by `sets-owner`.
     others=""
+    # shellcheck disable=SC2086  # deliberate word splitting, as in addressed()
     for t in ${to//,/ }; do
       [[ "$t" == "$me" ]] || others+="${others:+, }$t"
     done

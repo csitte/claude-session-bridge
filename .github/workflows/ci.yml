@@ -1,0 +1,65 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # The delivery core is plain POSIX shell: without powershell.exe the watcher simply
+  # skips its process inventory. So the protocol half of this repository is testable on
+  # Linux — which is also the evidence behind the README's claim that the core is
+  # portable while the process hygiene is not.
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          # Fail on errors; warnings are printed but do not block. The scripts contain
+          # deliberate word splitting (comma-separated recipient lists), marked with
+          # targeted disable directives where it happens.
+          shellcheck --severity=error --shell=bash \
+            bridge/*.sh launcher/*.sh tests/run.sh
+          echo "--- warnings (non-blocking) ---"
+          shellcheck --severity=warning --shell=bash \
+            bridge/*.sh launcher/*.sh tests/run.sh || true
+
+      - name: tests
+        run: bash tests/run.sh
+
+  # Everything that touches processes, windows and the registry of running sessions is
+  # Windows-only. This job proves the scripts at least parse and the suite passes under
+  # Git Bash, which is the environment the launcher actually targets.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tests (Git Bash)
+        shell: bash
+        run: bash tests/run.sh
+
+      - name: PowerShell parser
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem launcher/*.ps1 | ForEach-Object {
+            $e = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$e)
+            if ($e.Count) { $bad += $e.Count; Write-Host "$($_.Name): $($e.Count) parse error(s)" }
+            else { Write-Host "$($_.Name): ok" }
+          }
+          if ($bad) { exit 1 }
+
+      - name: PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -ErrorAction Stop
+          $r = Invoke-ScriptAnalyzer -Path launcher -Recurse -Severity Error
+          $r | Format-Table -AutoSize
+          if ($r) { exit 1 }
+          Write-Host "no errors"
