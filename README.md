@@ -1,5 +1,7 @@
 # claude-session-bridge
 
+[![ci](https://github.com/csitte/claude-session-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/csitte/claude-session-bridge/actions/workflows/ci.yml)
+
 A durable, file-based message channel between long-running Claude Code sessions — plus a
 per-session watcher that **pushes** new messages into an idle session, and a launcher that
 brings a whole fleet back up after a reboot.
@@ -70,11 +72,17 @@ watcher only ever reads them.
   background monitor whose stdout lines become notifications. If that primitive changes, the
   push layer disappears and the channel degrades to scan-at-session-start — which still
   works. That degradation path is the design, not an afterthought.
-- **Not a product.** No versioning policy, no support, no stability promise — a declared
-  snapshot of a system that is in daily use elsewhere. It does have an installer and a test
-  suite, because we need them ourselves; what it does not have is anyone on call for you.
-  That is also why the scripts carry more "why" than "what" in their comments: the reasoning
-  is the part you cannot re-derive from the code.
+- **Not a product, and not staffed.** No versioning policy, no support, no stability promise
+  — a declared snapshot of a system that is in daily use elsewhere. It does have an installer
+  and a test suite, because we need them ourselves; what it does not have is anyone on call.
+  **Issues and pull requests are read, but answered irregularly and sometimes not at all**,
+  and that is not a judgement on your question — there is simply no one whose job this is. If
+  you need this to work for you, fork it; the license is MIT precisely so that you never have
+  to wait for us. A PR that is self-contained and green in CI has the best chance of being
+  merged with little discussion.
+  This is also why the scripts carry more "why" than "what" in their comments: the reasoning
+  is the part you cannot re-derive from the code — and the part nobody can answer for you
+  later.
 
 ## What problem this solves
 
