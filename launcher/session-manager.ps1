@@ -1,0 +1,262 @@
+# session-manager.ps1 — UI for managing the autostart list of Claude sessions.
+#
+# Shows every project from projects.<host>.conf as a checkbox list:
+#   checked   = active entry  ->  started by "Start all active"
+#   unchecked = #off line in the config  ->  kept, but not started
+#   "RUN" marker before the name = session is running right now (open mintty window).
+# "Save" rewrites ONLY the #off prefixes — order, comments and formatting of the
+# config stay byte-identical.
+# Plus: "Start all active" (= start-cc.cmd) and "Start selected"
+# (= start-one.sh, works for disabled entries too).
+#
+# Interaction (deliberately separated so that starting does not change the autostart):
+#   click on a row          = select it (for "Start selected") — toggles NOTHING
+#   space / "Toggle autostart" = flip the autostart checkbox of the selected row
+#
+# Launch: double click session-manager.cmd or a desktop shortcut.
+# Deliberately ASCII-only in code and UI text: this also runs under Windows
+# PowerShell 5.1, which otherwise misdecodes UTF-8 without BOM.
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+$ScriptDir = $PSScriptRoot
+$GitBash   = 'C:\Program Files\Git\bin\bash.exe'
+$HostName  = ($env:COMPUTERNAME).ToLower()
+$ConfPath  = Join-Path $ScriptDir "projects.$HostName.conf"
+
+if (-not (Test-Path $ConfPath)) {
+    [System.Windows.Forms.MessageBox]::Show(
+        "No config for host '$HostName':`n$ConfPath",
+        'Session Manager', 'OK', 'Error') | Out-Null
+    exit 1
+}
+
+# --- Reading/writing the config --------------------------------------------
+
+# One entry = line  <indent>"name|path[|extra]"  or  <indent>#off "..."
+$script:RxOn  = '^(\s*)"(.*)"\s*$'
+$script:RxOff = '^(\s*)#off\s+"(.*)"\s*$'
+
+function Read-Conf {
+    $raw   = [System.IO.File]::ReadAllText($ConfPath)
+    $lines = $raw -split "`r?`n"
+    $entries = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $enabled = $null
+        if     ($lines[$i] -match $script:RxOff) { $enabled = $false }
+        elseif ($lines[$i] -match $script:RxOn)  { $enabled = $true }
+        else { continue }
+        $indent = $Matches[1]; $inner = $Matches[2]
+        $parts = $inner.Split('|', 3)
+        $entries.Add([pscustomobject]@{
+            LineIndex = $i
+            Indent    = $indent
+            Inner     = $inner
+            Name      = $parts[0]
+            Dir       = if ($parts.Count -ge 2) { $parts[1] } else { '' }
+            Extra     = if ($parts.Count -ge 3) { $parts[2] } else { '' }
+            Enabled   = $enabled
+        })
+    }
+    return @{ Lines = $lines; Entries = $entries }
+}
+
+function Save-Conf($conf, $checkedNames) {
+    foreach ($e in $conf.Entries) {
+        $on = $checkedNames -contains $e.Name
+        $quoted = '"' + $e.Inner + '"'
+        $conf.Lines[$e.LineIndex] = if ($on) { $e.Indent + $quoted }
+                                    else     { $e.Indent + '#off ' + $quoted }
+        $e.Enabled = $on
+    }
+    # The config is LF (enforced via .gitattributes) — write it back exactly so, no BOM.
+    $text = ($conf.Lines -join "`n")
+    [System.IO.File]::WriteAllText($ConfPath, $text,
+        (New-Object System.Text.UTF8Encoding($false)))
+}
+
+# --- UI --------------------------------------------------------------------
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text          = "Claude Sessions - $HostName  ($(Split-Path -Leaf $ConfPath))"
+$form.StartPosition = 'CenterScreen'
+$form.Size          = New-Object System.Drawing.Size(720, 520)
+$form.MinimumSize   = New-Object System.Drawing.Size(560, 360)
+
+$list = New-Object System.Windows.Forms.CheckedListBox
+# CheckOnClick=$false: clicking a row only SELECTS it (for starting), it does NOT flip
+# the autostart checkbox. Flipping is deliberately done by space or "Toggle autostart".
+$list.CheckOnClick = $false
+$list.IntegralHeight = $false
+$list.Font = New-Object System.Drawing.Font('Consolas', 10)
+$list.Dock = 'Fill'
+
+$status = New-Object System.Windows.Forms.Label
+$status.Dock = 'Bottom'
+$status.Height = 26
+$status.TextAlign = 'MiddleLeft'
+
+$panel = New-Object System.Windows.Forms.FlowLayoutPanel
+$panel.Dock = 'Bottom'
+$panel.Height = 42
+$panel.Padding = New-Object System.Windows.Forms.Padding(6, 6, 6, 0)
+
+function New-Btn($text, $width) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = $text
+    $b.Width = $width
+    $b.Height = 30
+    return $b
+}
+$btnSave    = New-Btn 'Save' 90
+$btnStart   = New-Btn 'Start all active' 140
+$btnOne     = New-Btn 'Start selected' 130
+$btnToggle  = New-Btn 'Toggle autostart' 130
+$btnReload  = New-Btn 'Reload' 90
+$panel.Controls.AddRange(@($btnSave, $btnStart, $btnOne, $btnToggle, $btnReload))
+
+$form.Controls.Add($list)
+$form.Controls.Add($panel)
+$form.Controls.Add($status)
+
+$script:Conf = $null
+
+function Format-Item($e, $running) {
+    $mark = if ($running) { 'RUN ' } else { '    ' }
+    $extraMark = if ($e.Extra) { '  [+args]' } else { '' }
+    return ('{0}{1,-16} {2}{3}' -f $mark, $e.Name, $e.Dir, $extraMark)
+}
+
+# Detecting running sessions: every session runs in a mintty window whose title is
+# pinned to the session name via --Title (Claude cannot overwrite it). So the titles
+# of the open mintty windows are the names of the running sessions.
+function Get-RunningNames {
+    try {
+        # mintty pads the window title with spaces -> trim before comparing.
+        return @(Get-Process mintty -ErrorAction SilentlyContinue |
+                 ForEach-Object { $_.MainWindowTitle.Trim() } |
+                 Where-Object { $_ })
+    } catch { return @() }
+}
+
+# Updates ONLY the RUN markers (item texts) — checkboxes and selection stay untouched.
+# Rewrites an item only if its text really changes (avoids flicker).
+function Refresh-Running {
+    if (-not $script:Conf) { return }
+    $running = Get-RunningNames
+    for ($i = 0; $i -lt $list.Items.Count; $i++) {
+        $e = $script:Conf.Entries[$i]
+        $isRun = @($running | Where-Object { $_ -ieq $e.Name }).Count -gt 0
+        $newText = Format-Item $e $isRun
+        if ($list.Items[$i] -ne $newText) {
+            $wasChecked = $list.GetItemChecked($i)
+            $list.Items[$i] = $newText
+            if ($wasChecked -ne $list.GetItemChecked($i)) {
+                $list.SetItemChecked($i, $wasChecked)
+            }
+        }
+    }
+}
+
+function Get-CheckedNames {
+    $names = @()
+    for ($i = 0; $i -lt $list.Items.Count; $i++) {
+        if ($list.GetItemChecked($i)) { $names += $script:Conf.Entries[$i].Name }
+    }
+    return $names
+}
+
+function Update-Status {
+    $n = (Get-CheckedNames).Count
+    $status.Text = "  $n of $($list.Items.Count) in autostart | click = select, space/button = autostart, 'RUN' = running"
+}
+
+function Load-List {
+    $script:Conf = Read-Conf
+    $running = Get-RunningNames
+    $list.Items.Clear()
+    foreach ($e in $script:Conf.Entries) {
+        $isRun = @($running | Where-Object { $_ -ieq $e.Name }).Count -gt 0
+        $list.Items.Add((Format-Item $e $isRun), $e.Enabled) | Out-Null
+    }
+    Update-Status
+}
+
+function Test-Dirty {
+    for ($i = 0; $i -lt $list.Items.Count; $i++) {
+        if ($list.GetItemChecked($i) -ne $script:Conf.Entries[$i].Enabled) { return $true }
+    }
+    return $false
+}
+
+$btnSave.Add_Click({
+    Save-Conf $script:Conf (Get-CheckedNames)
+    Update-Status
+    $status.Text = "  Saved: $ConfPath"
+})
+
+$btnStart.Add_Click({
+    if (Test-Dirty) { Save-Conf $script:Conf (Get-CheckedNames) }
+    Start-Process -FilePath (Join-Path $ScriptDir 'start-cc.cmd') -WorkingDirectory $ScriptDir
+})
+
+$btnOne.Add_Click({
+    if ($list.SelectedIndex -lt 0) {
+        $status.Text = '  Please select a project in the list first (click it).'
+        return
+    }
+    $name = $script:Conf.Entries[$list.SelectedIndex].Name
+    $posixDir = $ScriptDir -replace '\\', '/'
+    # Note: Start-Process -ArgumentList does NOT quote for you — the command has to be
+    # wrapped in "" explicitly, otherwise bash -lc receives only the first word ('cd')
+    # and the rest evaporates as positional parameters.
+    $bashCmd = 'cd ''' + $posixDir + ''' && ./start-one.sh ''' + $name + ''''
+    Start-Process -FilePath $GitBash -WindowStyle Minimized `
+        -ArgumentList @('-lc', ('"' + $bashCmd + '"'))
+    $status.Text = "  Starting '$name' ..."
+})
+
+$btnToggle.Add_Click({
+    $i = $list.SelectedIndex
+    if ($i -lt 0) {
+        $status.Text = '  Please select a row first (click it), then toggle autostart.'
+        return
+    }
+    $list.SetItemChecked($i, -not $list.GetItemChecked($i))
+    Update-Status
+})
+
+$btnReload.Add_Click({ Load-List })
+
+$list.Add_ItemCheck({
+    # ItemCheck fires BEFORE the change — refresh the status just after it.
+    # During the initial fill (Load-List) the window handle does not exist yet;
+    # BeginInvoke would throw -> skip it, Load-List calls Update-Status itself
+    # at the end.
+    if ($form.IsHandleCreated) {
+        $form.BeginInvoke([Action]{ Update-Status }) | Out-Null
+    }
+})
+
+$form.Add_FormClosing({
+    param($sender, $e)
+    if (Test-Dirty) {
+        $r = [System.Windows.Forms.MessageBox]::Show(
+            'Save unsaved changes to the autostart list?',
+            'Session Manager', 'YesNoCancel', 'Question')
+        if ($r -eq 'Yes')    { Save-Conf $script:Conf (Get-CheckedNames) }
+        if ($r -eq 'Cancel') { $e.Cancel = $true }
+    }
+})
+
+# Keep the RUN markers live: mirror the open mintty windows into the list every 3 s.
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 3000
+$timer.Add_Tick({ Refresh-Running })
+
+Load-List
+$timer.Start()
+[void]$form.ShowDialog()
+$timer.Stop()

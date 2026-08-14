@@ -1,0 +1,1 @@
+Session start: run **only** the start ritual from your CLAUDE.md — the bridge start scan (fold threads with `owner: <your-id>` and a status other than DONE) and arm the bridge watcher. Nothing else: do not begin a task, do not change a file, do not commit, do not send anything. Summarise what is open in at most five lines, then wait for the user.
