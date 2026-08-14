@@ -4,9 +4,40 @@ A durable, file-based message channel between long-running Claude Code sessions 
 per-session watcher that **pushes** new messages into an idle session, and a launcher that
 brings a whole fleet back up after a reboot.
 
+The whole mechanism is one sentence: **a shared folder of write-once files, and one small
+polling script per session.** No server, no daemon, no database, no lock.
+
 Built and operated on a real fleet of ~15 sessions across two Windows machines since July
 2026. Everything here is in daily use; the numbers in [docs/lessons.md](docs/lessons.md) are
 measurements from that fleet, not estimates.
+
+## What that buys you
+
+These are the properties that made us stop looking for something else. Where one of them came
+out of an incident, [docs/lessons.md](docs/lessons.md) has the incident:
+
+- **A message outlives everything.** Reboots, crashes, a context clear, a session that was
+  closed for a week. It is a file; it is still there, and the fold still computes the same
+  state from it. Nothing lives in a queue or in memory.
+- **You can write to a session that is not running.** It finds the message at its next start
+  — and knows whether the ball is with it, because ownership is derived from the messages
+  themselves. This is the one property no in-process messaging can give you.
+- **It crosses machines.** The channel is a folder; ours syncs between a PC and a notebook.
+  Same protocol, no extra component, no port, no account.
+- **An idle session gets woken, not left waiting.** The watcher turns a new file into a
+  notification that re-invokes the session — no human tapping windows. In practice that is
+  seconds at the default 5 s poll, though we have never instrumented it
+  ([docs/watcher.md](docs/watcher.md) says exactly what we did and did not measure). And if
+  the watcher is dead, missing, or the harness changes underneath it, delivery degrades to
+  scan-at-start instead of breaking.
+- **Two sessions writing at once cannot corrupt anything.** Every message is a new file, so
+  there is no lost update, no merge conflict, and no lock to take — which is also what makes
+  a cloud-sync folder a safe transport.
+- **The push layer cannot damage the channel.** The watcher only ever reads; it never
+  writes, renames or deletes a message.
+
+What it costs: it is Windows-first today, and the watcher kills stale watcher processes of
+its own id. Both are spelled out immediately below — please do not skip them.
 
 ---
 
@@ -77,7 +108,12 @@ bridge/             the watcher and its installer
 launcher/           fleet start/stop scripts and the session manager (Windows)
 example-bridge/     a synthetic thread showing the on-disk shape
 tests/run.sh        test suite (see Tests below)
+CONTRIBUTING.md     ground rules, and what a port to another platform would touch
+.github/workflows/  CI: shellcheck + suite on Linux, suite + analyzer on Windows
 ```
+
+If you read only one file after this one, read [docs/protocol.md](docs/protocol.md) — the
+channel is the part worth copying even if you never run a line of this code.
 
 ## Quickstart (bridge + watcher only)
 
