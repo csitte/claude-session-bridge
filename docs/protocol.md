@@ -122,6 +122,17 @@ the other side posts an `ack` (`sets-status: IN_PROGRESS`) *before* doing the wo
 requester does not re-claim until `DONE` arrives. The append-only log makes double work
 detectable after the fact.
 
+Before that handoff, check that the recipient can receive it. A thread whose owner is not
+running looks exactly like one being worked on: same status, same freshness at the top of the
+index. `watch-bridge.sh --status <id>` answers it per participant — a line means a watcher is
+delivering, no line means that session is not running, and a line marked as a silent remnant
+means it is running but unarmed and will receive nothing until it re-arms. Nothing is lost in
+any of these cases, because the start-of-session scan still finds the message. But if the
+recipient is not reachable, say so in the message instead of waiting on an `ack` that cannot
+arrive until someone starts that session. We shipped the diagnostic long before we mentioned
+it here, and in the meantime a handoff sat undelivered in our own bridge for a morning: a
+diagnostic nobody is told about is not a signal.
+
 ## Archival
 
 The hot scan path is `threads/`. A thread whose derived status is `DONE` and whose last

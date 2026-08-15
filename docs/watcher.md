@@ -8,6 +8,12 @@ tomorrow. The watcher closes that gap.
 **one line per new message addressed to that id**. Armed as a persistent *Monitor* task of
 Claude Code, every line becomes a notification that wakes the session.
 
+The bridge folder is resolved from the built-in site paths, or from **`SESSION_BRIDGE_DIR`**
+if that is set — it overrides them and is then binding, and the script refuses to start if the
+directory has no `threads/`. Set it on every machine that takes part when your bridge is not
+at one of the site paths, and use it to point a test run at a throw-away bridge instead of
+patching a copy of the script.
+
 That is the whole mechanism. Three properties make it safe to run beside a write-once
 channel:
 
