@@ -13,6 +13,9 @@ Built and operated on a real fleet of ~15 sessions across two Windows machines s
 2026. Everything here is in daily use; the numbers in [docs/lessons.md](docs/lessons.md) are
 measurements from that fleet, not estimates.
 
+Background: [*A running session is not a reachable session*](https://dev.to/csitte/a-running-session-is-not-a-reachable-session-34fc)
+— the three failure modes behind this design, in prose.
+
 ## What that buys you
 
 These are the properties that made us stop looking for something else. Where one of them came
