@@ -62,6 +62,12 @@ post() { # $1=bridge $2=name $3=from $4=to [$5=thread]
     "$3" "$4" > "$1/threads/$thread/msgs/$2.md"
 }
 
+post_state() { # $1=bridge $2=thread $3=name $4=from $5=sets-owner $6=sets-status
+  mkdir -p "$1/threads/$2/msgs"
+  printf -- '---\nfrom: %s\nto: someone\ntype: reply\ndate: 2026-01-01T00:00:00Z\nsets-owner: %s\nsets-status: %s\n---\n\nbody\n' \
+    "$4" "$5" "$6" > "$1/threads/$2/msgs/$3.md"
+}
+
 wait_for_lines() { # $1=file $2=count $3=timeout-seconds -> 0 if reached
   local i=0 n
   while [[ $i -lt $(( $3 * 4 )) ]]; do
@@ -167,6 +173,53 @@ test_watcher() {
   assert_eq "no arguments -> usage, exit 64" "64" "$?"
   SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --status app >/dev/null 2>&1
   assert_eq "--status exits 0 even with nothing running" "0" "$?"
+
+  head_ "watcher: start scan (--fold)"
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  export WATCH_BRIDGE_SETTLE=0     # no need to wait for a sync client in a temp dir
+
+  # 001-open : handed to app, still open                    -> listed for app
+  post_state "$b" 001-open  100-a other app   OPEN
+  # a later message WITHOUT sets-* must move the "last message" column but not the state
+  post "$b" 900-late other "app" 001-open
+  # 002-moved: app had it, then handed it on                -> listed for other, not app
+  post_state "$b" 002-moved 100-a other app   OPEN
+  post_state "$b" 002-moved 200-b app   other OPEN
+  # 003-done : app owns it, but the thread is closed        -> listed for nobody
+  post_state "$b" 003-done  100-a other app   OPEN
+  post_state "$b" 003-done  200-b other app   DONE
+  # _hidden  : underscore directories are never folded
+  post_state "$b" _hidden   100-a other app   OPEN
+
+  local fold
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  assert_eq "--fold: only open threads owned by the id (not handed on, not DONE, not _)" \
+    "001-open" \
+    "$(printf '%s\n' "$fold" | awk '/^[0-9]/ {print $1}' | sort | paste -sd' ' -)"
+  if printf '%s\n' "$fold" | grep -qE '^001-open +OPEN +900-late\.md'; then
+    ok "--fold shows the youngest message, state unchanged by a message without sets-*"
+  else bad "--fold shows the youngest message, state unchanged by a message without sets-*" "$fold"; fi
+
+  assert_eq "--fold follows a handoff to the new owner" \
+    "002-moved" \
+    "$(bash "$WATCHER" --fold other 2>/dev/null | awk '/^[0-9]/ {print $1}' | sort | paste -sd' ' -)"
+
+  bash "$WATCHER" --fold nobody 2>/dev/null | grep -q "no open thread with owner 'nobody'" \
+    && ok "--fold says so plainly when nothing is owned" \
+    || bad "--fold says so plainly when nothing is owned"
+  bash "$WATCHER" --fold nobody >/dev/null 2>&1
+  assert_eq "--fold exits 0 on an empty result" "0" "$?"
+  bash "$WATCHER" --fold >/dev/null 2>&1
+  assert_eq "--fold without an id -> usage, exit 64" "64" "$?"
+
+  # An INDEX slug with no directory means the sync client has not finished fetching.
+  printf '# Index\n\n| thread | status |\n|---|---|\n| `001-open` | OPEN |\n| `999-missing` | OPEN |\n' \
+    > "$b/INDEX.md"
+  bash "$WATCHER" --fold app 2>/dev/null | grep -q 'WARNING.*999-missing' \
+    && ok "--fold warns about an INDEX slug that has not arrived" \
+    || bad "--fold warns about an INDEX slug that has not arrived"
+  rm -f "$b/INDEX.md"
+  unset WATCH_BRIDGE_SETTLE
 }
 
 # --------------------------------------------------------------------------
@@ -216,7 +269,8 @@ test_install() {
   else bad "-n leaves the file untouched"; fi
 
   bash "$INSTALLER" app "$p" >/dev/null 2>&1
-  sed -i 's/arm the$/arm the OUTDATED/' "$p/CLAUDE.md"
+  # Mark the paragraph's own first line, so this stays valid when the wording changes.
+  sed -i '/^\*\*Bridge push (watcher):\*\*/s/$/ OUTDATED/' "$p/CLAUDE.md"
   bash "$INSTALLER" app "$p" 2>&1 | grep -q 'differs from the current wording' \
     && ok "outdated paragraph is detected, not silently replaced" \
     || bad "outdated paragraph is detected, not silently replaced"

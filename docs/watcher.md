@@ -24,6 +24,38 @@ channel:
   messages belong to the scan; new ones to the watcher. No marker files, no state.
 - **If it dies, nothing breaks.** The channel degrades to scan-at-start.
 
+## The start scan lives in the same script
+
+Because the watcher reports only what appears *after* it starts, every session still needs
+the scan that picks up whatever was already lying there. `watch-bridge.sh --fold <id>` is
+that scan as a command: it folds all threads and lists those with `owner: <id>` and a status
+other than `DONE` — slug, status, youngest message. Exit code 0 even when the list is empty,
+non-zero only when the bridge itself is missing. The allow-rule for arming
+(`Bash(bash …/watch-bridge.sh:*)`) already covers it, so a session can run it unattended.
+
+**Why a command, and not an instruction to "fold the threads".** Every session used to
+improvise its own loop. On a cloud-sync folder that is not merely inelegant: each file
+access triggers a fetch round, and two of our sessions hit the two-minute tool timeout on
+the same morning. `--fold` does two `grep -r` passes and one `find` — three walks over the
+tree, well under a second.
+
+**Two completeness checks, both advisory.** A sync client keeps fetching for minutes after a
+cold start; one of our sessions saw 55 of 72 thread directories on its first `ls` and all 72
+a few minutes later. A fold inside that window misses threads and nobody notices — the same
+invisibility as handing off to a session that is not running.
+
+1. The thread-directory count is taken before the grep and again after
+   `WATCH_BRIDGE_SETTLE` seconds (default 5). If it changed, the fold repeats (three passes
+   at most) and the header line reads `UNSTABLE (55 -> 72)` instead of `stable`. This catches
+   only what arrives inside the settle window.
+2. If the bridge has an `INDEX.md` — a generated table of threads, which we keep and you may
+   not — every slug in it must exist under `threads/` or `_archiv/`; a missing one prints a
+   `WARNING`. An index may lag, so it is used strictly as a **lower bound**: a thread once
+   indexed never disappears, it only moves. Threads too new to be indexed are check 1's job.
+
+Whatever is present is reported either way; the warning only says whether the result can be
+trusted yet. For tests, set `SESSION_BRIDGE_DIR` and `WATCH_BRIDGE_SETTLE=0`.
+
 ## Arming: the session does it, not the launcher
 
 Monitor is a tool call, so only the session itself can arm its watcher. This is the single
@@ -32,7 +64,9 @@ most surprising constraint of the design, and it has a consequence — see
 
 Put a paragraph like this in each session's `CLAUDE.md`:
 
-> **Bridge push (watcher):** at session start (after the bridge scan), arm the Monitor tool —
+> **Bridge push (watcher):** at session start, run the start scan in one pass —
+> `bash <path>/watch-bridge.sh --fold <id>` — and repeat it later if it prints a warning.
+> Then arm the Monitor tool —
 > persistent: true, description "session bridge: new messages for `<id>`", command:
 > `bash <path>/watch-bridge.sh <id>`. Every notification is a new bridge message for this
 > session → read the file, report it, react per the protocol. The watcher only reads; it

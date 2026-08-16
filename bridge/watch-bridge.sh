@@ -2,7 +2,8 @@
 #
 # watch-bridge.sh <session-id> [poll-seconds] — watcher for the session bridge.
 # watch-bridge.sh --status [session-id]       — show running watchers (diagnosis).
-# Operational docs: docs/watcher.md (arming, busy behaviour, switching it off).
+# watch-bridge.sh --fold <session-id>         — start scan: open threads owned by <id>.
+# Operational docs: docs/watcher.md (arming, busy behaviour, switching it off, start scan).
 #
 # Polls <bridge>/threads/*/msgs/ for new .md files and prints ONE line on stdout per
 # message addressed `to: <session-id>` (thread slug + sender + file). Intended as the
@@ -37,8 +38,115 @@ usage() {
   cat >&2 <<'EOF'
 usage: watch-bridge.sh <session-id> [poll-seconds]
        watch-bridge.sh --status [session-id]
+       watch-bridge.sh --fold <session-id>
 EOF
   exit 64
+}
+
+# Resolve the bridge path. $SESSION_BRIDGE_DIR beats everything and is then BINDING
+# (no silent fallback to the site paths — otherwise a test would run against the real
+# bridge unnoticed). Without the variable, the site block below applies.
+bridge=""
+resolve_bridge() {
+  if [[ -n "${SESSION_BRIDGE_DIR:-}" ]]; then
+    bridge="${SESSION_BRIDGE_DIR%/}"
+    [[ -d "$bridge/threads" ]] || {
+      echo "watch-bridge: SESSION_BRIDGE_DIR='$bridge' has no threads/" >&2; exit 1; }
+  else
+    local p
+    # ---- SITE BLOCK: bridge folder per machine, or just set SESSION_BRIDGE_DIR ----
+    for p in "$HOME/session-bridge" "/c/session-bridge"; do
+      if [[ -d "$p/threads" ]]; then bridge="$p"; break; fi
+    done
+  fi
+  [[ -n "$bridge" ]] || {
+    echo "watch-bridge: no bridge directory found (set SESSION_BRIDGE_DIR)" >&2; exit 1; }
+}
+
+# --- Start scan: fold the threads, show the open ones owned by <id> -----------
+# The fold the protocol defines (docs/protocol.md, "State is derived, never stored"):
+# per file the FIRST `sets-owner:`/`sets-status:` line, filename = chronological order,
+# last value per thread wins. Done here in two `grep -r` passes plus one `find` rather
+# than a loop over each file: on a cloud-sync folder every single file access triggers a
+# fetch round, and a per-file loop took so long that it hit the two-minute tool timeout.
+#
+# Two completeness checks, because a sync client keeps fetching for minutes after a cold
+# start — one of our sessions saw 55 of 72 thread directories on its first `ls` and all of
+# them minutes later. A fold in that window misses threads and nobody notices:
+# (1) compare the directory count before the grep and after a short settle time — if it
+#     changed, fold again; (2) every slug listed in an INDEX.md (if you keep a generated
+#     index) must exist under threads/ or _archiv/. Both are advisory: whatever is there is
+#     always reported, the warning only says the result is not yet trustworthy.
+fold_report() {
+  local me="$1" settle="${WATCH_BRIDGE_SETTLE:-5}"
+  resolve_bridge
+  local n1 n2 pass=0 tmp
+  tmp=$(mktemp) || exit 1
+  # shellcheck disable=SC2064  # expand $tmp now, not when the trap fires
+  trap "rm -f '$tmp'" EXIT
+
+  count_threads() { ls -d "$bridge"/threads/*/ 2>/dev/null | wc -l | tr -d ' '; }
+  do_fold() { # -> lines "slug|status|owner|last-file", only owner==me && status!=DONE
+    ( cd "$bridge/threads" 2>/dev/null || exit 0
+      # Three passes over the tree instead of one per file:
+      #   O:./slug/msgs/file:sets-owner: value   (first hit per file, as the fold requires)
+      #   S:./slug/msgs/file:sets-status: value
+      #   L:./slug/msgs/file                     (all messages -> youngest per thread)
+      { grep -rHm1 --include='*.md' '^sets-owner:'  . 2>/dev/null | sed 's/^/O:/'
+        grep -rHm1 --include='*.md' '^sets-status:' . 2>/dev/null | sed 's/^/S:/'
+        find . -mindepth 3 -maxdepth 3 -path './*/msgs/*.md' 2>/dev/null | sed 's/^/L:/'
+      } | tr -d '\r' | awk -v me="$me" '
+        { k=substr($0,1,1); rest=substr($0,3)
+          if (k=="L") path=rest; else { i=index(rest,":"); path=substr(rest,1,i-1); rest=substr(rest,i+1) }
+          n=split(path, p, "/"); slug=p[2]; file=p[n]        # p[1]="." from the leading ./
+          if (slug ~ /^_/) next
+          if (k=="L") { if (file>last[slug]) last[slug]=file; next }
+          i=index(rest,":"); v=substr(rest,i+1); sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v)
+          if (v=="") next
+          if (k=="O") { if (file>=fo[slug]) { fo[slug]=file; owner[slug]=v } }
+          else        { if (file>=fs[slug]) { fs[slug]=file; status[slug]=v } } }
+        END { for (s in last) if (owner[s]==me && status[s]!="DONE")
+                printf "%s|%s|%s|%s\n", s, (status[s]==""?"?":status[s]), owner[s], last[s] }' \
+      | sort )
+  }
+
+  n1=$(count_threads)
+  while :; do
+    do_fold > "$tmp"
+    pass=$((pass+1))
+    sleep "$settle"
+    n2=$(count_threads)
+    [[ "$n2" != "$n1" && $pass -lt 3 ]] || break
+    echo "watch-bridge: the thread count changed during the fold ($n1 -> $n2) — the sync client is still fetching, folding again." >&2
+    n1=$n2
+  done
+
+  # INDEX slugs as a lower bound (advisory: an index is regenerable and may lag).
+  local missing="" s idx_n=0
+  if [[ -r "$bridge/INDEX.md" ]]; then
+    while IFS= read -r s; do
+      idx_n=$((idx_n+1))
+      [[ -d "$bridge/threads/$s" || -d "$bridge/_archiv/$s" ]] || missing+="${missing:+, }$s"
+    done < <(sed -n 's/^| `\([^`]*\)` |.*/\1/p' "$bridge/INDEX.md" | tr -d '\r')
+  fi
+
+  local note="stable" idx_note=""
+  [[ "$n2" != "$n1" ]] && note="UNSTABLE ($n1 -> $n2)"
+  [[ $idx_n -gt 0 ]] && idx_note=" (INDEX lists $idx_n)"
+  echo "Bridge fold for '$me': $n2 threads in threads/$idx_note — $note."
+  if [[ -n "$missing" ]]; then
+    echo "WARNING: listed in INDEX, but in neither threads/ nor _archiv/: $missing"
+    echo "         The sync client is probably still fetching — repeat the fold later."
+  fi
+  if [[ ! -s "$tmp" ]]; then
+    echo "no open thread with owner '$me'."
+    return 0
+  fi
+  local slug st ow last
+  printf '%-40s %-12s %s\n' "THREAD" "STATUS" "LAST MESSAGE"
+  while IFS='|' read -r slug st ow last; do
+    printf '%-40s %-12s %s\n' "$slug" "$st" "$last"
+  done < "$tmp"
 }
 
 # --- Inventory of running watchers -------------------------------------------
@@ -110,6 +218,7 @@ status_report() {
 
 case "${1:-}" in
   --status|-s) status_report "${2:-}"; exit 0 ;;
+  --fold|--scan) [[ -n "${2:-}" ]] || usage; fold_report "$2"; exit 0 ;;
   ""|-h|--help) usage ;;
 esac
 
@@ -157,22 +266,7 @@ handle_existing() {
 }
 handle_existing
 
-# Resolve the bridge path. $SESSION_BRIDGE_DIR beats everything and is then BINDING
-# (no silent fallback to the site paths — otherwise a test would run against the real
-# bridge unnoticed). Without the variable, the site block below applies.
-bridge=""
-if [[ -n "${SESSION_BRIDGE_DIR:-}" ]]; then
-  bridge="${SESSION_BRIDGE_DIR%/}"
-  [[ -d "$bridge/threads" ]] || {
-    echo "watch-bridge: SESSION_BRIDGE_DIR='$bridge' has no threads/" >&2; exit 1; }
-else
-  # ---- SITE BLOCK: edit for your machines, or just set SESSION_BRIDGE_DIR ----
-  for p in "$HOME/session-bridge" "/c/session-bridge"; do
-    if [[ -d "$p/threads" ]]; then bridge="$p"; break; fi
-  done
-fi
-[[ -n "$bridge" ]] || {
-  echo "watch-bridge: no bridge directory found (set SESSION_BRIDGE_DIR)" >&2; exit 1; }
+resolve_bridge
 
 # Pull a frontmatter field from the first 15 lines (CR-tolerant, trimmed).
 fm_field() { # $1=field $2=file

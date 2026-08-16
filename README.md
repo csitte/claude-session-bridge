@@ -143,7 +143,8 @@ channel is the part worth copying even if you never run a line of this code.
    permission allow-rules — the part people forget, because a session **cannot grant
    itself** the permission to run the watcher. Use `-n` first to see what it would do.
 5. Write a message file (recipe in [docs/protocol.md](docs/protocol.md)) and watch the
-   other session wake up.
+   other session wake up. `bash watch-bridge.sh --fold <id>` shows what a session would
+   find at its next start — the same fold, on demand.
 
 **When you first run `watch-bridge.sh` by hand** — to try it out, to see the output — use a
 made-up id and switch the reaping off:

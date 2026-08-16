@@ -75,9 +75,14 @@ done
 md="$proj/CLAUDE.md"
 [[ -f "$md" ]] || { echo "install-watcher: $md not found — check the project directory." >&2; exit 1; }
 
-block="**Bridge push (watcher):** At session start (after the bridge start scan) arm the
-Monitor tool — persistent: true, description \"session bridge: new messages for
-$me\", command with the path that exists on this machine:
+block="**Bridge push (watcher):** At session start, run the bridge start scan in one pass —
+not a loop of your own over the files, that runs into the tool timeout on a sync folder:
+\`bash $script_pc --fold $me\` (machine A) or
+\`bash $script_nb --fold $me\` (machine B)
+lists the open threads with \`owner: $me\`; if it prints a WARNING, the sync client is
+still fetching — repeat it later. Then arm the Monitor tool — persistent: true,
+description \"session bridge: new messages for $me\", command with the path that exists
+on this machine:
 \`bash $script_pc $me\` (machine A) or
 \`bash $script_nb $me\` (machine B).
 Every notification = a new bridge message for this session → read the file, report it in
