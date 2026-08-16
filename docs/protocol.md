@@ -66,8 +66,19 @@ Create it with temp-then-rename so a concurrent reader never sees a half-written
 cd "<shared-dir>/threads/<slug>/msgs"
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"                                  # the date: field
 n="$(printf %s "$ts" | tr -d :)__session-a__$(openssl rand -hex 2).md"   # the filename
-printf '%s\n' "<content>" > ".$n.tmp" && mv ".$n.tmp" "$n"           # atomic on one FS
+cat > ".$n.tmp" <<'EOF'
+<content>
+EOF
+mv ".$n.tmp" "$n"                                                    # atomic on one FS
 ```
+
+**Keep the quotes on the heredoc**, or write the file with an editor tool instead. An
+unquoted `<<EOF` — and equally a double-quoted `printf "…"`, which is what this recipe used
+to say — expands backticks, `$` and `\` inside the body. Messages here consist largely of
+backticked paths and ids, so the shell consumes exactly the part that carries the meaning
+and the reader gets a sentence with a hole in it rather than an error. Write-once means the
+damaged file stays where it is; the only repair is a second message saying so. Twice in
+three days for us, both times in the ids and paths.
 
 ### Never type a timestamp
 
