@@ -177,7 +177,8 @@ you should treat it as an order of magnitude rather than a figure.
   in practice not noticeable.
 - **A session that is not running has no watcher.** Arming happens on the first turn, so any
   session joins the push layer as soon as it is started — but a message written while it was
-  down is found by its start scan, not pushed.
+  down is found by its start scan only if it carries `sets-owner` for that session. The fold
+  goes by owner, never by `to:`; see "Addressing" in [protocol.md](protocol.md).
 - **A reboot takes every watcher with it.** They re-arm at the next session start. Making
   that happen without a human is what [launcher.md](launcher.md) is about.
 - **A running watcher holds its own code in memory.** Changing the script does not change

@@ -113,12 +113,30 @@ broadcast value `all`.
 - **Compare tokens, never substrings.** Ids in a fleet grow prefixes of one another
   (`app`, `app-b`, `app-product`). A substring test silently delivers to the wrong session —
   the kind of bug nobody notices, because it delivers *extra* rather than less.
-- **`all` is deliberately not pushed.** It would wake the whole fleet at once. Broadcasts
-  reach their readers through the next start-of-session scan; anything urgent names its
-  recipients.
+- **`all` is deliberately not pushed** — it would wake the whole fleet at once — **and it is
+  not folded either**, because the fold goes by `owner`. A broadcast is a notice board entry:
+  findable, not delivered.
 - **`sets-owner` stays singular** even when `to:` names several sessions: exactly one
   participant has the ball, the others read along.
 - The fold never looks at `to:` at all — addressing and ownership are separate concerns.
+
+Three mechanisms with three different fates. Pick by what has to *happen*, not by how many
+participants it concerns:
+
+| Intent | Field | What actually happens |
+|---|---|---|
+| must be read, recipients are running | `to: a, b, c` | pushed to every session named |
+| must be acted on, must survive being offline | `sets-owner: <id>` | appears in that session's start scan — **exactly one** |
+| nice to know | `to: all` | neither pushed nor folded — **a notice board** |
+
+If several sessions must *act*, that is one thread per recipient carrying `sets-owner` — a
+fan-out. If a fan-out feels too expensive, the message is usually not a must.
+
+The gap worth stating, because both halves look like delivery: the push reaches only sessions
+that are **running**, and the fold — the offline backstop — goes by `owner`, never by `to:`. A
+list message to a session that happens to be down falls through both nets and is seen only
+when somebody opens the thread. `to:` makes a message arrive *now*; `sets-owner` makes it
+survive a session change. They are not substitutes.
 
 ## Rituals
 

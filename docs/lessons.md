@@ -107,9 +107,13 @@ matched **nobody**, so the push failed for every addressee while the message sat
 in the thread. Delivery code must tokenize and compare exactly, and the broadcast address
 (`all`) should fall through the same check rather than being special-cased.
 
-Related policy that proved right: broadcasts are deliberately **not** pushed (they would
-wake the whole fleet at once); they reach readers via the start-of-session scan. Anything
-urgent names its recipients explicitly.
+Related policy that proved right: broadcasts are deliberately **not** pushed (they would wake
+the whole fleet at once). What took us far longer to say out loud is that they are not
+*folded* either — the fold goes by `owner` and never reads `to:` — so a broadcast is a notice
+board entry: findable, not delivered. We had written the opposite in two documents for weeks
+without either of us noticing, because both halves of the sentence were true separately.
+Anything that must be read names its recipients; anything that must be **acted on** carries
+`sets-owner`, one thread per recipient.
 
 One operational corollary, easy to forget: a **running watcher holds its own code in
 memory**. Changing the matching rule changed nothing for the twelve watchers already armed;
