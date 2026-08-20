@@ -219,6 +219,28 @@ test_watcher() {
     && ok "--fold warns about an INDEX slug that has not arrived" \
     || bad "--fold warns about an INDEX slug that has not arrived"
   rm -f "$b/INDEX.md"
+
+  # The arming reminder is the last line — and platform-dependent by design: without a
+  # process inventory (no PowerShell) the state is `unknown` and nothing is printed.
+  # Both branches are asserted, so neither platform silently skips the check.
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if command -v powershell.exe >/dev/null 2>&1; then
+    if printf '%s\n' "$fold" | tail -2 | grep -q "ATTENTION.*'app'"; then
+      ok "--fold reminds you to arm when nothing delivers (last line)"
+    else bad "--fold reminds you to arm when nothing delivers (last line)" "$fold"; fi
+  else
+    if printf '%s\n' "$fold" | grep -q 'ATTENTION'; then
+      bad "--fold stays quiet without a process inventory" "$fold"
+    else ok "--fold stays quiet without a process inventory"; fi
+  fi
+  # Whatever the platform, the reminder must not disturb the payload: the thread list is
+  # still parseable and the exit code is unchanged.
+  assert_eq "--fold: the reminder does not disturb the thread list" \
+    "001-open" \
+    "$(printf '%s\n' "$fold" | awk '/^[0-9]/ {print $1}' | sort | paste -sd' ' -)"
+  bash "$WATCHER" --fold app >/dev/null 2>&1
+  assert_eq "--fold still exits 0 with the reminder printed" "0" "$?"
+
   unset WATCH_BRIDGE_SETTLE
 }
 

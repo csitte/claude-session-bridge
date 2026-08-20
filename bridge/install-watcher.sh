@@ -75,16 +75,22 @@ done
 md="$proj/CLAUDE.md"
 [[ -f "$md" ]] || { echo "install-watcher: $md not found — check the project directory." >&2; exit 1; }
 
-block="**Bridge push (watcher):** At session start, run the bridge start scan in one pass —
-not a loop of your own over the files, that runs into the tool timeout on a sync folder:
-\`bash $script_pc --fold $me\` (machine A) or
-\`bash $script_nb --fold $me\` (machine B)
-lists the open threads with \`owner: $me\`; if it prints a WARNING, the sync client is
-still fetching — repeat it later. Then arm the Monitor tool — persistent: true,
+block="**Bridge push (watcher):** At session start, **arm first, fold second** — in that order,
+and without checking \`--status\` beforehand: arm the Monitor tool with persistent: true,
 description \"session bridge: new messages for $me\", command with the path that exists
 on this machine:
 \`bash $script_pc $me\` (machine A) or
 \`bash $script_nb $me\` (machine B).
+If a watcher already delivers for this id, the new arm steps aside by itself, and a silent
+remnant is cleared in the process — which is why arming is unconditionally right. **Then**
+run the bridge start scan in one pass — not a loop of your own over the files, that runs
+into the tool timeout on a sync folder:
+\`bash $script_pc --fold $me\` (machine A) or
+\`bash $script_nb --fold $me\` (machine B)
+lists the open threads with \`owner: $me\`; if it prints a WARNING, the sync client is
+still fetching — repeat it later; if it prints ATTENTION, arming did not happen — do it now.
+Whatever already existed when you armed is baseline and arrives through the start scan, so
+the order loses nothing.
 Every notification = a new bridge message for this session → read the file, report it in
 the chat, react according to the bridge protocol. The watcher only reads and complements
 the start scan; write-once is unaffected. **Do not disarm the watcher:** it survives

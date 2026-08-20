@@ -2,7 +2,8 @@
 #
 # watch-bridge.sh <session-id> [poll-seconds] — watcher for the session bridge.
 # watch-bridge.sh --status [session-id]       — show running watchers (diagnosis).
-# watch-bridge.sh --fold <session-id>         — start scan: open threads owned by <id>.
+# watch-bridge.sh --fold <session-id>         — start scan: open threads owned by <id>;
+#                                               warns at the end if no watcher delivers.
 # Operational docs: docs/watcher.md (arming, busy behaviour, switching it off, start scan).
 #
 # Polls <bridge>/threads/*/msgs/ for new .md files and prints ONE line on stdout per
@@ -138,15 +139,38 @@ fold_report() {
     echo "WARNING: listed in INDEX, but in neither threads/ nor _archiv/: $missing"
     echo "         The sync client is probably still fetching — repeat the fold later."
   fi
+  local slug st ow last
   if [[ ! -s "$tmp" ]]; then
     echo "no open thread with owner '$me'."
-    return 0
+  else
+    printf '%-40s %-12s %s\n' "THREAD" "STATUS" "LAST MESSAGE"
+    while IFS='|' read -r slug st ow last; do
+      printf '%-40s %-12s %s\n' "$slug" "$st" "$last"
+    done < "$tmp"
   fi
-  local slug st ow last
-  printf '%-40s %-12s %s\n' "THREAD" "STATUS" "LAST MESSAGE"
-  while IFS='|' read -r slug st ow last; do
-    printf '%-40s %-12s %s\n' "$slug" "$st" "$last"
-  done < "$tmp"
+  arm_hint "$me"
+}
+
+# --- Reminder to arm, printed as the LAST line of the fold --------------------
+# Field report: one session went two days without a delivery path because two sessions
+# in a row ran only the start scan and skipped arming. The second one had called
+# `--status` six times and had the leftover line in front of it four times — seen,
+# correctly read, never acted on. The fold is the one call every session makes at
+# startup and whose output it does read, so a reminder here cannot be missed.
+#
+# It only appears when something IS wrong: a session that arms first and folds second
+# never sees it. That is deliberate — a warning printed on every start becomes
+# wallpaper and fails on the day it matters.
+arm_hint() { # $1 = id
+  case "$(delivery_state "$1")" in
+    delivering|unknown) : ;;
+    stale)
+      echo "ATTENTION: only a silent watcher remnant for '$1' — NOTHING is being delivered."
+      echo "           Arm the Monitor tool now; arming clears the remnant by itself." ;;
+    none)
+      echo "ATTENTION: no watcher for '$1' — without arming, no bridge push arrives."
+      echo "           Arm the Monitor tool now (command: docs/watcher.md, or the arm paragraph in CLAUDE.md)." ;;
+  esac
 }
 
 # --- Inventory of running watchers -------------------------------------------
@@ -188,7 +212,31 @@ PS_INV
   powershell.exe -NoProfile -NonInteractive -Command "$code" 2>/dev/null | tr -d '\r'
 }
 
+# --- Delivery state of a single id --------------------------------------------
+# Answers: delivering | stale | none | unknown.
+#   unknown = no process inventory available (no PowerShell, e.g. Linux/CI). Nothing is
+#   warned about in that case: a warning that is reliably wrong on an entire platform is
+#   worse than no warning.
+delivery_state() { # $1 = id
+  command -v powershell.exe >/dev/null 2>&1 || { echo unknown; return 0; }
+  local want="$1" kind id pid age under started
+  local seen_script=0 delivering=0
+  while IFS='|' read -r kind id pid age under started; do
+    [[ "${id:-}" == "$want" ]] || continue
+    [[ "$kind" == script ]] && seen_script=1
+    [[ "$kind" == wrapper && "$under" == 1 ]] && delivering=1
+  done < <(watcher_inventory)
+  if   [[ $delivering -eq 1 ]]; then echo delivering
+  elif [[ $seen_script -eq 1 ]]; then echo stale
+  else echo none; fi
+}
+
 # --- Diagnosis: who is running, and are they delivering? ----------------------
+# The exit code is ALWAYS 0, even when a silent remnant is listed. Making a remnant exit
+# non-zero was proposed and rejected: a fleet overview calls `--status` without an id and
+# READS the inventory — a failure exit would turn the very diagnosis that surfaces the
+# problem into what looks like a broken tool call. The reminder lives in `--fold`
+# (arm_hint) instead, where it fires earlier anyway.
 status_report() {
   local filter="${1:-}"
   local kind id pid age under started st r

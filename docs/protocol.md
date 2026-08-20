@@ -140,12 +140,15 @@ survive a session change. They are not substitutes.
 
 ## Rituals
 
-1. **On session start** (and before any cross-repo handoff): fold every thread, surface the
-   ones now owned by this session with a non-`DONE` status. `watch-bridge.sh --fold <id>`
-   does that in one pass and prints them. Use it rather than walking the files yourself: on
-   a cloud-sync folder a per-file loop is slow enough to hit a tool timeout, and worse, it
-   silently misses threads the sync client has not fetched yet. The command warns when the
-   folder is still filling up — then repeat it a few minutes later.
+1. **On session start** (and before any cross-repo handoff): if you run the watcher, **arm it
+   first and fold second** — in that order, for a reason worth reading once
+   ([watcher.md](watcher.md), "Why arm first and fold second"). Then fold every thread and
+   surface the ones now owned by this session with a non-`DONE` status.
+   `watch-bridge.sh --fold <id>` does that in one pass and prints them. Use it rather than
+   walking the files yourself: on a cloud-sync folder a per-file loop is slow enough to hit a
+   tool timeout, and worse, it silently misses threads the sync client has not fetched yet.
+   The command warns when the folder is still filling up — then repeat it a few minutes
+   later — and its last line tells you if no watcher is delivering for your id.
 2. **New topic:** `mkdir threads/<slug>/msgs`, write `thread.md`, post message 1.
 3. **Respond / hand off:** new message file with `in-reply-to` and the `sets-*` fields.
 4. **Close:** post a `status` message with `sets-status: DONE`.

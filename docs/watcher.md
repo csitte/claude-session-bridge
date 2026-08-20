@@ -64,11 +64,13 @@ most surprising constraint of the design, and it has a consequence — see
 
 Put a paragraph like this in each session's `CLAUDE.md`:
 
-> **Bridge push (watcher):** at session start, run the start scan in one pass —
-> `bash <path>/watch-bridge.sh --fold <id>` — and repeat it later if it prints a warning.
-> Then arm the Monitor tool —
-> persistent: true, description "session bridge: new messages for `<id>`", command:
-> `bash <path>/watch-bridge.sh <id>`. Every notification is a new bridge message for this
+> **Bridge push (watcher):** at session start, **arm first, fold second** — in that order,
+> and without checking `--status` beforehand: arm the Monitor tool with persistent: true,
+> description "session bridge: new messages for `<id>`", command:
+> `bash <path>/watch-bridge.sh <id>`. If a watcher already delivers for this id, the new arm
+> steps aside by itself, and a silent remnant is cleared in the process. **Then** run the
+> start scan in one pass — `bash <path>/watch-bridge.sh --fold <id>` — and repeat it later if
+> it prints a warning. Every notification is a new bridge message for this
 > session → read the file, report it, react per the protocol. The watcher only reads; it
 > complements the start scan. **Do not disarm it:** it survives `/clear` and keeps
 > delivering; a second arm recognises the running one and steps aside. Check with
@@ -77,6 +79,41 @@ Put a paragraph like this in each session's `CLAUDE.md`:
 `install-watcher.sh <id> [project-dir]` writes that paragraph *and* the permission rules,
 idempotently (`-n` dry-run, `-u` update an outdated paragraph, `-f` for ids outside the
 participant table).
+
+### Why arm first and fold second
+
+The obvious order is the wrong one, and it is worth spelling out why, because the obvious
+order is what we shipped first. Two sessions in a row folded and then skipped arming; one of
+them went **two days without a delivery path**, and nothing broke visibly — a session with no
+watcher looks exactly like a session with nothing to receive. Checking two rituals afterwards
+found the same defect in both. That makes it a property of the instruction rather than a
+lapse: the fold produces content and pulls attention immediately, it takes a while on a sync
+folder, and the arming that follows produces nothing readable and falls off the end.
+
+Reversing the order costs nothing, because whatever already existed when you armed is
+baseline and arrives through the start scan anyway (see "Idempotence" above).
+
+**Do not gate arming on `--status`.** It asks the session to make a decision the script makes
+better at arm time (step aside, or reap a remnant), and the decision can go wrong: in the
+incident above, one session had the remnant in front of it six times and still did not arm.
+`--status` is diagnosis *after* arming.
+
+### Getting the paragraph into a file that paraphrased it
+
+If a session rewrote the paragraph in its own words, it has no `**Bridge push (watcher):**`
+marker — `-u` then finds nothing and **appends a second paragraph**. Deleting the old text and
+running the installer without `-u` works, but places the block at the *end* of the bridge
+section, below everything else there. The cheaper fix, contributed by a session that had just
+walked into this:
+
+> Replace the old paragraph with **one** line containing both the marker and the word
+> `watcher.md`, then run `-u`. The installer bounds the replacement by exactly that line and
+> writes the block precisely where the old one was.
+
+Two rules follow. *"The paragraph is present" is not the same as "the paragraph is where it
+gets read."* And project-specific notes belong on their own line **below** the block, never
+woven into the template text — otherwise the marker disappears at the next cleanup and the
+next `-u` appends instead of replacing.
 
 ### Permissions are part of the rollout, not a prerequisite
 
@@ -156,9 +193,41 @@ The middle one is the dangerous state and the reason `--status` exists: a leftov
 mean a dead session. We have twice found live sessions with no delivery path this way, and
 they look completely healthy from the inside.
 
+It is dangerous not only because it is inconspicuous, but because it can **stay untreated
+after being noticed.** In the incident behind the arm-first rule above, the session had run
+`--status` six times and the `REMNANT (silent)` line was in its log four times, verbatim.
+Nothing followed. A finding that gets read and not acted on is worthless as mechanism —
+which is why the reminder now lives inside `--fold` (below) instead of in a ritual that has
+to be followed.
+
 `--status` deliberately errs toward calling something "delivering": a false *delivering*
 makes a new arm step aside and kill nothing, while a false *leftover* would reap a working
-watcher.
+watcher. Its **exit code is always 0**, including when it lists a remnant. Making the remnant
+a non-zero exit was proposed and rejected: a fleet overview calls `--status` without an id
+and reads the inventory, so a failure exit would turn the one diagnosis that surfaces the
+problem into what looks like a broken tool call.
+
+### The fold reminds you to arm
+
+As its **last** line, `--fold <id>` prints this when nothing is delivering for that id:
+
+```
+ATTENTION: no watcher for 'app' — without arming, no bridge push arrives.
+           Arm the Monitor tool now (command: docs/watcher.md, or the arm paragraph in CLAUDE.md).
+```
+
+For a silent remnant it says so instead, and that arming clears it. Three properties worth
+knowing:
+
+- **It only appears when something is wrong.** Arm first, fold second, and you never see it.
+  A warning printed at every start becomes wallpaper and fails on the day it matters.
+- **Without a process inventory it stays quiet** (no PowerShell, e.g. Linux): the state is
+  `unknown`, not "no watcher". A warning that is reliably wrong on an entire platform is
+  worse than none.
+- **A mistyped id looks the same as an unarmed session** — for a phantom id there genuinely
+  is no watcher, so the warning is not wrong, just ambiguous. Copy the id from the arm
+  paragraph and it does not come up; checking it against a registry would be more machinery
+  than the ambiguity is worth.
 
 ## Busy sessions
 
