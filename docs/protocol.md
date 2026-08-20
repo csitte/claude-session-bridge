@@ -149,9 +149,22 @@ survive a session change. They are not substitutes.
    tool timeout, and worse, it silently misses threads the sync client has not fetched yet.
    The command warns when the folder is still filling up — then repeat it a few minutes
    later — and its last line tells you if no watcher is delivering for your id.
-2. **New topic:** `mkdir threads/<slug>/msgs`, write `thread.md`, post message 1.
+2. **New topic:** `mkdir threads/<slug>/msgs`, write `thread.md`, post message 1. The slug
+   starts with a three-digit number: **the highest number currently in use plus one, taken
+   over `threads/` *and* `_archiv/`** — a number stays taken after its thread is archived.
+   Read it at the moment you write, not from something you remember from earlier in the
+   session. (In bash, count with `10#$n`: a leading zero otherwise makes `069` an invalid
+   octal number and the arithmetic aborts.)
 3. **Respond / hand off:** new message file with `in-reply-to` and the `sets-*` fields.
 4. **Close:** post a `status` message with `sets-status: DONE`.
+
+The numbering is advisory, not enforced — nothing breaks if two threads share a number, the
+fold does not look at it. It matters because a number is how a thread gets referred to in
+conversation. `watch-bridge.sh --numbers` lists every number carried by more than one thread
+and, importantly, tells a **collision** (different authors picked the same number) apart from
+a **series** (one author, one thread per recipient — the documented fan-out, which is not a
+defect). Worth running before a fan-out and after a busy day; the mechanics are in
+[watcher.md](watcher.md).
 
 For anything critical, use a two-phase handoff: the requester posts (`sets-owner: other`),
 the other side posts an `ack` (`sets-status: IN_PROGRESS`) *before* doing the work, and the

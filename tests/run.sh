@@ -347,12 +347,61 @@ test_install() {
 }
 
 # --------------------------------------------------------------------------
+# number assignment (--numbers)
+# --------------------------------------------------------------------------
+
+# --numbers reads the AUTHOR out of the file name, so these messages need real ones:
+# <timestamp>__<author>__<rand>.md
+post_named() { # $1=bridge $2=area(threads|_archiv) $3=slug $4=timestamp $5=author
+  mkdir -p "$1/$2/$3/msgs"
+  printf -- '---\nfrom: %s\nto: someone\ntype: fyi\ndate: 2026-01-01T00:00:00Z\n---\n\nbody\n' \
+    "$5" > "$1/$2/$3/msgs/$4__$5__ab12.md"
+}
+
+test_numbers() {
+  head_ "watcher: duplicate thread numbers (--numbers)"
+  local b="$TMPROOT/numbers.$RANDOM"
+  mkdir -p "$b/threads" "$b/_archiv"
+  export SESSION_BRIDGE_DIR="$b"; check_safety
+
+  # A quiet bridge: one number, one thread.
+  post_named "$b" threads 010-quiet 20260101T000000Z app
+  bash "$WATCHER" --numbers 2>/dev/null | grep -q 'no number used twice' \
+    && ok "--numbers says so plainly when nothing is duplicated" \
+    || bad "--numbers says so plainly when nothing is duplicated"
+
+  # A deliberate fan-out: same number, same author, seconds apart -> SERIES, not a defect.
+  post_named "$b" threads 020-fanout-app  20260102T090000Z app
+  post_named "$b" threads 020-fanout-site 20260102T090003Z app
+  local out; out="$(bash "$WATCHER" --numbers 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -qE '^020  SERIES .*2 threads, 1 author'; then
+    ok "--numbers calls a one-author fan-out a SERIES"
+  else bad "--numbers calls a one-author fan-out a SERIES" "$out"; fi
+
+  # A real collision, with one of the two already archived: the number stays taken.
+  post_named "$b" threads 030-first  20260103T080000Z app
+  post_named "$b" _archiv 030-second 20260103T140000Z site
+  out="$(bash "$WATCHER" --numbers 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -qE '^030  COLLISION .*2 threads, 2 author'; then
+    ok "--numbers finds a collision across threads/ and _archiv/"
+  else bad "--numbers finds a collision across threads/ and _archiv/" "$out"; fi
+  if printf '%s\n' "$out" | grep -q '2 numbers used more than once: 1 collision(s), 1 pure series'; then
+    ok "--numbers counts collisions and series separately"
+  else bad "--numbers counts collisions and series separately" "$out"; fi
+
+  bash "$WATCHER" --numbers >/dev/null 2>&1
+  assert_eq "--numbers exits 0" "0" "$?"
+  unset SESSION_BRIDGE_DIR
+}
+
+# --------------------------------------------------------------------------
 
 case "${1:-all}" in
   watcher) test_watcher ;;
   install) test_install ;;
-  all)     test_watcher; test_install ;;
-  *) echo "usage: run.sh [watcher|install|all]" >&2; exit 64 ;;
+  numbers) test_numbers ;;
+  all)     test_watcher; test_numbers; test_install ;;
+  *) echo "usage: run.sh [watcher|numbers|install|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

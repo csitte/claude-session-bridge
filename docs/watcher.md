@@ -229,6 +229,43 @@ knowing:
   paragraph and it does not come up; checking it against a registry would be more machinery
   than the ambiguity is worth.
 
+## Duplicate thread numbers: `--numbers`
+
+```bash
+bash watch-bridge.sh --numbers
+```
+
+Thread slugs start with a three-digit number, assigned as "highest in use plus one" at write
+time (see [protocol.md](protocol.md), "New topic"). Nothing enforces it, and two sessions
+that write minutes apart can land on the same number. The fold does not care — but people do,
+because the number is how a thread gets referred to.
+
+The command lists every number carried by more than one thread, and separates the two cases a
+plain `uniq -d` throws together:
+
+| verdict | meaning |
+|---|---|
+| `SERIES` | several threads, **one** author — the documented fan-out (one thread per recipient). Not a defect |
+| `COLLISION` | several threads, **different** authors — two sessions picked the same number independently |
+| `COLL+SERIES` | both at once: a deliberate series sharing its number with an outsider |
+
+```
+087  COLLISION     2 threads, 2 author(s)
+      app-product       1x  2026-08-12T163527Z
+      site              1x  2026-08-12T091736Z
+```
+
+**The distinction is made by author, not by slug.** The obvious heuristic — compare the first
+slug segment — was wrong on real data: two unrelated threads can share a leading segment
+because they concern the same component. Measured across every duplicated number in a live
+bridge, the author was exact: every genuine collision had different authors, and the one
+deliberate fan-out had exactly one author who wrote 11 threads in 3 seconds. That is why the
+per-author time span is printed — a fan-out is recognisable at a glance, a collision usually
+sits hours apart.
+
+`_archiv/` is included, because an archived thread keeps its number. Like `--fold`, it makes
+one pass over the tree rather than one `ls` per thread, for the same sync-folder reason.
+
 ## Busy sessions
 
 A notification arriving mid-turn is not lost: it lands in the conversation flow and is

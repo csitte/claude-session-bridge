@@ -4,6 +4,7 @@
 # watch-bridge.sh --status [session-id]       — show running watchers (diagnosis).
 # watch-bridge.sh --fold <session-id>         — start scan: open threads owned by <id>;
 #                                               warns at the end if no watcher delivers.
+# watch-bridge.sh --numbers                   — thread numbers used more than once (diagnosis).
 # Operational docs: docs/watcher.md (arming, busy behaviour, switching it off, start scan).
 #
 # Polls <bridge>/threads/*/msgs/ for new .md files and prints ONE line on stdout per
@@ -40,6 +41,7 @@ usage() {
 usage: watch-bridge.sh <session-id> [poll-seconds]
        watch-bridge.sh --status [session-id]
        watch-bridge.sh --fold <session-id>
+       watch-bridge.sh --numbers
 EOF
   exit 64
 }
@@ -173,6 +175,76 @@ arm_hint() { # $1 = id
   esac
 }
 
+# --- Check number assignment: thread numbers used more than once --------------
+# Threads are numbered by taking the highest existing number + 1 at write time
+# (docs/protocol.md, "New topic"). Two sessions writing minutes apart can pick the same
+# number, and the fold does not care — but humans do, because a number is how a thread is
+# referred to in conversation.
+#
+# Reports every three-digit number carried by more than one thread, and separates two
+# cases that a plain `uniq -d` throws together:
+#
+#   SERIES    — several threads of the same number by the SAME author: the documented
+#               fan-out (one thread per recipient). Correct, not a defect.
+#   COLLISION — threads of the same number by DIFFERENT authors: two sessions picked the
+#               same number independently.
+#
+# The distinction is made by AUTHOR, not by slug. A name heuristic (first slug segment)
+# was wrong in testing: two unrelated threads can share a leading segment. Measured over
+# every duplicated number in a real bridge, the author is exact: every genuine collision
+# has different authors, the one deliberate fan-out had exactly one author (11 threads in
+# 3 seconds). The per-author time span is printed for that reason — it makes a fan-out
+# recognisable at a glance.
+#
+# One pass over the tree (find), not an `ls` per thread: on a cloud-sync folder every
+# access costs a fetch round (same lesson as --fold). `_archiv/` is included, because a
+# number stays taken after the thread is archived.
+numbers_report() {
+  resolve_bridge
+  ( cd "$bridge" 2>/dev/null || exit 0
+    find threads _archiv -mindepth 3 -maxdepth 3 -path '*/msgs/*.md' 2>/dev/null
+  ) | tr -d '\r' | awk -F/ '
+    { dir=$1; slug=$2; file=$4
+      if (slug !~ /^[0-9][0-9][0-9]-/) next
+      if (!(slug in first) || file < first[slug]) { first[slug]=file; where[slug]=dir }
+    }
+    END {
+      for (s in first) {
+        num=substr(s,1,3); f=first[s]
+        ts=f; sub(/__.*/,"",ts)
+        who=f; sub(/^[^_]*__/,"",who); sub(/__.*/,"",who)
+        n[num]++
+        if (!((num SUBSEP who) in seen)) { seen[num SUBSEP who]=1; authors[num]=authors[num] " " who; na[num]++ }
+        cnt[num SUBSEP who]++
+        if (!((num SUBSEP who) in lo) || ts < lo[num SUBSEP who]) lo[num SUBSEP who]=ts
+        if (!((num SUBSEP who) in hi) || ts > hi[num SUBSEP who]) hi[num SUBSEP who]=ts
+      }
+      c=0
+      for (x in n) if (n[x] > 1) { c++; k[c]=x }
+      for (i=1; i<=c; i++) for (j=i+1; j<=c; j++) if (k[j] < k[i]) { t=k[i]; k[i]=k[j]; k[j]=t }
+      col=0; ser=0; both=""
+      for (i=1; i<=c; i++) { x=k[i]
+        q=split(authors[x], a, " ")
+        has=0
+        for (j=1; j<=q; j++) if (cnt[x SUBSEP a[j]] > 1) has=1
+        verdict = (na[x]==1 ? "SERIES" : (has ? "COLL+SERIES" : "COLLISION"))
+        if (na[x]==1) ser++; else col++
+        # Only the mixed cases: a deliberate series sharing its number with an outsider.
+        # A pure series is already covered by the series count.
+        if (has && na[x] > 1) both = both " " x
+        printf "%s  %-12s %2d threads, %d author(s)\n", x, verdict, n[x], na[x]
+        for (j=1; j<=q; j++) {
+          span = (lo[x SUBSEP a[j]]==hi[x SUBSEP a[j]] ? lo[x SUBSEP a[j]] \
+                  : lo[x SUBSEP a[j]] " .. " hi[x SUBSEP a[j]])
+          printf "      %-16s %2dx  %s\n", a[j], cnt[x SUBSEP a[j]], span
+        }
+      }
+      if (c==0) { print "no number used twice."; exit }
+      printf "\n%d numbers used more than once: %d collision(s), %d pure series.\n", c, col, ser
+      if (both != "") printf "Contains a deliberate series next to the collision:%s\n", both
+    }'
+}
+
 # --- Inventory of running watchers -------------------------------------------
 # One line per process: kind|id|pid|age-seconds|under-claude|started
 #   kind  = script  (the watcher itself)
@@ -267,6 +339,7 @@ status_report() {
 case "${1:-}" in
   --status|-s) status_report "${2:-}"; exit 0 ;;
   --fold|--scan) [[ -n "${2:-}" ]] || usage; fold_report "$2"; exit 0 ;;
+  --numbers) numbers_report; exit 0 ;;
   ""|-h|--help) usage ;;
 esac
 
