@@ -5,6 +5,9 @@
 # watch-bridge.sh --fold <session-id>         — start scan: open threads owned by <id>;
 #                                               warns at the end if no watcher delivers.
 # watch-bridge.sh --numbers                   — thread numbers used more than once (diagnosis).
+# watch-bridge.sh --new-thread <slug> [nr]    — creates threads/<NNN>-<slug>/msgs and prints
+#                                               the folder name; [nr] forces a number (a
+#                                               deliberate series, e.g. a fan-out).
 # Operational docs: docs/watcher.md (arming, busy behaviour, switching it off, start scan).
 #
 # Polls <bridge>/threads/*/msgs/ for new .md files and prints ONE line on stdout per
@@ -42,6 +45,7 @@ usage: watch-bridge.sh <session-id> [poll-seconds]
        watch-bridge.sh --status [session-id]
        watch-bridge.sh --fold <session-id>
        watch-bridge.sh --numbers
+       watch-bridge.sh --new-thread <slug> [number]
 EOF
   exit 64
 }
@@ -336,10 +340,97 @@ status_report() {
   done
 }
 
+# --- Handing out a thread number: --new-thread -------------------------------
+# The leverage is NOT the lock, it is looking properly. Measured across every
+# duplicated number in a live bridge: only two pairs were less than five minutes
+# apart, the rest hours to days. Those did not come from a race but from the second
+# session not SEEING the first -- it looked at `threads/` only (most threads had been
+# moved to `_archiv/` by then), or the sync client had not caught up. Hence: read
+# both folders, and settle first, exactly as --fold does. The lock covers the two
+# real races; it lives LOCALLY, not in the bridge, so no helper files appear there.
+new_thread() { # $1=slug [$2=number, for a deliberate series]
+  local slug="${1:-}" want="${2:-}" settle="${WATCH_BRIDGE_SETTLE:-5}"
+  resolve_bridge
+
+  case "$slug" in
+    "" | */*)
+      echo "watch-bridge: slug missing or contains '/'." >&2; exit 2 ;;
+    [0-9][0-9][0-9]-*)
+      echo "watch-bridge: the number is handed out, not passed in -- for a deliberate series give it as the second argument." >&2
+      exit 2 ;;
+  esac
+
+  count_all() { ls -d "$bridge"/threads/*/ "$bridge"/_archiv/*/ 2>/dev/null | wc -l | tr -d ' '; }
+  max_num()   { ls -d "$bridge"/threads/*/ "$bridge"/_archiv/*/ 2>/dev/null \
+                | sed 's#/$##; s#.*/##' \
+                | awk '/^[0-9][0-9][0-9]-/ { n = substr($0,1,3) + 0; if (n > m) m = n } END { print m + 0 }'; }
+
+  # Settle first: a highest-number that is too low because the sync client is still
+  # catching up is precisely the cause this command exists to remove.
+  local n1 n2 pass=0
+  n1="$(count_all)"
+  while :; do
+    sleep "$settle"
+    n2="$(count_all)"
+    pass=$((pass+1))
+    [[ "$n2" == "$n1" ]] && break
+    if [[ $pass -ge 3 ]]; then
+      echo "watch-bridge: WARNING: folder count will not settle ($n1 -> $n2) -- sync still running; the number may be too low." >&2
+      break
+    fi
+    echo "watch-bridge: folder count changed ($n1 -> $n2) -- sync still running, another pass." >&2
+    n1="$n2"
+  done
+
+  local lock="${TMPDIR:-/tmp}/watch-bridge-newthread.lock" i=0
+  # Clear the remains of a crashed run after a minute.
+  [[ -d "$lock" ]] && [[ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ]] && rmdir "$lock" 2>/dev/null
+  until mkdir "$lock" 2>/dev/null; do
+    i=$((i+1))
+    [[ $i -ge 50 ]] && { echo "watch-bridge: could not take the lock '$lock'." >&2; exit 1; }
+    sleep 0.1
+  done
+  # shellcheck disable=SC2064
+  trap "rmdir '$lock' 2>/dev/null" EXIT
+
+  local num
+  if [[ -n "$want" ]]; then
+    case "$want" in
+      *[!0-9]* | "") echo "watch-bridge: '$want' is not a number." >&2; exit 2 ;;
+    esac
+    num="$(printf '%03d' "$((10#$want))")"
+  else
+    num="$(printf '%03d' "$(( $(max_num) + 1 ))")"
+  fi
+
+  local d existing=""
+  for d in "$bridge"/threads/"$num"-*/ "$bridge"/_archiv/"$num"-*/; do
+    [[ -d "$d" ]] || continue
+    existing+="${existing:+, }$(basename "$d")"
+  done
+
+  local dir="$bridge/threads/$num-$slug"
+  [[ -d "$dir" ]] && { echo "watch-bridge: '$num-$slug' already exists." >&2; exit 1; }
+
+  if [[ -n "$existing" ]]; then
+    if [[ -n "$want" ]]; then
+      echo "watch-bridge: number $num is taken ($existing) -- creating it as a deliberate series." >&2
+    else
+      # max+1 can only be taken if the scan saw too little.
+      echo "watch-bridge: $num is taken ($existing) although it should be the next free one -- the sync client is probably still catching up. Try again in a moment." >&2
+      exit 1
+    fi
+  fi
+
+  mkdir -p "$dir/msgs" || exit 1
+  echo "$num-$slug"
+}
+
 case "${1:-}" in
   --status|-s) status_report "${2:-}"; exit 0 ;;
   --fold|--scan) [[ -n "${2:-}" ]] || usage; fold_report "$2"; exit 0 ;;
   --numbers) numbers_report; exit 0 ;;
+  --new-thread) [[ -n "${2:-}" ]] || usage; new_thread "$2" "${3:-}"; exit 0 ;;
   ""|-h|--help) usage ;;
 esac
 

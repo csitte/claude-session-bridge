@@ -149,12 +149,15 @@ survive a session change. They are not substitutes.
    tool timeout, and worse, it silently misses threads the sync client has not fetched yet.
    The command warns when the folder is still filling up — then repeat it a few minutes
    later — and its last line tells you if no watcher is delivering for your id.
-2. **New topic:** `mkdir threads/<slug>/msgs`, write `thread.md`, post message 1. The slug
-   starts with a three-digit number: **the highest number currently in use plus one, taken
-   over `threads/` *and* `_archiv/`** — a number stays taken after its thread is archived.
-   Read it at the moment you write, not from something you remember from earlier in the
-   session. (In bash, count with `10#$n`: a leading zero otherwise makes `069` an invalid
-   octal number and the arithmetic aborts.)
+2. **New topic:** `watch-bridge.sh --new-thread <slug>` creates `threads/<nnn>-<slug>/msgs`
+   and prints the folder name; then write `thread.md` and post message 1 into it. The number
+   is **the highest currently in use plus one, taken over `threads/` *and* `_archiv/`** — a
+   number stays taken after its thread is archived — and it is read at the moment you write,
+   never from something you remember from earlier in the session. For a deliberate fan-out
+   (one number, one thread per recipient) pass the number as a second argument; the command
+   says so rather than doing it silently.
+   Doing it by hand works too, but reproduce both properties, and count with `10#$n`: a
+   leading zero otherwise makes `069` an invalid octal number and the arithmetic aborts.
 3. **Respond / hand off:** new message file with `in-reply-to` and the `sets-*` fields.
 4. **Close:** post a `status` message with `sets-status: DONE`.
 

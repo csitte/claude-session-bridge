@@ -249,6 +249,27 @@ knowing:
   paragraph and it does not come up; checking it against a registry would be more machinery
   than the ambiguity is worth.
 
+## Handing out a thread number: `--new-thread`
+
+Creates `threads/<NNN>-<slug>/msgs` and prints the folder name on stdout (messages go to
+stderr, so `slug=$(... --new-thread foo)` works). A second argument **forces** a number — that
+is the deliberate fan-out (one number, one thread per recipient); the command says out loud
+that it is creating a series rather than doing it silently.
+
+**The leverage is looking properly, not locking.** Measured across every duplicated number in
+a live bridge: only two pairs were less than five minutes apart, the rest hours to days. Those
+came from the second session not *seeing* the first — it read `threads/` only, while most
+threads had been moved to `_archiv/`, or the sync client had not caught up. So the command
+reads **both** folders and settles first, the same check `--fold` uses; if the folder count
+will not settle it warns that the number may be too low.
+
+The lock covers the two real races. It lives in `$TMPDIR` rather than in the bridge, so no
+helper files appear there, and a crashed run's leftover is cleared after a minute. It does not
+protect across machines, which is deliberate: two machines never work at the same time here.
+
+If `max+1` turns out to be taken, the command **aborts** instead of creating the thread: the
+scan saw too little, and the right response is to wait rather than to work around it.
+
 ## Duplicate thread numbers: `--numbers`
 
 ```bash

@@ -15,6 +15,7 @@
 # Usage:  bash tests/run.sh          # all
 #         bash tests/run.sh watcher  # only the watcher tests
 #         bash tests/run.sh install  # only the installer tests
+#         bash tests/run.sh newthread # only the --new-thread tests
 #
 # Requires: bash, sed, awk, grep. `node` only for the allow-rule test (skipped if absent).
 # No PowerShell needed: without it the watcher simply skips the process inventory, which
@@ -378,6 +379,32 @@ post_named() { # $1=bridge $2=area(threads|_archiv) $3=slug $4=timestamp $5=auth
     "$5" > "$1/$2/$3/msgs/$4__$5__ab12.md"
 }
 
+test_new_thread() {
+  head_ "watcher: handing out a thread number (--new-thread)"
+  local b; b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  mkdir -p "$b/_archiv/151-archived/msgs" "$b/threads/069-fanout-a/msgs"
+
+  # The archived thread carries the highest number. A scan that reads threads/ only
+  # hands out a number that is already taken -- that is how most collisions in the
+  # live bridge happened, not by two sessions racing.
+  assert_eq "next free number counts the archive too" "152-demo" \
+    "$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread demo)"
+  assert_eq "the thread folder is created with msgs/" "yes" \
+    "$([[ -d "$b/threads/152-demo/msgs" ]] && echo yes || echo no)"
+
+  # A deliberate series (a fan-out to several recipients under one number) has to stay
+  # possible, and 069 must not be read as octal.
+  assert_eq "a forced number creates a second thread under it" "069-fanout-b" \
+    "$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread fanout-b 69 2>/dev/null)"
+
+  WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread 007-wrong >/dev/null 2>&1
+  assert_eq "a slug that already carries a number is refused" "2" "$?"
+
+  bash "$WATCHER" --new-thread >/dev/null 2>&1
+  assert_eq "--new-thread without a slug -> usage, exit 64" "64" "$?"
+  unset SESSION_BRIDGE_DIR
+}
+
 test_numbers() {
   head_ "watcher: duplicate thread numbers (--numbers)"
   local b="$TMPROOT/numbers.$RANDOM"
@@ -420,8 +447,9 @@ case "${1:-all}" in
   watcher) test_watcher ;;
   install) test_install ;;
   numbers) test_numbers ;;
-  all)     test_watcher; test_numbers; test_install ;;
-  *) echo "usage: run.sh [watcher|numbers|install|all]" >&2; exit 64 ;;
+  newthread) test_new_thread ;;
+  all)     test_watcher; test_numbers; test_new_thread; test_install ;;
+  *) echo "usage: run.sh [watcher|numbers|newthread|install|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"
