@@ -56,6 +56,26 @@ invisibility as handing off to a session that is not running.
 Whatever is present is reported either way; the warning only says whether the result can be
 trusted yet. For tests, set `SESSION_BRIDGE_DIR` and `WATCH_BRIDGE_SETTLE=0`.
 
+### A name that arrives before its content
+
+A synced folder can publish the file **name** before its **content** is there. If the watcher
+ticks such a file off on first sight, it finds no `to:` field, drops it — and never looks at it
+again, because the name is now in `seen`. The message is lost for good, and **nothing anywhere
+records that it happened**: the watcher keeps running, the messages before and after arrive
+normally. It took a later message referring back to the missing one to notice at all.
+
+So when **not one** frontmatter field is readable, the file is not marked as seen; it is read
+again on the next pass, up to `WATCH_BRIDGE_RETRIES` times (default 40 — at a 15 s poll about
+ten minutes, because a cold sync client can take minutes to catch up). After that the watcher
+gives up, so a file that is not a message at all is not read forever.
+
+The baseline is deliberately exempt: whatever exists at startup is ticked off **without** a
+read attempt, or a cold sync client would report half the bridge as it catches up. Old
+messages are the start scan's job.
+
+One operational catch: a running watcher holds the old code in memory. The fix takes effect
+for a session only when it next starts.
+
 ## Arming: the session does it, not the launcher
 
 Monitor is a tool call, so only the session itself can arm its watcher. This is the single

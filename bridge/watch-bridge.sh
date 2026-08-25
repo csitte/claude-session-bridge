@@ -411,16 +411,36 @@ addressed() { # $1=to-field
 
 shopt -s nullglob
 declare -A seen
+declare -A retry
+
+# How often a file that is not readable yet is looked at again before the watcher
+# gives up on it. A synced folder (Drive, Dropbox, a network share) can publish the
+# NAME before the content has arrived; ticking such a file off on first sight loses
+# the message for good -- the name sits in `seen` and is never read again. Seen in
+# production exactly once, and it is invisible when it happens: the watcher ran, the
+# messages before and after arrived, and the one in between was never reported.
+# Generous by default, because a cold sync client can take minutes to catch up.
+retry_max="${WATCH_BRIDGE_RETRIES:-40}"
+
 baseline=1
 while true; do
   for f in "$bridge"/threads/*/msgs/*.md; do
     [[ -n "${seen[$f]:-}" ]] && continue
-    seen["$f"]=1
-    [[ $baseline -eq 1 ]] && continue
+    # Baseline first, and without reading it: whatever exists at startup belongs to
+    # the session's start scan, whether or not it happens to be readable right now.
+    # Otherwise a cold sync client would report half the bridge as it catches up.
+    if [[ $baseline -eq 1 ]]; then seen["$f"]=1; continue; fi
     slug="$(basename "$(dirname "$(dirname "$f")")")"
-    [[ "$slug" == _* ]] && continue
+    if [[ "$slug" == _* ]]; then seen["$f"]=1; continue; fi
     from="$(fm_field from "$f")"
     to="$(fm_field to "$f")"
+    # Not one frontmatter field readable => so far there is only the name. Do not
+    # tick it off; look again next pass.
+    if [[ -z "$from" && -z "$to" ]]; then
+      n=$(( ${retry[$f]:-0} + 1 ))
+      if [[ $n -lt $retry_max ]]; then retry["$f"]=$n; continue; fi
+    fi
+    seen["$f"]=1
     [[ "$from" == "$me" ]] && continue
     addressed "$to" || continue
     # Name the co-recipients: the session should know the others got the same

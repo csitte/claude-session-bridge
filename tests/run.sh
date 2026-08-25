@@ -166,6 +166,26 @@ test_watcher() {
   else bad "names the other recipients" "$(cat "$out")"; fi
   if grep -qv "also to:.*\ball\b" "$out"; then ok "does not invent recipients"; fi
 
+  head_ "watcher: a name that arrives before its content"
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  # A synced folder can publish the file NAME first and its content a moment later.
+  # The watcher has to look at such a file again instead of ticking it off unread:
+  # once its name is in `seen` it is never read again, so the message is lost for
+  # good -- and nothing anywhere reports that it happened. The junk file in the same
+  # pass guards the other side: a file that never gains frontmatter is not a message
+  # and must not be delivered just because it is looked at repeatedly.
+  posts_late() {
+    local b="$1"
+    : > "$b/threads/001-test/msgs/200-late.md"                 # name only, no content
+    printf 'not a message at all\n' > "$b/threads/001-test/msgs/220-junk.md"
+    sleep 2                                                    # at least one pass sees both
+    post "$b" 200-late   other "app"                           # content arrives now
+    post "$b" 210-normal other "app"
+  }
+  assert_eq "empty on first sight is read again; a file without frontmatter never is delivered" \
+    "200-late.md 210-normal.md" \
+    "$(watch_run "$b" app posts_late 2)"
+
   head_ "watcher: bridge path resolution"
   SESSION_BRIDGE_DIR="$TMPROOT/does-not-exist" bash "$WATCHER" app 1 >/dev/null 2>&1
   assert_eq "invalid SESSION_BRIDGE_DIR aborts (no silent fallback)" "1" "$?"
