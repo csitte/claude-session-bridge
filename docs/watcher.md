@@ -208,6 +208,15 @@ bash watch-bridge.sh --status <id>     # one session
 | script **+** wrapper under a live session | armed, **delivering** |
 | script **without** wrapper, session alive | leftover — the session is **deaf**, no push |
 | script **without** wrapper, no session | orphan from a closed session |
+| script younger than `WATCH_BRIDGE_START_GRACE` (default 90 s) | **starting** — not yet a verdict |
+
+A young arm is shown as `starting (Ns)` rather than `delivering`: in its first seconds an
+arm inspects the inventory and steps aside if one already delivers. From the outside that is
+indistinguishable from a real duplicate, and a fleet overview once reported it as one. The
+reflex on a reported duplicate — kill the newer process — hits the wrong one: **the older
+watcher is the survivor, the younger is the one dying.** So two rows for one id get a comment
+line: one of them young → *note … re-check in a minute*; both old → **`DUPLICATE`**. Only the
+second is a finding.
 
 The middle one is the dangerous state and the reason `--status` exists: a leftover does not
 mean a dead session. We have twice found live sessions with no delivery path this way, and

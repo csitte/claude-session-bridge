@@ -313,10 +313,17 @@ delivery_state() { # $1 = id
 # READS the inventory — a failure exit would turn the very diagnosis that surfaces the
 # problem into what looks like a broken tool call. The reminder lives in `--fold`
 # (arm_hint) instead, where it fires earlier anyway.
+#
+# A young arm is reported as `starting`, not `delivering`: in its first seconds an arm
+# inspects the inventory and steps aside if one already delivers — or it builds its
+# baseline. From the outside both look like a second delivering watcher, and the reflex
+# on a reported duplicate is to kill the NEWER one — which is the dying arm, while the
+# older one is the survivor. The grace period is generous because the inventory can
+# take well over a few seconds under load. Two rows for one id get a comment line.
 status_report() {
-  local filter="${1:-}"
+  local filter="${1:-}" grace="${WATCH_BRIDGE_START_GRACE:-90}"
   local kind id pid age under started st r
-  local -A live=()
+  local -A live=() count=() young=()
   local -a rows=()
   while IFS='|' read -r kind id pid age under started; do
     [[ -n "${kind:-}" && -n "${id:-}" ]] || continue
@@ -324,7 +331,9 @@ status_report() {
     if [[ "$kind" == wrapper ]]; then
       [[ "$under" == 1 ]] && live["$id"]=1
     else
-      rows+=("$id|$pid|$started")
+      rows+=("$id|$pid|$started|${age:-0}")
+      count["$id"]=$(( ${count[$id]:-0} + 1 ))
+      [[ "${age:-0}" -le "$grace" ]] && young["$id"]=1
     fi
   done < <(watcher_inventory)
 
@@ -334,9 +343,21 @@ status_report() {
   fi
   printf '%-16s %-8s %-12s %s\n' "SESSION" "PID" "ARMED" "STATUS"
   for r in "${rows[@]}"; do
-    IFS='|' read -r id pid started <<<"$r"
-    if [[ -n "${live[$id]:-}" ]]; then st="delivering"; else st="REMNANT (silent)"; fi
+    IFS='|' read -r id pid started age <<<"$r"
+    if   [[ "$age" -le "$grace" ]];   then st="starting (${age}s)"
+    elif [[ -n "${live[$id]:-}" ]];   then st="delivering"
+    else                                   st="REMNANT (silent)"; fi
     printf '%-16s %-8s %-12s %s\n' "$id" "$pid" "$started" "$st"
+  done
+  # Two rows for one id are a finding only once both are old.
+  for id in "${!count[@]}"; do
+    [[ ${count[$id]} -gt 1 ]] || continue
+    if [[ -n "${young[$id]:-}" ]]; then
+      echo "note: '$id' has an arm younger than ${grace}s — probably stepping aside right now." \
+           "Not a duplicate; re-check in a minute with --status $id."
+    else
+      echo "DUPLICATE: '$id' has ${count[$id]} old watchers — every message arrives that many times."
+    fi
   done
 }
 

@@ -195,6 +195,35 @@ test_watcher() {
   SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --status app >/dev/null 2>&1
   assert_eq "--status exits 0 even with nothing running" "0" "$?"
 
+  # A second arm of the same id is `starting`, not a duplicate, until it is older than
+  # the grace period — the survivor is the OLDER process, so a false "duplicate" invites
+  # killing the wrong one. Needs the process inventory, hence PowerShell only; both
+  # branches are forced through the grace value instead of waiting.
+  if command -v powershell.exe >/dev/null 2>&1; then
+    SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 bash "$WATCHER" t156 2 >/dev/null 2>&1 &
+    p1=$!
+    SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 bash "$WATCHER" t156 2 >/dev/null 2>&1 &
+    p2=$!
+    st="$(bash "$WATCHER" --status t156 2>/dev/null)"
+    if printf '%s
+' "$st" | grep -q '^t156 .*starting'        && printf '%s
+' "$st" | grep -q '^note:.*t156.*re-check'        && ! printf '%s
+' "$st" | grep -q 'DUPLICATE'; then
+      ok "--status: a young second arm is 'starting' with a note, not a duplicate"
+    else bad "--status: a young second arm is 'starting' with a note, not a duplicate" "$st"; fi
+    st="$(WATCH_BRIDGE_START_GRACE=-1 bash "$WATCHER" --status t156 2>/dev/null)"
+    if [[ "$(printf '%s
+' "$st" | grep -c '^t156 ')" == 2 ]]        && printf '%s
+' "$st" | grep -q "^DUPLICATE: 't156' has 2"        && ! printf '%s
+' "$st" | grep -q 'starting'; then
+      ok "--status: two arms past the grace period are a DUPLICATE"
+    else bad "--status: two arms past the grace period are a DUPLICATE" "$st"; fi
+    kill "$p1" "$p2" 2>/dev/null; wait "$p1" "$p2" 2>/dev/null
+  else
+    printf '  skip no process inventory without PowerShell — --status branches not testable here
+'
+  fi
+
   head_ "watcher: start scan (--fold)"
   b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
   export WATCH_BRIDGE_SETTLE=0     # no need to wait for a sync client in a temp dir
