@@ -146,8 +146,10 @@ outside:
 "permissions": { "allow": ["Bash(bash /path/to/watch-bridge.sh:*)"] }
 ```
 
-A global rule in the user-level settings covers all present and future sessions at once and
-is the least painful option. Note that the rule contains an **absolute path**: if your
+A global rule in the user-level settings (`~/.claude/settings.json` — spell the file name
+out; a stray `.settings.json` with a leading dot in the same folder looks plausible and is
+never read, and an entry there is correctly formatted and does nothing) covers all present
+and future sessions at once and is the least painful option. Note that the rule contains an **absolute path**: if your
 sessions travel between machines with different paths, you need one rule per path — and the
 arming paragraph must name every path too, because a `CLAUDE.md` that travels is wrong for
 one machine otherwise.
