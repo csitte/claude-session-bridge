@@ -337,6 +337,65 @@ Two deliberate limits:
   first passes the word on.
 
 
+### Two checkouts, one CLAUDE.md — the wrong id
+
+**What happened.** A background session living in a second checkout armed and folded under
+the id of the *main* checkout. Its arm then correctly stepped aside — a watcher for that id
+was already delivering — so the session was **silent**. From the outside everything looked
+healthy: `--status <id>` reported "delivering". The fold handed it the other session's inbox,
+and it nearly started working on a thread that belonged elsewhere. A human noticed; no tool
+did.
+
+**The cause was a template, not carelessness.** Both checkouts share a **committed**
+CLAUDE.md, and the arming paragraph in it — written by `install-watcher.sh` — named the main
+id at every one of its seven occurrences. The session had *followed* the documentation. A
+paragraph that demonstrates the trap beats any warning printed beside it, so the fix has two
+halves.
+
+#### 1. `--fold` checks the id against the working directory
+
+New keyword **SUSPECT** (WARNING = the sync client is still fetching, ATTENTION = no arm,
+NOTE = thread without an owner). It is printed **above** the thread list, not below: if the id
+is wrong the whole list belongs to somebody else, and a warning underneath arrives too late.
+
+Three sources, in order:
+
+1. **`.session-id` in the working directory.** Line 1 the id, line 2 the directory it was
+   issued for. The second line catches what `.gitignore` cannot prevent: somebody **copies** a
+   tree and the copy claims the original's id.
+2. **The participant table of the README.** Does the working directory sit under one of the
+   paths registered for this id?
+3. Otherwise nothing — no entry, no statement.
+
+Compared with a trailing `/`, **never as a bare prefix**: `…/app/` against `…/app-bgd` would
+otherwise pass, and that is exactly the case at hand.
+
+No abort, just a note: deliberately folding a foreign id is a legitimate diagnostic move. The
+case this targets is the one where **nobody** notices.
+
+**False-positive check:** every running session in our fleet, invoked from its own working
+directory — all of them silent, including two whose directory name and participant id have
+nothing in common. The incident itself, replayed, reports.
+
+#### 2. `install-watcher.sh -s/--shared` writes a derivable id
+
+Instead of the fixed id the shared variant writes `$(head -1 .session-id)` — the convention
+one participant pair had been maintaining by hand, now produced by the installer.
+
+**The variant is detected from the FILE, not from the flag.** If the existing paragraph
+contains `.session-id`, it stays shared — including under a `-u` without `-s`. That is the
+heart of it: a register of exceptions you "must not forget during a rollout" does not hold.
+Ours is the proof — one participant pair still runs the *previous* ritual order because it was
+excluded from an update rollout and got the new wording by message instead. What is only ever
+carried over by hand goes stale unnoticed.
+
+The flag is only needed to convert a file for the first time (`-s -u`).
+
+**A side effect that makes the incident impossible:** if `.session-id` is missing the argument
+is empty and `watch-bridge.sh` answers with its `usage` — **a loud failure instead of a quiet
+wrong id.** The paragraph says so explicitly: do not fall back to another id, do not guess,
+ask.
+
 ## Handing out a thread number: `--new-thread`
 
 Creates `threads/<NNN>-<slug>/msgs` and prints the folder name on stdout (messages go to

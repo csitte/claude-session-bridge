@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install-watcher.sh [-n|--dry-run] [-u|--update] [-f|--force] <session-id> [project-dir] —
+# install-watcher.sh [-n|--dry-run] [-u|--update] [-f|--force] [-s|--shared] <session-id> [project-dir] —
 # wire the bridge push into a project session. Operational docs: docs/watcher.md.
 #
 # Does two things, both idempotent:
@@ -13,6 +13,11 @@
 # If the paragraph is already there but outdated, the script says so and changes
 # nothing; -u/--update then replaces it with the current wording.
 #
+# -s/--shared writes `$(head -1 .session-id)` in place of the fixed id — for several
+# checkouts of ONE repository that share a committed CLAUDE.md. A file that already
+# uses the shared form is RECOGNISED as such; -u alone never writes the fixed id
+# back. The flag is only needed to convert a file for the first time.
+#
 # Writes NOTHING into the bridge. The paragraph names BOTH machine paths, because
 # CLAUDE.md files travel between machines (via git or file sync).
 
@@ -21,11 +26,13 @@ set -u
 dry=0
 force=0
 update=0
+shared=0
 while true; do
   case "${1:-}" in
     -n|--dry-run) dry=1; shift ;;
     -f|--force)   force=1; shift ;;
     -u|--update)  update=1; shift ;;
+    -s|--shared)  shared=1; shift ;;
     -h|--help)
       sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -33,7 +40,7 @@ while true; do
   esac
 done
 
-me="${1:?usage: install-watcher.sh [-n] [-u] [-f] <session-id> [project-dir]}"
+me="${1:?usage: install-watcher.sh [-n] [-u] [-f] [-s] <session-id> [project-dir]}"
 proj="${2:-$PWD}"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,19 +82,61 @@ done
 md="$proj/CLAUDE.md"
 [[ -f "$md" ]] || { echo "install-watcher: $md not found — check the project directory." >&2; exit 1; }
 
-block="**Bridge push (watcher):** At session start, **arm first, fold second** — in that order,
+# --- A fixed id, or `.session-id`? -------------------------------------------
+# Two checkouts of one repository share ONE committed CLAUDE.md. A fixed id in it
+# is wrong for one of the two — and in the incident that prompted this, the second
+# checkout armed under the main checkout's id, its arm stepped aside, and the
+# session was silent. It had followed the documentation.
+#
+# The shared variant writes `$(head -1 .session-id)` instead of the id: an
+# untracked file per working tree, line 1 the id, line 2 the directory it was
+# issued for. A participant pair had been doing this by hand long before the
+# installer could write it; `watch-bridge.sh` now checks it as well.
+#
+# **The variant is detected from the FILE, not from the flag.** A `-u` without
+# `-s` must not write the fixed id back into a shared CLAUDE.md — otherwise the
+# next rollout reintroduces the bug, and nobody can rely on a register of
+# exceptions (ours went stale unnoticed). The flag is only needed to convert a
+# file for the first time.
+if [[ $shared -eq 0 && -f "$md" ]]; then
+  if awk '/\*\*Bridge push \(watcher\):\*\*/,/watcher\.md/' "$md" | grep -qF '.session-id'; then
+    shared=1
+    echo "install-watcher: existing paragraph uses .session-id — keeping the shared variant."
+  fi
+fi
+
+if [[ $shared -eq 1 ]]; then
+  idexpr='$(head -1 .session-id)'
+  iddesc='<id from .session-id>'
+  sharednote="
+
+**Your participant id is the first line of \`.session-id\`** in the root of this working
+tree — untracked, one file per checkout, because several checkouts share this CLAUDE.md.
+Line 2 names the directory the id was issued for. **If the file is missing, or its second
+line does not match the working directory, you have no id** — do not fall back to another
+one, do not guess: say so and ask. Two sessions under one id cannot be repaired
+(write-once).
+
+"
+else
+  idexpr="$me"
+  iddesc="$me"
+  sharednote=" "
+fi
+
+block="**Bridge push (watcher):**${sharednote}At session start, **arm first, fold second** — in that order,
 and without checking \`--status\` beforehand: arm the Monitor tool with persistent: true,
-description \"session bridge: new messages for $me\", command with the path that exists
+description \"session bridge: new messages for $iddesc\", command with the path that exists
 on this machine:
-\`bash $script_pc $me\` (machine A) or
-\`bash $script_nb $me\` (machine B).
+\`bash $script_pc $idexpr\` (machine A) or
+\`bash $script_nb $idexpr\` (machine B).
 If a watcher already delivers for this id, the new arm steps aside by itself, and a silent
 remnant is cleared in the process — which is why arming is unconditionally right. **Then**
 run the bridge start scan in one pass — not a loop of your own over the files, that runs
 into the tool timeout on a sync folder:
-\`bash $script_pc --fold $me\` (machine A) or
-\`bash $script_nb --fold $me\` (machine B)
-lists the open threads with \`owner: $me\`; if it prints a WARNING, the sync client is
+\`bash $script_pc --fold $idexpr\` (machine A) or
+\`bash $script_nb --fold $idexpr\` (machine B)
+lists the open threads with \`owner: $iddesc\`; if it prints a WARNING, the sync client is
 still fetching — repeat it later; if it prints ATTENTION, arming did not happen — do it now.
 Whatever already existed when you armed is baseline and arrives through the start scan, so
 the order loses nothing.
@@ -96,7 +145,7 @@ the chat, react according to the bridge protocol. The watcher only reads and com
 the start scan; write-once is unaffected. **Do not disarm the watcher:** it survives
 \`/clear\` and keeps delivering; a second arm recognises the running one and steps aside.
 Use TaskStop only if delivery must stop *immediately*. Check the state with
-\`bash $script_pc --status $me\`. Operational docs: docs/watcher.md next to the script."
+\`bash $script_pc --status $idexpr\`. Operational docs: docs/watcher.md next to the script."
 
 # ---------- 1. CLAUDE.md ----------
 # Adopt the line endings of the target file. -U is mandatory: without binary mode

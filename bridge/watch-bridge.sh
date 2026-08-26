@@ -178,6 +178,10 @@ fold_report() {
     echo "WARNING: listed in INDEX, but in neither threads/ nor _archiv/: $missing"
     echo "         The sync client is probably still fetching — repeat the fold later."
   fi
+  # BEFORE the thread list, not after: if the id is wrong the whole list belongs
+  # to somebody else. In the incident above the session read the foreign inbox and
+  # nearly worked in it — a warning underneath would arrive too late.
+  checkout_hint "$me"
   local slug st ow last kind
   if ! grep -q '^T|' "$tmp"; then
     echo "no open thread with owner '$me'."
@@ -457,6 +461,106 @@ coverage_hint() {
   done
   echo "         Not fixable from outside: that session has to arm the monitor tool itself"
   echo "         (the arming paragraph in its CLAUDE.md) — or it gets restarted."
+}
+
+# One directory, two spellings: msys (`/tmp/x`) and Windows
+# (`C:/Users/.../Temp/x`) mean the same place but do not look alike, and a
+# string comparison then reports a move that never happened. So the RESOLVED
+# form is compared — step into it and ask where you are. If the directory no
+# longer exists the raw comparison stands; a difference is a finding then
+# anyway. Found by a test, not in the field.
+#
+# A limit, stated plainly: `path_norm` lowercases so the two spellings become
+# comparable — on a case-sensitive filesystem the `cd` therefore fails and the
+# raw comparison stands. That is the previous behaviour, so nothing regresses,
+# but the resolution does not help there.
+path_resolve() { # $1 = path -> resolved and normalised
+  local p r
+  p="$(printf '%s' "$1" | path_norm)"
+  r="$(cd "$p" 2>/dev/null && (pwd -W 2>/dev/null || pwd))"
+  [[ -n "$r" ]] || r="$p"
+  printf '%s' "$r" | path_norm
+}
+
+# --- Does the id match the working directory? --------------------------------
+# Field report: a background session living in a second checkout of the same repo
+# armed and folded under the id of the MAIN checkout. Its arm then correctly
+# stepped aside — a watcher for that id was already delivering — so the session
+# was SILENT, while `--status` showed "delivering" for the id in question. The
+# fold handed it the other session's inbox, and it nearly started working on a
+# thread that belonged to someone else. A human noticed; no tool did.
+#
+# It was not carelessness, it was FOLLOWING THE DOCS: both checkouts share one
+# committed CLAUDE.md, and the arming paragraph in it named the main id at every
+# occurrence. That is the same class as a warning printed above a recipe that
+# demonstrates the trap — the recipe wins. So the fix has two halves: the
+# template (see install-watcher.sh, placeholder id) AND this check, which holds
+# regardless of what any CLAUDE.md says.
+#
+# Three sources, in this order:
+#
+#   1. `.session-id` in the working directory — one line the id, one line the
+#      working tree it was issued for. The second line catches what .gitignore
+#      cannot prevent: somebody COPIES a tree and the copy claims the original's
+#      id. (This convention was invented by one of our participant pairs long
+#      before the script could check it.)
+#   2. The participant table of the README: does the working directory sit under
+#      one of the paths registered for this id?
+#   3. Otherwise nothing — no entry, no statement.
+#
+# Compared with a trailing "/", never as a bare prefix: `.../app/` against
+# `.../app-bgd` would otherwise pass, and that is precisely the case at hand.
+#
+# No abort, just a note: deliberately folding a foreign id is a legitimate
+# diagnostic move. The case this targets is the one where NOBODY notices.
+checkout_hint() { # $1 = the id it was called with; prints to stdout
+  local me="$1" cwd sid sidpath owner base
+  cwd="$(path_resolve .)"
+  [[ -n "$cwd" ]] || return 0
+
+  if [[ -r .session-id ]]; then
+    sid=$(head -1 .session-id 2>/dev/null | tr -d '\r' | tr -d ' ')
+    sidpath=$(sed -n 2p .session-id 2>/dev/null | tr -d '')
+    [[ -n "$sidpath" ]] && sidpath="$(path_resolve "$sidpath")"
+    if [[ -n "$sid" && "$sid" != "$me" ]]; then
+      echo "SUSPECT: called as '$me', but .session-id in this directory says '$sid'."
+      echo "         Everything below then belongs to '$me', not to this session. Clarify first."
+      return 0
+    fi
+    if [[ -n "$sidpath" && "$sidpath" != "$cwd" ]]; then
+      echo "SUSPECT: .session-id was issued for '$sidpath', we are in '$cwd'."
+      echo "         Looks like a copied working tree — two sessions under one id cannot be"
+      echo "         repaired (write-once). Clarify first, do not guess."
+      return 0
+    fi
+    return 0
+  fi
+
+  local br map paths
+  br="$(bridge_soft)"
+  [[ -n "$br" && -r "$br/README.md" ]] || return 0
+  map="$(readme_pathmap "$br/README.md")"
+  [[ -n "$map" ]] || return 0
+  paths="$(awk -F'\t' -v id="$me" '$1==id{print $2}' <<<"$map")"
+  [[ -n "$paths" ]] || return 0          # id not in the table -> no statement
+
+  local p ok=0
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    # Equal OR below — with a trailing slash, or 'app' would match 'app-bgd'.
+    [[ "$cwd" == "$p" || "$cwd" == "$p"/* ]] && { ok=1; break; }
+  done <<<"$paths"
+  [[ $ok -eq 1 ]] && return 0
+
+  owner="$(awk -F'\t' -v c="$cwd" '$2==c{print $1; exit}' <<<"$map")"
+  base="${cwd##*/}"
+  echo "SUSPECT: id '$me', but we are in '$cwd' — that directory is not registered for '$me'."
+  if [[ -n "$owner" ]]; then
+    echo "         The participant table maps it to '$owner'. Did you mean '$owner'?"
+  else
+    echo "         No participant is registered for it. Did you mean '$base'? Otherwise the"
+    echo "         path belongs in the participant table of the bridge README."
+  fi
 }
 
 # --- Diagnosis: who is running, and are they delivering? ----------------------

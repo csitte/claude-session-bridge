@@ -431,6 +431,47 @@ test_install() {
   assert_eq "-f forces it through" "0" "$?"
   rm -f "$b/README.md"
 
+  head_ "installer: shared CLAUDE.md (several checkouts, one file)"
+  d="$TMPROOT/shared.$RANDOM"; mkdir -p "$d"
+  printf '# P\n\n## Bridge\n\nx\n' > "$d/CLAUDE.md"
+
+  bash "$INSTALLER" -f -s app "$d" >/dev/null 2>&1
+  if grep -qF 'watch-bridge.sh $(head -1 .session-id)' "$d/CLAUDE.md"; then
+    ok "-s writes the .session-id expression instead of the id"
+  else bad "-s writes the .session-id expression instead of the id" "$(sed -n '1,30p' "$d/CLAUDE.md")"; fi
+  if grep -qE 'watch-bridge\.sh app( |$)' "$d/CLAUDE.md"; then
+    bad "-s leaves no fixed id as a command argument" "$(grep -n 'watch-bridge.sh app' "$d/CLAUDE.md")"
+  else ok "-s leaves no fixed id as a command argument"; fi
+
+  # The point of the whole exercise: a plain -u must not undo it.
+  out="$(bash "$INSTALLER" -f -u app "$d" 2>&1)"
+  if printf '%s\n' "$out" | grep -q 'keeping the shared variant'; then
+    ok "-u without -s recognises the shared variant"
+  else bad "-u without -s recognises the shared variant" "$out"; fi
+  if grep -qF 'watch-bridge.sh $(head -1 .session-id)' "$d/CLAUDE.md"; then
+    ok "-u without -s does NOT write the fixed id back"
+  else bad "-u without -s does NOT write the fixed id back" "$(sed -n '1,30p' "$d/CLAUDE.md")"; fi
+  if printf '%s\n' "$out" | grep -q 'is current — unchanged'; then
+    ok "the shared paragraph is idempotent"
+  else bad "the shared paragraph is idempotent" "$out"; fi
+
+  # Converting an existing fixed paragraph, and the fixed form staying idempotent.
+  d2="$TMPROOT/fixed.$RANDOM"; mkdir -p "$d2"
+  printf '# P\n\n## Bridge\n\nx\n' > "$d2/CLAUDE.md"
+  bash "$INSTALLER" -f app "$d2" >/dev/null 2>&1
+  out="$(bash "$INSTALLER" -f -u app "$d2" 2>&1)"
+  if printf '%s\n' "$out" | grep -q 'is current — unchanged'; then
+    ok "the fixed paragraph stays idempotent"
+  else bad "the fixed paragraph stays idempotent" "$out"; fi
+  bash "$INSTALLER" -f -s -u app "$d2" >/dev/null 2>&1
+  if grep -qF 'watch-bridge.sh $(head -1 .session-id)' "$d2/CLAUDE.md"; then
+    ok "-s -u converts a fixed paragraph to the shared form"
+  else bad "-s -u converts a fixed paragraph to the shared form" "$(sed -n '1,30p' "$d2/CLAUDE.md")"; fi
+  if [[ "$(grep -c 'Bridge push (watcher)' "$d2/CLAUDE.md")" == "1" ]]; then
+    ok "conversion replaces the paragraph, it does not add a second one"
+  else bad "conversion replaces the paragraph, it does not add a second one" \
+       "$(grep -c 'Bridge push (watcher)' "$d2/CLAUDE.md")"; fi
+
   head_ "installer: allow-rules"
   if command -v node >/dev/null 2>&1; then
     p="$(new_proj)"
@@ -535,15 +576,21 @@ test_numbers() {
 has_inventory() { command -v powershell.exe >/dev/null 2>&1; }
 
 # A README with a participant table, which is what the cwd is matched against.
-write_readme() { # $1=bridge
-  cat > "$1/README.md" <<'MD'
+# $2 optionally prefixes the paths with a real directory, for the tests that
+# actually chdir into them: the script compares RESOLVED paths, so the table has
+# to carry the same spelling the shell reports from inside (on Windows that is
+# the drive-letter form, not the msys one).
+write_readme() { # $1=bridge [$2=real base directory]
+  local pre=""
+  [[ -n "${2:-}" ]] && pre="$(cd "$2" && { pwd -W 2>/dev/null || pwd; })"
+  cat > "$1/README.md" <<MD
 # example bridge
 
 | id | session | repo / working dir |
 |---|---|---|
-| `app-product` | product side | `/repos/app-product` (`main`) |
-| `app` | the application | `/repos/app` (`main`) |
-| `mail` | inbox | `/repos/mail` |
+| \`app-product\` | product side | \`$pre/repos/app-product\` (\`main\`) |
+| \`app\` | the application | \`$pre/repos/app\` (\`main\`) |
+| \`mail\` | inbox | \`$pre/repos/mail\` |
 MD
 }
 
@@ -638,14 +685,96 @@ test_coverage() {
 
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# the id against the working directory
+# --------------------------------------------------------------------------
+# The failure this guards against is invisible from every angle but this one:
+# a session in a second checkout arms under the main checkout's id, its arm
+# steps aside because that id is already served, and `--status` reports the id
+# as delivering while the session gets nothing.
+
+test_checkout() {
+  local b out here
+  head_ "watcher: id against working directory"
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  export WATCH_BRIDGE_SETTLE=0
+  here="$TMPROOT/wt.$RANDOM"
+  mkdir -p "$here/repos/app" "$here/repos/app-bgd" "$here/repos/app-product" "$here/elsewhere"
+  write_readme "$b" "$here"  # app-product before app — the ordering that matters
+
+  # A directory registered for the id: silent.
+  out="$(cd "$here/repos/app" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q 'SUSPECT'; then
+    bad "no note when the id matches its registered directory" "$out"
+  else ok "no note when the id matches its registered directory"; fi
+
+  # A subdirectory of it: still silent.
+  mkdir -p "$here/repos/app/src/deep"
+  out="$(cd "$here/repos/app/src/deep" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q 'SUSPECT'; then
+    bad "no note from a subdirectory of the registered path" "$out"
+  else ok "no note from a subdirectory of the registered path"; fi
+
+  # The incident: a sibling checkout whose name merely starts with the id.
+  out="$(cd "$here/repos/app-bgd" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q "^SUSPECT: id 'app'"; then
+    ok "a sibling checkout starting with the id is flagged"
+  else bad "a sibling checkout starting with the id is flagged" "$out"; fi
+  if printf '%s\n' "$out" | grep -q "mean 'app-bgd'"; then
+    ok "the note proposes the directory name as the likely id"
+  else bad "the note proposes the directory name as the likely id" "$out"; fi
+
+  # The note must come BEFORE the thread list, or it is read too late.
+  post_state "$b" 001-test 100-a other app OPEN
+  out="$(cd "$here/repos/app-bgd" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold app 2>/dev/null)"
+  if [[ "$(printf '%s\n' "$out" | grep -n 'SUSPECT' | head -1 | cut -d: -f1)" \
+        -lt "$(printf '%s\n' "$out" | grep -n '^THREAD' | head -1 | cut -d: -f1)" ]]; then
+    ok "the note is printed above the thread list"
+  else bad "the note is printed above the thread list" "$out"; fi
+
+  # A directory registered for ANOTHER participant: name that participant.
+  out="$(cd "$here/repos/app-product" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q "maps it to 'app-product'"; then
+    ok "a directory owned by another participant names that participant"
+  else bad "a directory owned by another participant names that participant" "$out"; fi
+
+  # An id that is not in the table at all: no statement.
+  out="$(cd "$here/elsewhere" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold not-a-participant 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q 'SUSPECT'; then
+    bad "an unregistered id produces no statement" "$out"
+  else ok "an unregistered id produces no statement"; fi
+
+  # .session-id wins over the table and is checked in both halves.
+  printf 'app\n%s\n' "$here/elsewhere" > "$here/elsewhere/.session-id"
+  out="$(cd "$here/elsewhere" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold mail 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q "says 'app'"; then
+    ok ".session-id naming a different id is flagged"
+  else bad ".session-id naming a different id is flagged" "$out"; fi
+
+  printf 'app\n%s\n' "$here/repos/app" > "$here/elsewhere/.session-id"
+  out="$(cd "$here/elsewhere" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q 'copied working tree'; then
+    ok ".session-id issued for another tree is flagged (the copy case)"
+  else bad ".session-id issued for another tree is flagged (the copy case)" "$out"; fi
+
+  printf 'app\n%s\n' "$here/elsewhere" > "$here/elsewhere/.session-id"
+  out="$(cd "$here/elsewhere" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q 'SUSPECT'; then
+    bad "a consistent .session-id silences the table check" "$out"
+  else ok "a consistent .session-id silences the table check"; fi
+
+  unset WATCH_BRIDGE_SETTLE SESSION_BRIDGE_DIR
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   install) test_install ;;
   numbers) test_numbers ;;
   newthread) test_new_thread ;;
   coverage) test_coverage ;;
-  all)     test_watcher; test_coverage; test_numbers; test_new_thread; test_install ;;
-  *) echo "usage: run.sh [watcher|coverage|numbers|newthread|install|all]" >&2; exit 64 ;;
+  checkout) test_checkout ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"
