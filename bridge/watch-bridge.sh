@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # watch-bridge.sh <session-id> [poll-seconds] — watcher for the session bridge.
-# watch-bridge.sh --status [session-id]       — show running watchers (diagnosis).
+# watch-bridge.sh --status [session-id]       — watchers AND running sessions (diagnosis):
+#                                               reports who runs without being armed.
 # watch-bridge.sh --fold <session-id>         — start scan: open threads owned by <id>;
 #                                               warns at the end if no watcher delivers.
 # watch-bridge.sh --numbers                   — thread numbers used more than once (diagnosis).
@@ -340,6 +341,124 @@ delivery_state() { # $1 = id
   else echo none; fi
 }
 
+# --- Coverage: is a session running WITHOUT a watcher? ------------------------
+# Of the three states, the dangerous one is not the remnant — it is the LIVE
+# session with no watcher: it stops receiving pushes, and from the outside that
+# looks exactly like a session that simply is not running. In our fleet three
+# sessions sat in that state for a day; they were found only because someone
+# checked by hand. It was not machine-detectable: the process inventory sees
+# watchers, never sessions.
+#
+# Since Claude Code shipped native cross-session messaging it keeps a directory
+# of running sessions under ~/.claude/sessions/ — one JSON per session with
+# `pid`, `cwd`, `name`, `status`. What matters here is that it is a FILE: a
+# script can read it, whereas the equivalent tool call cannot be reached from
+# inside a script. $CLAUDE_CONFIG_DIR is honoured.
+#
+# Sessions are matched by `cwd` against the path column of the participant table
+# in the bridge README — not by session name, which is a window label and often
+# differs from the participant id. The whole path is compared, NEVER as a
+# substring: a `grep -F "/repos/app"` matches the row of `app-product` first and
+# mis-attributes silently. Same trap as the `to:` list (`app`/`app-b`,
+# `mail`/`mail-work`); it caught this very function during development.
+#
+# Only what could be attributed is reported: a session in a directory the README
+# does not list is not a bridge participant and must not raise an alarm. With no
+# registry, no README or no PowerShell the check says NOTHING and --status
+# behaves exactly as before — the same restraint as `delivery_state`: a warning
+# built on half the data is worse than no warning.
+
+# Bridge path without `exit`: --status does not resolve the bridge at all, and it
+# must keep working on a machine that has none. Resolution itself stays in
+# `resolve_bridge` — duplicating it here would write the site paths a second
+# time, and a rule that exists twice gets fixed once. The subshell absorbs its
+# `exit 1`.
+bridge_soft() {
+  [[ -n "${bridge:-}" ]] && { echo "$bridge"; return 0; }
+  ( resolve_bridge >/dev/null 2>&1 && echo "$bridge" ) || true
+}
+
+# Make paths comparable: JSON-escaped backslashes to slash, collapse repeats,
+# lowercase, no trailing slash.
+path_norm() { awk '{ gsub(/\\/,"/"); print tolower($0) }' | tr -d '\r' | tr -s '/' | sed 's|/$||'; }
+
+# Participant table of the README -> "id<TAB>path", one line per backticked path
+# in the last column. A path is what is absolute: it starts with `/` or with a
+# drive letter. That separates paths from the other backticked fields in that
+# column (branch names and the like) and holds on BOTH platforms — filtering on
+# ":" alone would have found nothing at all under Unix paths.
+readme_pathmap() { # $1 = README.md
+  awk -F'|' '/^\| `[a-z0-9.-]+` \|/ {
+    id=$2; gsub(/[ `]/,"",id)
+    n=split($4, parts, "`")
+    for (i=2; i<=n; i+=2) {
+      p=parts[i]; gsub(/^ +| +$/,"",p)
+      if (p ~ /^\// || p ~ /^[A-Za-z]:/) print id "\t" tolower(p)
+    }
+  }' "$1" | tr -d '\r' | tr -s '/' | sed 's|/$||'
+}
+
+live_claude_pids() {
+  command -v powershell.exe >/dev/null 2>&1 || return 0
+  powershell.exe -NoProfile -NonInteractive -Command \
+    '(Get-Process -Name claude -ErrorAction SilentlyContinue).Id' 2>/dev/null | tr -d '\r'
+}
+
+# -> lines "participant-id|window-name|pid|status" for every running session that
+# can be attributed to a participant id.
+session_inventory() {
+  local dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
+  [[ -d "$dir" ]] || return 0
+  local br; br="$(bridge_soft)"
+  [[ -n "$br" && -r "$br/README.md" ]] || return 0
+  local map; map="$(readme_pathmap "$br/README.md")"
+  [[ -n "$map" ]] || return 0
+  local pids; pids="$(live_claude_pids)"
+
+  local f name pid cwd st id
+  for f in "$dir"/*.json; do
+    [[ -f "$f" ]] || continue
+    pid=$(grep -oE '"pid":[0-9]+' "$f" | head -1 | cut -d: -f2)
+    [[ -n "$pid" ]] || continue
+    # A stale entry must not raise a false alarm.
+    [[ -n "$pids" ]] && { grep -qx "$pid" <<<"$pids" || continue; }
+    cwd=$(grep -oE '"cwd":"[^"]*"' "$f" | head -1 | cut -d'"' -f4 | path_norm)
+    [[ -n "$cwd" ]] || continue
+    id=$(awk -F'\t' -v c="$cwd" '$2==c{print $1; exit}' <<<"$map")
+    [[ -n "$id" ]] || continue
+    name=$(grep -oE '"name":"[^"]*"' "$f" | head -1 | cut -d'"' -f4)
+    st=$(grep -oE '"status":"[^"]*"' "$f" | head -1 | cut -d'"' -f4)
+    echo "$id|${name:-?}|$pid|${st:-?}"
+  done
+}
+
+# $1 = filter id (empty = all), $2 = covered ids (space-separated),
+# $3 = cached session_inventory output
+coverage_hint() {
+  local filter="${1:-}" covered=" ${2:-} " sess="${3:-}"
+  [[ -n "$sess" ]] || return 0
+  # Without a process inventory it is UNKNOWN whether a watcher runs, so every
+  # running session would look unarmed. On a platform without the inventory the
+  # report would be reliably wrong; same restraint as delivery_state.
+  command -v powershell.exe >/dev/null 2>&1 || return 0
+  local id name pid st r
+  local -a unarmed=()
+  while IFS='|' read -r id name pid st; do
+    [[ -n "${id:-}" ]] || continue
+    [[ -z "$filter" || "$id" == "$filter" ]] || continue
+    [[ "$covered" == *" $id "* ]] && continue
+    unarmed+=("$id|$name|$pid")
+  done <<<"$sess"
+  [[ ${#unarmed[@]} -gt 0 ]] || return 0
+  echo "UNARMED: ${#unarmed[@]} running session(s) without a watcher — nothing is delivered there:"
+  for r in "${unarmed[@]}"; do
+    IFS='|' read -r id name pid <<<"$r"
+    printf '         %-16s window "%s", PID %s\n' "$id" "$name" "$pid"
+  done
+  echo "         Not fixable from outside: that session has to arm the monitor tool itself"
+  echo "         (the arming paragraph in its CLAUDE.md) — or it gets restarted."
+}
+
 # --- Diagnosis: who is running, and are they delivering? ----------------------
 # The exit code is ALWAYS 0, even when a silent remnant is listed. Making a remnant exit
 # non-zero was proposed and rejected: a fleet overview calls `--status` without an id and
@@ -370,28 +489,47 @@ status_report() {
     fi
   done < <(watcher_inventory)
 
+  # Second source: which sessions are running at all? Only together with it does a
+  # remnant become a finding — or, just as usefully, a harmless leftover.
+  local sess; sess="$(session_inventory)"
+  local -A running=()
+  if [[ -n "$sess" ]]; then
+    while IFS='|' read -r id r; do
+      [[ -n "${id:-}" ]] && running["$id"]=1
+    done <<<"$sess"
+  fi
+
   if [[ ${#rows[@]} -eq 0 ]]; then
     echo "no watcher${filter:+ for '$filter'} is running."
-    return 0
+  else
+    printf '%-16s %-8s %-12s %s\n' "SESSION" "PID" "ARMED" "STATUS"
+    for r in "${rows[@]}"; do
+      IFS='|' read -r id pid started age <<<"$r"
+      if   [[ "$age" -le "$grace" ]];    then st="starting (${age}s)"
+      elif [[ -n "${live[$id]:-}" ]];    then st="delivering"
+      elif [[ -z "$sess" ]];             then st="REMNANT (silent)"
+      elif [[ -n "${running[$id]:-}" ]]; then st="REMNANT (silent) — session IS RUNNING, unarmed"
+      else                                    st="REMNANT (silent) — session ended, harmless"; fi
+      printf '%-16s %-8s %-12s %s\n' "$id" "$pid" "$started" "$st"
+    done
+    # Two rows for one id are a finding only once both are old.
+    for id in "${!count[@]}"; do
+      [[ ${count[$id]} -gt 1 ]] || continue
+      if [[ -n "${young[$id]:-}" ]]; then
+        echo "note: '$id' has an arm younger than ${grace}s — probably stepping aside right now." \
+             "Not a duplicate; re-check in a minute with --status $id."
+      else
+        echo "DUPLICATE: '$id' has ${count[$id]} old watchers — every message arrives that many times."
+      fi
+    done
   fi
-  printf '%-16s %-8s %-12s %s\n' "SESSION" "PID" "ARMED" "STATUS"
-  for r in "${rows[@]}"; do
-    IFS='|' read -r id pid started age <<<"$r"
-    if   [[ "$age" -le "$grace" ]];   then st="starting (${age}s)"
-    elif [[ -n "${live[$id]:-}" ]];   then st="delivering"
-    else                                   st="REMNANT (silent)"; fi
-    printf '%-16s %-8s %-12s %s\n' "$id" "$pid" "$started" "$st"
-  done
-  # Two rows for one id are a finding only once both are old.
-  for id in "${!count[@]}"; do
-    [[ ${count[$id]} -gt 1 ]] || continue
-    if [[ -n "${young[$id]:-}" ]]; then
-      echo "note: '$id' has an arm younger than ${grace}s — probably stepping aside right now." \
-           "Not a duplicate; re-check in a minute with --status $id."
-    else
-      echo "DUPLICATE: '$id' has ${count[$id]} old watchers — every message arrives that many times."
-    fi
-  done
+
+  # An id counts as covered when a watcher delivers OR one is coming up right now.
+  local covered=""
+  [[ ${#live[@]}  -gt 0 ]] && for id in "${!live[@]}";  do covered+=" $id"; done
+  [[ ${#young[@]} -gt 0 ]] && for id in "${!young[@]}"; do covered+=" $id"; done
+  coverage_hint "$filter" "$covered" "$sess"
+  return 0
 }
 
 # --- Handing out a thread number: --new-thread -------------------------------

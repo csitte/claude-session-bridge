@@ -16,6 +16,7 @@
 #         bash tests/run.sh watcher  # only the watcher tests
 #         bash tests/run.sh install  # only the installer tests
 #         bash tests/run.sh newthread # only the --new-thread tests
+#         bash tests/run.sh coverage  # only the coverage tests
 #
 # Requires: bash, sed, awk, grep. `node` only for the allow-rule test (skipped if absent).
 # No PowerShell needed: without it the watcher simply skips the process inventory, which
@@ -522,13 +523,129 @@ test_numbers() {
 
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# coverage: a running session with no watcher
+# --------------------------------------------------------------------------
+# Two branches that must be tested separately, because the check is deliberately
+# platform-dependent: with a process inventory it reports, without one it has to
+# stay silent (it cannot know whether a watcher runs, so every session would look
+# unarmed). The silent branch is the one CI on Linux exercises; the reporting
+# branch needs PowerShell and is skipped elsewhere — stated, not swallowed.
+
+has_inventory() { command -v powershell.exe >/dev/null 2>&1; }
+
+# A README with a participant table, which is what the cwd is matched against.
+write_readme() { # $1=bridge
+  cat > "$1/README.md" <<'MD'
+# example bridge
+
+| id | session | repo / working dir |
+|---|---|---|
+| `app-product` | product side | `/repos/app-product` (`main`) |
+| `app` | the application | `/repos/app` (`main`) |
+| `mail` | inbox | `/repos/mail` |
+MD
+}
+
+# One session entry, shaped like the real registry (JSON, escaped backslashes
+# allowed — both spellings must normalise to the same path).
+write_session() { # $1=registry-dir $2=pid $3=cwd $4=name
+  mkdir -p "$1/sessions"
+  printf '{"pid":%s,"sessionId":"t","cwd":"%s","name":"%s","kind":"interactive","status":"shell"}\n' \
+    "$2" "$3" "$4" > "$1/sessions/$2.json"
+}
+
+# A pid the check will accept as alive: on a machine with running claude
+# processes it has to be one of them, otherwise the liveness filter is skipped
+# anyway and any number does.
+usable_pid() {
+  local p=""
+  has_inventory && p="$(powershell.exe -NoProfile -NonInteractive -Command \
+    '(Get-Process -Name claude -ErrorAction SilentlyContinue).Id' 2>/dev/null | tr -d '\r' | head -1)"
+  printf '%s' "${p:-4242}"
+}
+
+test_coverage() {
+  local b reg out pid
+  head_ "watcher: coverage (running session without a watcher)"
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  write_readme "$b"
+  reg="$TMPROOT/cfg.$RANDOM"
+  pid="$(usable_pid)"
+
+  if has_inventory; then
+    write_session "$reg" "$pid" '/repos/app' 'Some Window Name'
+    out="$(CLAUDE_CONFIG_DIR="$reg" bash "$WATCHER" --status 2>/dev/null)"
+    if printf '%s\n' "$out" | grep -q '^UNARMED: 1 running session'; then
+      ok "a running session with no watcher is reported"
+    else bad "a running session with no watcher is reported" "$out"; fi
+    if printf '%s\n' "$out" | grep -q 'app .*window "Some Window Name"'; then
+      ok "the report names the participant id and the window"
+    else bad "the report names the participant id and the window" "$out"; fi
+
+    # The whole path is compared: '/repos/app' must not match the row of
+    # 'app-product', whose path merely starts with it. The table lists
+    # 'app-product' FIRST on purpose — that is what makes this test able to fail.
+    # With the shorter id first, any prefix match would still land on the right
+    # row by accident and the test would guard nothing (it did, until a mutation
+    # run showed it staying green while the comparison was broken).
+    if printf '%s\n' "$out" | grep -q 'app-product'; then
+      bad "paths are matched whole, not as a substring" "$out"
+    else ok "paths are matched whole, not as a substring"; fi
+
+    # Escaped backslashes normalise to the same path as forward slashes.
+    rm -rf "$reg"
+    write_session "$reg" "$pid" '\\repos\\app' 'Backslash Window'
+    out="$(CLAUDE_CONFIG_DIR="$reg" bash "$WATCHER" --status 2>/dev/null)"
+    if printf '%s\n' "$out" | grep -q '^UNARMED'; then
+      ok "a backslash cwd normalises to the same path"
+    else bad "a backslash cwd normalises to the same path" "$out"; fi
+
+    # A directory the README does not list is not a participant.
+    rm -rf "$reg"
+    write_session "$reg" "$pid" '/repos/something-else' 'Stranger'
+    out="$(CLAUDE_CONFIG_DIR="$reg" bash "$WATCHER" --status 2>/dev/null)"
+    if printf '%s\n' "$out" | grep -q 'UNARMED'; then
+      bad "a session outside the participant table raises no alarm" "$out"
+    else ok "a session outside the participant table raises no alarm"; fi
+
+    # No README, no check — adding one later switches the check on, exactly like
+    # the id validation in install-watcher.sh.
+    rm -rf "$reg"; write_session "$reg" "$pid" '/repos/app' 'App'
+    rm -f "$b/README.md"
+    out="$(CLAUDE_CONFIG_DIR="$reg" bash "$WATCHER" --status 2>/dev/null)"
+    if printf '%s\n' "$out" | grep -q 'UNARMED'; then
+      bad "without a README the check stays off" "$out"
+    else ok "without a README the check stays off"; fi
+    write_readme "$b"
+  else
+    printf '  skip %s\n' "reporting branch needs a process inventory (PowerShell)"
+  fi
+
+  # The silent branch: no process inventory means no statement, even though the
+  # registry clearly shows a running session. PATH is emptied of PowerShell to
+  # reach this branch on a machine that has one.
+  rm -rf "$reg"; write_session "$reg" "$pid" '/repos/app' 'App'
+  out="$(PATH=/usr/bin:/bin CLAUDE_CONFIG_DIR="$reg" bash "$WATCHER" --status 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q 'UNARMED'; then
+    bad "without a process inventory the check says nothing" "$out"
+  else ok "without a process inventory the check says nothing"; fi
+
+  CLAUDE_CONFIG_DIR="$reg" bash "$WATCHER" --status >/dev/null 2>&1
+  assert_eq "--status still exits 0 with the coverage check in place" "0" "$?"
+  unset SESSION_BRIDGE_DIR
+}
+
+# --------------------------------------------------------------------------
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   install) test_install ;;
   numbers) test_numbers ;;
   newthread) test_new_thread ;;
-  all)     test_watcher; test_numbers; test_new_thread; test_install ;;
-  *) echo "usage: run.sh [watcher|numbers|newthread|install|all]" >&2; exit 64 ;;
+  coverage) test_coverage ;;
+  all)     test_watcher; test_coverage; test_numbers; test_new_thread; test_install ;;
+  *) echo "usage: run.sh [watcher|coverage|numbers|newthread|install|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

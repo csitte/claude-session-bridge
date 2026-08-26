@@ -238,6 +238,52 @@ a non-zero exit was proposed and rejected: a fleet overview calls `--status` wit
 and reads the inventory, so a failure exit would turn the one diagnosis that surfaces the
 problem into what looks like a broken tool call.
 
+### Telling the middle state apart from the harmless one
+
+Until recently `--status` could not actually distinguish those two rows. It sees watcher
+processes; it never saw sessions. A leftover with a live session (deaf session, no push) and
+a leftover from a closed window (harmless) produced the same line, and only a human who knew
+which sessions were open could tell them apart.
+
+The missing half arrived as a by-product of a feature that has nothing to do with bridges:
+since Claude Code shipped native cross-session messaging it keeps a directory of running
+sessions under `~/.claude/sessions/` — one JSON per session with `pid`, `cwd`, `name` and
+`status`. What makes it usable here is that it is a **file**. The equivalent tool call cannot
+be reached from inside a shell script; a file can be read by anything. (`$CLAUDE_CONFIG_DIR`
+is honoured if you set it.)
+
+With that second source `--status` says which of the three it is, and appends a block for the
+state that has no watcher row at all:
+
+```
+app         12345  09-01 10:43  REMNANT (silent) — session IS RUNNING, unarmed
+mail        12777  09-01 10:43  REMNANT (silent) — session ended, harmless
+
+UNARMED: 1 running session(s) without a watcher — nothing is delivered there:
+         docs             window "Documentation", PID 41902
+         Not fixable from outside: that session has to arm the monitor tool itself
+         (the arming paragraph in its CLAUDE.md) — or it gets restarted.
+```
+
+**Sessions are matched by `cwd`, not by name.** The session name is a window label chosen by
+whoever started it and frequently is not the participant id at all. The path column of the
+participant table in your bridge README, on the other hand, has one entry per participant.
+The full path is compared, **never as a substring**: a participant `app` living in
+`/repos/app` would otherwise match the row of `app-product` in `/repos/app-product`, silently
+and in whichever direction the table happens to be ordered. This is the same trap the `to:`
+list documents, and it caught the implementation of this very check.
+
+**Where it says nothing, on purpose.** A session in a directory the README does not list is
+not a participant and raises no alarm. Without the registry, without a README, or on a
+platform with no process inventory the check is skipped entirely and `--status` behaves as it
+always did — on a platform where watchers cannot be seen, *every* session would look unarmed,
+and a warning that is reliably wrong is worse than no warning. A registry entry whose PID is
+gone is skipped too, so a stale file cannot raise a false alarm.
+
+Note the shape of this: the messaging feature is **used without a message being sent**. The
+watcher stays the delivery path, because the native channel reaches only sessions that are
+running and keeps no history — the two properties a bridge exists for.
+
 ### The fold reminds you to arm
 
 As its **last** line, `--fold <id>` prints this when nothing is delivering for that id:
