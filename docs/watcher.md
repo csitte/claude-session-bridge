@@ -260,6 +260,37 @@ knowing:
   paragraph and it does not come up; checking it against a registry would be more machinery
   than the ambiguity is worth.
 
+### The fold names threads that have no owner
+
+Folding matches `owner == me`. A thread whose messages never set a `sets-owner:` therefore
+shows up in **no** fold at all — not even in the folds of its own participants. It is listed
+neither as open nor as done; it is simply absent, and nothing ever makes it archive-ripe.
+
+```
+NOTE: 1 thread(s) without a 'sets-owner' -- invisible to every fold, including their participants':
+      042-shared-hardware                      status: ?
+      Whoever is a participant there sets 'sets-owner' in the next message of that thread.
+```
+
+We found one of these sitting unnoticed for ten days while it was still unresolved, and only
+by accident — by counting `ls threads/` against the folded lines.
+
+Worse than absent: if you generate an index, it most likely sorts threads by status through a
+switch whose default branch catches everything unknown, so an empty status lands in the "done"
+bucket. The thread is then not merely missing from the fold, it is **reported as finished** in
+the one table a human actually reads. That optimistic default is the real defect; this note
+only makes its consequence visible at the place every session already looks — the same reason
+the arming reminder lives here.
+
+Two deliberate limits:
+
+- **Only `owner == "" AND status != DONE`.** An ownerless thread that is DONE is picked up by
+  the housekeeping rule (DONE + 7 days) and heals itself; reporting it would be noise.
+- **It is printed for every session, not only for participants.** A thread with no owner has
+  no session responsible for it by definition — that is exactly the defect. Whoever looks
+  first passes the word on.
+
+
 ## Handing out a thread number: `--new-thread`
 
 Creates `threads/<NNN>-<slug>/msgs` and prints the folder name on stdout (messages go to

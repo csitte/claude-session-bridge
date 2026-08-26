@@ -68,6 +68,20 @@ post_state() { # $1=bridge $2=thread $3=name $4=from $5=sets-owner $6=sets-statu
   printf -- '---\nfrom: %s\nto: someone\ntype: reply\ndate: 2026-01-01T00:00:00Z\nsets-owner: %s\nsets-status: %s\n---\n\nbody\n' \
     "$4" "$5" "$6" > "$1/threads/$2/msgs/$3.md"
 }
+post_status_only() { # $1=bridge $2=thread $3=name $4=sets-status ('' = no sets-* at all)
+  mkdir -p "$1/threads/$2/msgs"
+  {
+    echo "---"
+    echo "from: someone"
+    echo "to: anyone"
+    echo "type: fyi"
+    echo "date: 2026-01-01T00:00:00Z"
+    [ -n "$4" ] && echo "sets-status: $4"
+    echo "---"
+    echo
+    echo "body"
+  } > "$1/threads/$2/msgs/$3.md"
+}
 
 wait_for_lines() { # $1=file $2=count $3=timeout-seconds -> 0 if reached
   local i=0 n
@@ -290,6 +304,42 @@ test_watcher() {
     "$(printf '%s\n' "$fold" | awk '/^[0-9]/ {print $1}' | sort | paste -sd' ' -)"
   bash "$WATCHER" --fold app >/dev/null 2>&1
   assert_eq "--fold still exits 0 with the reminder printed" "0" "$?"
+
+  head_ "watcher: threads without an owner (invisible to every fold)"
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  export WATCH_BRIDGE_SETTLE=0
+  # 001-mine    : owned and open                          -> in the thread list, not in the note
+  post_state "$b" 001-mine 100-a other app OPEN
+  # 010-nostate : no sets-* field at all (the field case)  -> reported, status '?'
+  post_status_only "$b" 010-nostate 100-a ""
+  # 011-open    : has a status, but never an owner        -> reported
+  post_status_only "$b" 011-open    100-a OPEN
+  # 012-done    : ownerless but DONE                      -> NOT reported, housekeeping takes it
+  post_status_only "$b" 012-done    100-a DONE
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  assert_eq "--fold reports ownerless threads that are not DONE" \
+    "010-nostate 011-open" \
+    "$(printf '%s\n' "$fold" | sed -n 's/^ *\(01[0-9]-[a-z]*\) *status:.*/\1/p' | sort | paste -sd' ' -)"
+  if printf '%s\n' "$fold" | grep -q "^NOTE: 2 thread(s) without a 'sets-owner'"; then
+    ok "--fold names the count under its own keyword"
+  else bad "--fold names the count under its own keyword" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -q '012-done'; then
+    bad "--fold stays quiet about an ownerless DONE thread" "$fold"
+  else ok "--fold stays quiet about an ownerless DONE thread"; fi
+  if printf '%s\n' "$fold" | grep -qE '^ +010-nostate +status: \?$'; then
+    ok "a thread without any sets-* field shows status '?'"
+  else bad "a thread without any sets-* field shows status '?'" "$fold"; fi
+  assert_eq "--fold: the owner check does not disturb the thread list" \
+    "001-mine" \
+    "$(printf '%s\n' "$fold" | awk '/^[0-9]/ {print $1}' | sort | paste -sd' ' -)"
+  bash "$WATCHER" --fold app >/dev/null 2>&1
+  assert_eq "--fold still exits 0 with the owner note printed" "0" "$?"
+  # ... and it stays silent when every thread has an owner
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  post_state "$b" 001-mine 100-a other app OPEN
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'NOTE:'; then
+    bad "--fold prints no owner note when there is nothing to report"
+  else ok "--fold prints no owner note when there is nothing to report"; fi
 
   unset WATCH_BRIDGE_SETTLE
 }

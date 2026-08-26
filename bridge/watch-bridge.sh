@@ -70,6 +70,35 @@ resolve_bridge() {
     echo "watch-bridge: no bridge directory found (set SESSION_BRIDGE_DIR)" >&2; exit 1; }
 }
 
+# --- Threads with no owner, reported as part of the fold ----------------------
+# A message that sets no `sets-owner:` leaves its thread invisible to EVERY fold --
+# including the folds of its own participants, because folding matches `owner == me`.
+# Field report: one such thread sat unseen for ten days while it was still unresolved,
+# and it was found by accident, by counting `ls threads/` against the folded lines.
+#
+# Worse than invisible: a generated index usually sorts by status through a switch whose
+# default branch catches everything unknown, so an empty status lands in the "done"
+# bucket. The thread is then not merely missing, it is REPORTED AS FINISHED. That
+# optimistic default is the real defect; this check only makes the consequence visible
+# at the place every session looks at anyway.
+#
+# Reported only for `owner == "" AND status != DONE`: an ownerless DONE thread is picked
+# up by the housekeeping rule (DONE + 7 days) and heals itself, so reporting it would be
+# noise. Reported to EVERY session, not only to participants -- a thread without an owner
+# has no session responsible for it by definition; whoever looks first passes the word on.
+#
+# Its own keyword: WARNING is the sync backlog, ATTENTION the missing arm.
+orphan_hint() {
+  local tmp="$1" n slug st kind
+  grep -q '^X|' "$tmp" || return 0
+  n=$(grep -c '^X|' "$tmp")
+  echo "NOTE: $n thread(s) without a 'sets-owner' -- invisible to every fold, including their participants':"
+  while IFS='|' read -r kind slug st; do
+    printf '      %-40s status: %s\n' "$slug" "$st"
+  done < <(grep '^X|' "$tmp")
+  echo "      Whoever is a participant there sets 'sets-owner' in the next message of that thread."
+}
+
 # --- Start scan: fold the threads, show the open ones owned by <id> -----------
 # The fold the protocol defines (docs/protocol.md, "State is derived, never stored"):
 # per file the FIRST `sets-owner:`/`sets-status:` line, filename = chronological order,
@@ -112,8 +141,11 @@ fold_report() {
           if (v=="") next
           if (k=="O") { if (file>=fo[slug]) { fo[slug]=file; owner[slug]=v } }
           else        { if (file>=fs[slug]) { fs[slug]=file; status[slug]=v } } }
-        END { for (s in last) if (owner[s]==me && status[s]!="DONE")
-                printf "%s|%s|%s|%s\n", s, (status[s]==""?"?":status[s]), owner[s], last[s] }' \
+        END { for (s in last) {
+                if (owner[s]=="") { if (status[s]!="DONE") orph[++no]=s "|" (status[s]==""?"?":status[s]); continue }
+                if (owner[s]==me && status[s]!="DONE")
+                  printf "T|%s|%s|%s|%s\n", s, (status[s]==""?"?":status[s]), owner[s], last[s] }
+              for (i=1;i<=no;i++) printf "X|%s\n", orph[i] }' \
       | sort )
   }
 
@@ -145,15 +177,16 @@ fold_report() {
     echo "WARNING: listed in INDEX, but in neither threads/ nor _archiv/: $missing"
     echo "         The sync client is probably still fetching — repeat the fold later."
   fi
-  local slug st ow last
-  if [[ ! -s "$tmp" ]]; then
+  local slug st ow last kind
+  if ! grep -q '^T|' "$tmp"; then
     echo "no open thread with owner '$me'."
   else
     printf '%-40s %-12s %s\n' "THREAD" "STATUS" "LAST MESSAGE"
-    while IFS='|' read -r slug st ow last; do
+    while IFS='|' read -r kind slug st ow last; do
       printf '%-40s %-12s %s\n' "$slug" "$st" "$last"
-    done < "$tmp"
+    done < <(grep '^T|' "$tmp")
   fi
+  orphan_hint "$tmp"
   arm_hint "$me"
 }
 
