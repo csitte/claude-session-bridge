@@ -523,6 +523,38 @@ test_new_thread() {
 
   bash "$WATCHER" --new-thread >/dev/null 2>&1
   assert_eq "--new-thread without a slug -> usage, exit 64" "64" "$?"
+  # --- the fan-out note, and the order it is printed in ---------------------
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  export WATCH_BRIDGE_SETTLE=0
+  mkdir -p "$b/threads/007-first/msgs"
+
+  out="$(bash "$WATCHER" --new-thread second 007 2>&1)"
+  if printf '%s\n' "$out" | grep -q 'NOTE: series 007 now spans 2 threads'; then
+    ok "a series prints the sibling-threads note with the right count"
+  else bad "a series prints the sibling-threads note with the right count" "$out"; fi
+
+  out="$(bash "$WATCHER" --new-thread third 007 2>&1)"
+  if printf '%s\n' "$out" | grep -q 'spans 3 threads'; then
+    ok "the count grows with the series"
+  else bad "the count grows with the series" "$out"; fi
+
+  out="$(bash "$WATCHER" --new-thread solo 2>&1)"
+  if printf '%s\n' "$out" | grep -q 'NOTE: series'; then
+    bad "an ordinary thread gets no series note" "$out"
+  else ok "an ordinary thread gets no series note"; fi
+
+  # The note is three lines on stderr. Printed BEFORE the mkdir, a caller truncating
+  # the output closes the pipe and SIGPIPE kills the script before the directory
+  # exists -- that happened during development, silently. Whether SIGPIPE actually
+  # lands is a race, though: a runtime test for it stayed green with the order broken,
+  # so it guarded nothing. We assert the ORDER IN THE SOURCE instead -- structural
+  # rather than behavioural, and said out loud rather than dressed up.
+  if awk '/^  mkdir -p "\$dir\/msgs"/ {m=NR} /NOTE: series/ {n=NR}
+          END {exit !(m && n && m < n)}' "$WATCHER"; then
+    ok "the mkdir comes before the series note (creating precedes reporting)"
+  else bad "the mkdir comes before the series note (creating precedes reporting)"; fi
+
+  unset WATCH_BRIDGE_SETTLE
   unset SESSION_BRIDGE_DIR
 }
 

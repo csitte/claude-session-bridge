@@ -708,17 +708,38 @@ new_thread() { # $1=slug [$2=number, for a deliberate series]
   local dir="$bridge/threads/$num-$slug"
   [[ -d "$dir" ]] && { echo "watch-bridge: '$num-$slug' already exists." >&2; exit 1; }
 
-  if [[ -n "$existing" ]]; then
-    if [[ -n "$want" ]]; then
-      echo "watch-bridge: number $num is taken ($existing) -- creating it as a deliberate series." >&2
-    else
-      # max+1 can only be taken if the scan saw too little.
-      echo "watch-bridge: $num is taken ($existing) although it should be the next free one -- the sync client is probably still catching up. Try again in a moment." >&2
-      exit 1
-    fi
+  if [[ -n "$existing" && -z "$want" ]]; then
+    # max+1 can only be taken if the scan saw too little.
+    echo "watch-bridge: $num is taken ($existing) although it should be the next free one -- the sync client is probably still catching up. Try again in a moment." >&2
+    exit 1
   fi
 
   mkdir -p "$dir/msgs" || exit 1
+
+  # Create first, talk afterwards. The series message used to be printed before the
+  # mkdir; three lines on stderr are enough for a caller's `| head -2` to close the
+  # pipe and kill the script with SIGPIPE -- before the directory existed. Hit during
+  # development: the thread was missing while the output looked complete. Whatever
+  # creates something creates it first and reports second.
+  #
+  # A fan-out gives every recipient an owner of their own -- right for the question
+  # "who acts?". It does not answer "who needs to know?": in the field two sessions
+  # sharing one repository answered the same open question independently, each on
+  # their own branch, and the merge tool nearly decided instead of the two of them.
+  # Separate owners are right; separate sight is not.
+  #
+  # The note lives HERE rather than as a rule in the protocol: with a single observed
+  # case, maintaining a rule in three documents is the worse deal, and a rule you have
+  # to copy out loses against the shortcut. The command already knows a fan-out is
+  # being created, and its caller is exactly the one who has to act.
+  if [[ -n "$existing" ]]; then
+    local n_series
+    n_series=$(( $(printf '%s\n' "$existing" | tr ',' '\n' | wc -l) + 1 ))
+    echo "watch-bridge: number $num is taken ($existing) -- creating it as a deliberate series." >&2
+    echo "         NOTE: series $num now spans $n_series threads. Separate owners mean separate" >&2
+    echo "         sight -- name the sibling threads of the series in every message you send," >&2
+    echo "         or the recipients will answer the same question independently." >&2
+  fi
   echo "$num-$slug"
 }
 

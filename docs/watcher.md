@@ -417,6 +417,41 @@ protect across machines, which is deliberate: two machines never work at the sam
 If `max+1` turns out to be taken, the command **aborts** instead of creating the thread: the
 scan saw too little, and the right response is to wait rather than to work around it.
 
+
+**The fan-out note (since thread `168`).** When `--new-thread <slug> <nr>` adds another thread
+under a number already in use, the command does not only say "deliberate series" — it says what
+to watch out for:
+
+```
+watch-bridge: number 168 is taken (168-…-app) -- creating it as a deliberate series.
+         NOTE: series 168 now spans 2 threads. Separate owners mean separate
+         sight -- name the sibling threads of the series in every message you send,
+         or the recipients will answer the same question independently.
+```
+
+**Why.** Two sessions sharing one repository got the same request in two threads — correct, so
+that each has an owner of its own and neither falls through the fold. Both answered an open
+question inside it independently, each committed on their own branch, and the merge tool nearly
+decided instead of the two of them. **A fan-out answers "who acts?", not "who needs to know?"**
+— separate owners are right, separate sight is not.
+
+**Why in the command rather than in the protocol.** A single observed case does not justify a
+rule maintained in three documents, and a rule you have to copy out loses against the shortcut.
+The command already knows a fan-out is being created, and its caller is exactly the one who has
+to act. If the case shows up a second time, the rule belongs in the protocol — with two pieces
+of evidence instead of one.
+
+**Create first, report second.** The series message was originally printed *before* the
+`mkdir`. Three lines on stderr are enough for a caller's `| head -2` to close the pipe and kill
+the script with SIGPIPE — before the directory exists. Hit during development: the thread was
+missing while the output looked complete. **Whatever creates something creates it first and
+reports second.**
+
+The test for it is deliberately **structural** (it asserts in the source that `mkdir` precedes
+the message) rather than behavioural: whether SIGPIPE actually lands is a race, and a runtime
+test for it stayed green with the order broken — guarding nothing. Both times this happened it
+surfaced only through a mutation run, never through reading.
+
 ## Duplicate thread numbers: `--numbers`
 
 ```bash
