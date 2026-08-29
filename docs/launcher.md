@@ -78,9 +78,11 @@ bash launcher/link-memory.sh /d/work/app
 ```
 
 From then on the memory rides the push the wrap-up makes anyway, and every memory write
-shows up as a diff in `git status`. The script refuses to merge a file that differs on both
-sides (abort, nothing touched), reports "already linked" on a second run, and cross-checks
-by listing the repo **through** the link. Removing the junction again: `rm <path>` in Git
+shows up as a diff in `git status`. If the machine already has a memory of its own, its files
+move along; a `MEMORY.md` that differs on both sides — the normal case for a second machine —
+is merged (repo lines first, then the lines only the profile has). Any other file that differs
+on both sides aborts the run with nothing touched. A second run reports "already linked", and
+every run cross-checks by listing the repo **through** the link. Removing the junction again: `rm <path>` in Git
 Bash (msys treats it as a link; `rmdir` says "Not a directory"). Checked: `rm` and `rm -rf`
 in Git Bash do **not** follow the junction, the repo stays intact — with PowerShell
 `Remove-Item -Recurse` that depends on the version, so do not delete there.

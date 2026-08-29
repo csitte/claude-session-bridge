@@ -1046,6 +1046,17 @@ test_linkmemory() {
   local cfg3="$TMPROOT/lmcfg3.$RANDOM"; mkdir -p "$cfg3"
   CLAUDE_CONFIG_DIR="$cfg3" bash "$LM" "$repo" >/dev/null 2>&1
   assert_eq "missing profile memory -> link created" "MEMORY.md a.md b.md" "$(ls -A "$cfg3/projects/$slug/memory" | LC_ALL=C sort | paste -sd' ' -)"
+  # the index differs on both sides (the normal case for a second machine): merged, not a conflict
+  local cfg4="$TMPROOT/lmcfg4.$RANDOM" mem4; mem4="$cfg4/projects/$slug/memory"; mkdir -p "$mem4"
+  printf 'idx\n- [nb](nb.md) only here\n' > "$mem4/MEMORY.md"; echo nb > "$mem4/nb.md"; echo a > "$mem4/a.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg4" bash "$LM" "$repo" 2>&1)" || rc=$?
+  assert_eq "index merge: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -q '^\[index\] MEMORY.md differs on both sides -- 1 line(s)'; then ok "index merge is announced with the line count"; else bad "index merge is announced with the line count" "$out"; fi
+  assert_eq "index merge: repo lines first, then the profile-only line" "idx - [nb](nb.md) only here" "$(paste -sd' ' "$repo/memory/MEMORY.md")"
+  assert_eq "index merge: the profile-only file moved as well" "nb" "$(cat "$repo/memory/nb.md")"
+  assert_eq "index merge: no backup left behind" "" "$(ls "$repo/memory" | grep pre-link)"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg4" bash "$LM" "$repo" 2>&1)" || rc=$?
+  if [[ $rc -eq 0 ]] && printf '%s\n' "$out" | grep -q 'already linked'; then ok "index merge: second run already linked"; else bad "index merge: second run already linked" "$out"; fi
 }
 
 case "${1:-all}" in

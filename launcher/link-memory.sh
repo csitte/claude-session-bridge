@@ -100,14 +100,25 @@ case "$kind" in
     conflicts=()
     for f in "$mem"/*; do
       b="${f##*/}"
-      if [[ -e "$target/$b" ]]; then cmp -s "$f" "$target/$b" || conflicts+=("$b")
+      if [[ -e "$target/$b" ]]; then
+        cmp -s "$f" "$target/$b" && continue
+        # MEMORY.md is the index -- one line per memory, order without meaning. Two
+        # different indexes are the NORMAL case when a machine that already has its own
+        # memory is linked for the first time (the first real run aborted on exactly
+        # that). Merged: repo lines first, then the lines only the profile has.
+        # Everything else stays a conflict for a human.
+        if [[ $b == MEMORY.md ]]; then index_merge=1; else conflicts+=("$b"); fi
       else moves+=("$b"); fi
     done
     if (( ${#conflicts[@]} )); then
       echo "[abort] same file with different content in profile and repo -- merge by hand, nothing touched:" >&2
       printf '        %s\n' "${conflicts[@]}" >&2; exit 1
     fi
-    echo "[move] ${#moves[@]} file(s) from the profile into the repo${moves[*]:+: ${moves[*]}}" ;;
+    echo "[move] ${#moves[@]} file(s) from the profile into the repo${moves[*]:+: ${moves[*]}}"
+    if (( ${index_merge:-0} )); then
+      n_new=$(grep -vxFf "$target/MEMORY.md" "$mem/MEMORY.md" | grep -c . || true)
+      echo "[index] MEMORY.md differs on both sides -- $n_new line(s) from the profile will be appended to the repo index."
+    fi ;;
 esac
 
 if (( dry )); then echo "[dry-run] nothing changed."; exit 0; fi
@@ -119,12 +130,17 @@ if (( dry )); then echo "[dry-run] nothing changed."; exit 0; fi
 mkdir -p "$target" "$(dirname "$mem")"
 if [[ $kind == dir ]]; then
   for b in "${moves[@]}"; do cp -p "$mem/$b" "$target/$b"; done
+  if (( ${index_merge:-0} )); then
+    cp -p "$target/MEMORY.md" "$target/MEMORY.md.pre-link"          # for the rollback
+    grep -vxFf "$target/MEMORY.md" "$mem/MEMORY.md" | grep . >> "$target/MEMORY.md" || true
+  fi
   mv "$mem" "$mem.pre-link"
 fi
 if ! make_link; then
   if [[ $kind == dir ]]; then
     mv "$mem.pre-link" "$mem"
     for b in "${moves[@]}"; do rm -f "$target/$b"; done
+    if (( ${index_merge:-0} )); then mv -f "$target/MEMORY.md.pre-link" "$target/MEMORY.md"; fi
     rmdir "$target" 2>/dev/null || true
   fi
   echo "[error] link not created -- profile unchanged. Path too long? (Windows: 260 chars; this one has $(printf '%s' "$(cygpath -w "$mem" 2>/dev/null || printf '%s' "$mem")" | wc -c))" >&2
@@ -134,6 +150,7 @@ fi
 # Cross-check THROUGH the link, not just "the command ran".
 if [[ "$(ls -A "$mem" 2>/dev/null | LC_ALL=C sort)" == "$(ls -A "$target" | LC_ALL=C sort)" ]]; then
   [[ $kind == dir ]] && rm -rf "$mem.pre-link"
+  rm -f "$target/MEMORY.md.pre-link"
   echo "[ok] $mem -> $target ($(ls -A "$target" | wc -l | tr -d ' ') file(s)). Now: git add memory/ and commit."
 else
   echo "[error] link created, but an ls through it shows something other than $target. The old profile memory is at $mem.pre-link." >&2; exit 1
