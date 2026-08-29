@@ -145,6 +145,66 @@ name_hint() {
   echo "            message is not a message -- ask the author. Running watchers deliver a renamed file once."
 }
 
+# --- Sixth check: stamps that lie ahead of their own write time --------------
+# The name check catches the wrong FORM. On the same day three names turned up with
+# the right form and a wrong VALUE: `…T104500Z` written at 08:45 UTC (local time with
+# a `Z` appended) and `…T160000Z` / `…T170000Z` written at 12:52 and 13:45 (typed).
+# Same effect as the compact stamp: a message stamped in the future sorts AFTER
+# everything written up to its stamp, and wins every fold until then — a DONE from the
+# future keeps a thread closed for hours without anything showing anywhere.
+#
+# The name is compared with the file's MTIME, not with `now`. Two objections to a
+# `now`-based check, both answered by the mtime: (1) no clock drift — name and mtime
+# come from the same clock, and the sync client carries the write time across
+# machines (measured: 2 s apart on the other machine); (2) no expiry — the mtime does
+# not move, the finding stays until someone acts; "future" was only the symptom, the
+# statement is "stamp lies n hours after the write time". A false alarm is close to
+# impossible by construction: a synced copy can carry a LATER mtime (download time)
+# at most, never an earlier one — that misses a case, it never invents one. Threshold
+# 5 min (in the field: 25 hits in ~1400 messages, smallest real one 5.4 min — a typed
+# round minute; the 2 h cluster is the local-time-with-Z class). `threads/` only, not
+# `_archiv/`: nothing is folded there any more, so there is nothing to do. Repair as
+# for the name check: `mv` to the name derived from the write time (the line prints
+# it), content unchanged, running watchers deliver it once. Needs GNU find
+# (`-printf`) and an awk with mktime/strftime (gawk, mawk >= 1.3.4).
+stamp_hint() {
+  local bad n line slack="${WATCH_BRIDGE_STAMP_SLACK:-300}"
+  bad=$( cd "$bridge" 2>/dev/null || exit 0
+         find threads -mindepth 3 -maxdepth 3 -path '*/msgs/*.md' -not -path 'threads/_*' -printf '%T@ %p\n' 2>/dev/null \
+         | tr -d '\r' | grep -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z__[^/]*\.md$' \
+         | TZ=UTC0 awk -v slack="$slack" '
+             { mt = $1 + 0; p = substr($0, index($0, " ") + 1)
+               k = split(p, a, "/"); s = a[k]
+               ts = mktime(substr(s,1,4) " " substr(s,6,2) " " substr(s,9,2) " " substr(s,12,2) " " substr(s,14,2) " " substr(s,16,2))
+               if (ts - mt > slack)
+                 printf "%s|%.1f|%s\n", p, (ts - mt) / 3600, strftime("%Y-%m-%dT%H%M%SZ", mt, 1) }' \
+         | LC_ALL=C sort )
+  [[ -n "$bad" ]] || return 0
+  # Only files that STILL DECIDE the fold of their thread are reported: the lexically
+  # last file, the last one carrying `sets-status:` or the last one carrying
+  # `sets-owner:` — the same three quantities do_fold reads, compared bytewise as
+  # there. Without the filter the field bridge showed 13 lines, eleven of them history
+  # (superseded messages in long-closed threads) burying the one active case; an `mv`
+  # on a superseded file would also only wake watchers and break `in-reply-to`. So the
+  # line does go away by itself — but when a younger message with sets-* has
+  # superseded the file, i.e. when it decides nothing any more, not when the clock
+  # catches up with its stamp.
+  local deciding
+  last_per_thread() { tr -d '\r' | awk -F/ '{ if ($NF > m[$2]) m[$2]=$NF } END { for (s in m) print "threads/" s "/msgs/" m[s] }'; }
+  deciding=$( cd "$bridge/threads" 2>/dev/null || exit 0
+      { grep -rHm1 --include='*.md' '^sets-owner:'  . 2>/dev/null | cut -d: -f1 | last_per_thread
+        grep -rHm1 --include='*.md' '^sets-status:' . 2>/dev/null | cut -d: -f1 | last_per_thread
+        find . -mindepth 3 -maxdepth 3 -path './*/msgs/*.md' 2>/dev/null | last_per_thread
+      } | LC_ALL=C sort -u )
+  bad=$(printf '%s\n' "$bad" | awk -F'|' 'NR==FNR { d[$0]=1; next } ($1 in d)' <(printf '%s\n' "$deciding") -)
+  [[ -n "$bad" ]] || return 0
+  n=$(printf '%s\n' "$bad" | wc -l | tr -d ' ')
+  echo "Stamp check: $n file(s) in threads/*/msgs/ whose name lies more than $((slack/60)) min after the write time (mtime) -- typed, or local time with a 'Z'. They still decide the fold of their thread (last file, last sets-status or sets-owner) and win against everything written up to their stamp:"
+  while IFS='|' read -r line n2 wr; do printf '            %s  (+%s h, written %s)\n' "$line" "$n2" "$wr"; done <<< "$bad"
+  echo "            Repair by the author: mv to the name derived from the write time (content unchanged). Running watchers deliver the renamed file once."
+  echo "            The line disappears once a younger message with sets-* supersedes the file -- it then decides nothing any more."
+}
+
 fold_report() {
   local me="$1" settle="${WATCH_BRIDGE_SETTLE:-5}"
   resolve_bridge
@@ -216,6 +276,7 @@ fold_report() {
   # Also BEFORE the list: a wrong name may have flipped exactly the line the
   # reader is about to take at face value.
   name_hint
+  stamp_hint
   local slug st ow last kind
   if ! grep -q '^T|' "$tmp"; then
     echo "no open thread with owner '$me'."

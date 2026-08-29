@@ -52,6 +52,9 @@ collide. Lexical sort equals chronological order.
 > a leading dot (a temp leftover) sorts *before* everything and never counts. The start scan
 > (`watch-bridge.sh --fold`) names such files; the repair is an `mv` to the correct name,
 > content unchanged — and every running watcher delivers the renamed file once.
+> The same scan names a **well-formed name with a wrong value**: a stamp that lies more than
+> five minutes after the file's own write time (mtime) — typed, or local time with a `Z` —
+> sorts after everything written up to that stamp and wins every fold until then. Same repair.
 
 ```markdown
 ---

@@ -395,6 +395,76 @@ test_watcher() {
     bad "--fold prints no name check when every name is well-formed"
   else ok "--fold prints no name check when every name is well-formed"; fi
 
+  # --- stamp check: right form, wrong value (the name lies ahead of the write time) ---
+  # the defect: a message stamped in the future beats a younger, well-formed DONE
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  post_state "$b" 001-mine 2026-01-02T000000Z__other__f1 other app OPEN     # stamped 02T00:00 ...
+  touch -d '2026-01-01T20:00:00Z' "$b/threads/001-mine/msgs/2026-01-02T000000Z__other__f1.md"  # ... written 01T20:00
+  post_state "$b" 001-mine 2026-01-01T210000Z__app__d1 app other DONE       # younger, correct, sets DONE
+  touch -d '2026-01-01T21:00:00Z' "$b/threads/001-mine/msgs/2026-01-01T210000Z__app__d1.md"
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -qE '^001-mine +OPEN +2026-01-02T000000Z__other__f1\.md'; then
+    ok "a stamp from the future wins the fold over a younger, well-formed DONE (the defect)"
+  else bad "a stamp from the future wins the fold over a younger, well-formed DONE (the defect)" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -q '^Stamp check: 1 file(s)'; then
+    ok "--fold counts the file whose name lies ahead of its mtime"
+  else bad "--fold counts the file whose name lies ahead of its mtime" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -qF 'threads/001-mine/msgs/2026-01-02T000000Z__other__f1.md  (+4.0 h, written 2026-01-01T200000Z)'; then
+    ok "--fold names the file with its lead and the name it should have had"
+  else bad "--fold names the file with its lead and the name it should have had" "$fold"; fi
+  sc="$(printf '%s\n' "$fold" | grep -n '^Stamp check:' | cut -d: -f1)"
+  tl="$(printf '%s\n' "$fold" | grep -n '^001-mine' | cut -d: -f1)"
+  if [[ -n "$sc" && -n "$tl" && "$sc" -lt "$tl" ]]; then
+    ok "--fold prints the stamp check ABOVE the thread list"
+  else bad "--fold prints the stamp check ABOVE the thread list" "$fold"; fi
+  bash "$WATCHER" --fold app >/dev/null 2>&1
+  assert_eq "--fold still exits 0 with the stamp check printed" "0" "$?"
+  # the repair is a rename to the name derived from the write time — and it heals the fold
+  mv "$b/threads/001-mine/msgs/2026-01-02T000000Z__other__f1.md" "$b/threads/001-mine/msgs/2026-01-01T200000Z__other__f1.md"
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q "no open thread with owner 'app'"; then
+    ok "after the rename the younger DONE wins again"
+  else bad "after the rename the younger DONE wins again" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -q 'Stamp check'; then
+    bad "the renamed file drops out of the stamp check" "$fold"
+  else ok "the renamed file drops out of the stamp check"; fi
+  # a superseded file (younger sets-owner AND sets-status behind it) decides nothing — not reported
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  post_state "$b" 001-mine 2026-01-02T000000Z__other__f1 other app OPEN
+  touch -d '2026-01-01T20:00:00Z' "$b/threads/001-mine/msgs/2026-01-02T000000Z__other__f1.md"
+  post_state "$b" 001-mine 2026-01-03T000000Z__app__d2 app other DONE
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'Stamp check'; then
+    bad "a file superseded by a younger message with sets-* is not reported"
+  else ok "a file superseded by a younger message with sets-* is not reported"; fi
+  # ... but it IS reported while it still supplies the folded owner (younger message sets status only)
+  post_status_only "$b" 001-mine 2026-01-04T000000Z__app__d3 OPEN
+  rm "$b/threads/001-mine/msgs/2026-01-03T000000Z__app__d2.md"
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q '^Stamp check: 1 file(s)'; then
+    ok "a file that still supplies the folded owner is reported although it is not the last one"
+  else bad "a file that still supplies the folded owner is reported although it is not the last one"; fi
+  # a synced copy carries a LATER mtime at most (download time): never a hit
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  post_state "$b" 001-mine 2026-01-01T000000Z__other__k4n7 other app OPEN   # mtime = now, long after the stamp
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'Stamp check'; then
+    bad "an mtime later than the stamp (synced copy) is not a finding"
+  else ok "an mtime later than the stamp (synced copy) is not a finding"; fi
+  # _archiv/ is not folded any more — not checked
+  mkdir -p "$b/_archiv/000-old/msgs"
+  printf -- '---\nfrom: other\nto: app\ntype: fyi\ndate: 2026-01-01T00:00:00Z\n---\n\nbody\n' > "$b/_archiv/000-old/msgs/2026-01-02T000000Z__other__a1.md"
+  touch -d '2026-01-01T20:00:00Z' "$b/_archiv/000-old/msgs/2026-01-02T000000Z__other__a1.md"
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'Stamp check'; then
+    bad "the stamp check skips _archiv/"
+  else ok "the stamp check skips _archiv/"; fi
+  # the threshold: 5 min by default, WATCH_BRIDGE_STAMP_SLACK (seconds) overrides
+  post_state "$b" 001-mine 2026-01-01T000200Z__other__s1 other app OPEN     # 2 min ahead of its write time
+  touch -d '2026-01-01T00:00:00Z' "$b/threads/001-mine/msgs/2026-01-01T000200Z__other__s1.md"
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'Stamp check'; then
+    bad "a lead under the 5-minute threshold is not reported"
+  else ok "a lead under the 5-minute threshold is not reported"; fi
+  if WATCH_BRIDGE_STAMP_SLACK=60 bash "$WATCHER" --fold app 2>/dev/null | grep -q '^Stamp check: 1 file(s)'; then
+    ok "WATCH_BRIDGE_STAMP_SLACK lowers the threshold"
+  else bad "WATCH_BRIDGE_STAMP_SLACK lowers the threshold"; fi
+
   unset WATCH_BRIDGE_SETTLE
 }
 

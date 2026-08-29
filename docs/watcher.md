@@ -380,6 +380,49 @@ a cheap proxy for the thing, it **is** the thing — the usual objection to chea
 the place every session looks at every start. The test suite replays the incident: a compact
 stamp beats a younger, well-formed DONE; after the `mv` the fold heals.
 
+### The fold names stamps that lie ahead of their write time
+
+The name check catches the wrong **form**. On the same day three names turned up with the
+right form and a wrong **value**: `…T104500Z` written at 08:45 UTC (local time with a `Z`
+appended), `…T160000Z` and `…T170000Z` written at 12:52 and 13:45 (typed). A message stamped
+in the future sorts after everything written up to its stamp and wins every fold until then: the
+16:00 DONE kept its thread closed, the 17:00 one would have overruled every reply until the
+evening — and nothing showed anywhere, because the form was right.
+
+```
+Stamp check: 1 file(s) in threads/*/msgs/ whose name lies more than 5 min after the write time (mtime) -- typed, or local time with a 'Z'. They still decide the fold of their thread (last file, last sets-status or sets-owner) and win against everything written up to their stamp:
+            threads/174-orders/msgs/2026-08-29T170000Z__mail__c1a8.md  (+3.2 h, written 2026-08-29T134521Z)
+            Repair by the author: mv to the name derived from the write time (content unchanged). Running watchers deliver the renamed file once.
+            The line disappears once a younger message with sets-* supersedes the file -- it then decides nothing any more.
+```
+
+Three choices, two of them against the first proposal:
+
+- **mtime, not `now`.** The proposal was "name lies more than *n* minutes in the future", with
+  two objections named by its author: clock drift between machines, and a finding that goes
+  away by itself once the clock catches up. Comparing with the file's **mtime** answers both:
+  name and mtime come from the same clock; the sync client carries the write time across
+  machines (measured: messages written on the other machine sit 2 s from their stamp); and the
+  mtime does not move. "Future" was the symptom — the statement is "the stamp lies *n* hours
+  after the write time". A false alarm is close to impossible by construction: a synced copy
+  can carry a *later* mtime at most (download time), never an earlier one — that misses a case,
+  it never invents one. Threshold 5 min; in the field 25 hits in ~1400 messages, the smallest
+  real one 5.4 min (a typed round minute), the 2 h cluster being the local-time class.
+- **Only what still decides.** The first run showed 13 lines, eleven of them history
+  (superseded messages in long-closed threads) burying the one active case. A file is reported
+  only while it **decides** the fold of its thread: last file, last `sets-status` or last
+  `sets-owner`, compared bytewise as the fold does. So the line does disappear by itself — but
+  for the right reason: when a younger message with `sets-*` has superseded the file, not when
+  the clock moves on. An `mv` on a superseded file would only wake watchers and break other
+  people's `in-reply-to` anyway.
+- **`threads/` only**, not `_archiv/` — nothing is folded there any more, so there is nothing
+  to do. Repair as for the name check: `mv` to the name derived from the write time, which the
+  line prints. Cost: one `find -printf` and two `grep -r`, well under a second; needs GNU find
+  and an awk with `mktime` (gawk, mawk ≥ 1.3.4). `WATCH_BRIDGE_STAMP_SLACK` (seconds) for tests.
+
+No protocol change: the one-call recipe has been in the protocol for weeks; the check only
+measures whether it was followed.
+
 ### Two checkouts, one CLAUDE.md — the wrong id
 
 **What happened.** A background session living in a second checkout armed and folded under
