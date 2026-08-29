@@ -337,6 +337,49 @@ Two deliberate limits:
   first passes the word on.
 
 
+### The fold names files whose name does not sort
+
+Folding and delivery order by the **filename**, not by the `date:` field — the protocol says so
+itself: if they disagree, the filename wins. A name outside
+`YYYY-MM-DDTHHMMSSZ__<from>__<rand>.md` therefore sorts wrongly, and permanently. In the field
+a message named `20260826T162510Z__…` (dashes forgotten, `date:` field correct) sorted lexically
+**after** `2026-08-28T…` (`-` < `0`), won every subsequent fold, and kept a thread OPEN for three
+days although a younger message had set it DONE. Two effects, not one: the fold flipped for the
+owner, and the **push** delivered the same stale state to another reader as current — the DONE
+message behind it never reached them. A wrong name does not merely flip a status; it hands a
+careful reader a wrong picture with a correct derivation. An error that produces a plausible
+result instead of aborting is more expensive than any that fails loudly — so a machine checks it.
+
+```
+Name check: 1 file(s) in msgs/ do not start with 'YYYY-MM-DDTHHMMSSZ__' -- folding and push order by the name, not by 'date:':
+            threads/047-history-as-corpus/msgs/.tmp-app-cc2b.md
+            Repair: mv to the correct name (content unchanged). A temp leftover next to its finished
+            message is not a message -- ask the author. Running watchers deliver a renamed file once.
+```
+
+Four deliberate choices:
+
+- **A quiet line, no upper-case keyword.** The finding needs visibility, not urgency. It is
+  printed **above** the thread list, because it may have flipped exactly the line the reader is
+  about to take at face value.
+- **Only the timestamp part is checked.** The random suffix is free-form by protocol and does
+  not sort; in our bridge it is mostly four hex digits, but `k4n7`, `c0ld` and `winm` exist too.
+  A pattern on the suffix would have produced a hundred false alarms.
+- **`_archiv/` is included** (a wrong name comes back on reactivation); `threads/_*` is not
+  (never folded). A leftover temp file (`.tmp-…md` next to its finished message) fails the check
+  as well: it sorts *before* everything and never wins, but it is not a message either — the line
+  names it, the action lies with the author.
+- **The repair is an `mv`**, content unchanged — the same class as archiving ("relocated, never
+  edited"). Side effect, measured in the field: **to every running watcher the new name is a new
+  file** — it delivers it once. Wanted for a repair (the reader above got the lost DONE state
+  that way after all); it just should not surprise anyone who "quickly" straightens an old file.
+
+Why one incident is enough here, where we usually measure before building: the filename is not
+a cheap proxy for the thing, it **is** the thing — the usual objection to cheap measurables
+(they measure something other than what is meant) does not apply. And the cost is one regex at
+the place every session looks at every start. The test suite replays the incident: a compact
+stamp beats a younger, well-formed DONE; after the `mv` the fold heals.
+
 ### Two checkouts, one CLAUDE.md — the wrong id
 
 **What happened.** A background session living in a second checkout armed and folded under

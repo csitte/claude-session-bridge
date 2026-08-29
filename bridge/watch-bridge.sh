@@ -114,6 +114,37 @@ orphan_hint() {
 #     changed, fold again; (2) every slug listed in an INDEX.md (if you keep a generated
 #     index) must exist under threads/ or _archiv/. Both are advisory: whatever is there is
 #     always reported, the warning only says the result is not yet trustworthy.
+# --- Fifth check: filenames that do not sort -----------------------------------
+# Folding and delivery order by the FILENAME, not by `date:` (protocol: "if they
+# disagree, the filename wins"). A name outside the pattern
+# `YYYY-MM-DDTHHMMSSZ__<from>__<rand>.md` therefore sorts wrongly — and permanently:
+# in the field, `20260826T162510Z__…` (dashes forgotten) sorted lexically AFTER
+# `2026-08-28T…` (`-` < `0`), won every subsequent fold, and pushed a three-day-old
+# state to a reader as current; the DONE message behind it never reached them. The
+# error produces a plausible result instead of an abort — which is why a machine
+# checks it, not attention.
+#
+# ONLY the timestamp part is checked: the random suffix is free-form by protocol
+# (mostly hex in the field, but also `k4n7`, `c0ld`, `winm`) and does not sort. A
+# leftover temp file (`.tmp-…md`) fails the check too and is named — it sorts BEFORE
+# everything and never wins, but it is not a message either. The repair is an `mv`
+# (content unchanged, write-once kept); every running watcher sees the new name as a
+# new file and delivers it once — wanted for a repair, it just should not surprise
+# anyone. A quiet line, no upper-case keyword: the finding needs visibility, not
+# urgency. `_archiv/` is included: a wrong name comes back on reactivation.
+name_hint() {
+  local bad n f
+  bad=$( cd "$bridge" 2>/dev/null || exit 0
+         find threads _archiv -mindepth 3 -maxdepth 3 -path '*/msgs/*.md' -not -path 'threads/_*' 2>/dev/null \
+         | tr -d '\r' | grep -v -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z__[^/]*\.md$' | sort )
+  [[ -n "$bad" ]] || return 0
+  n=$(printf '%s\n' "$bad" | wc -l | tr -d ' ')
+  echo "Name check: $n file(s) in msgs/ do not start with 'YYYY-MM-DDTHHMMSSZ__' -- folding and push order by the name, not by 'date:':"
+  while IFS= read -r f; do printf '            %s\n' "$f"; done <<< "$bad"
+  echo "            Repair: mv to the correct name (content unchanged). A temp leftover next to its finished"
+  echo "            message is not a message -- ask the author. Running watchers deliver a renamed file once."
+}
+
 fold_report() {
   local me="$1" settle="${WATCH_BRIDGE_SETTLE:-5}"
   resolve_bridge
@@ -182,6 +213,9 @@ fold_report() {
   # to somebody else. In the incident above the session read the foreign inbox and
   # nearly worked in it — a warning underneath would arrive too late.
   checkout_hint "$me"
+  # Also BEFORE the list: a wrong name may have flipped exactly the line the
+  # reader is about to take at face value.
+  name_hint
   local slug st ow last kind
   if ! grep -q '^T|' "$tmp"; then
     echo "no open thread with owner '$me'."

@@ -46,6 +46,13 @@ Filename: `YYYY-MM-DDTHHMMSSZ__<from>__<rand>.md` — UTC basic timestamp (no co
 safe on NTFS), author id, and a short random suffix so two simultaneous writers cannot
 collide. Lexical sort equals chronological order.
 
+> **The name is what sorts — a malformed one wins or loses every fold, permanently.** A
+> compact stamp without dashes (`20260826T162510Z__…`) sorts lexically *after* every
+> well-formed name (`-` < `0`) and re-opens a closed thread in every fold and every push;
+> a leading dot (a temp leftover) sorts *before* everything and never counts. The start scan
+> (`watch-bridge.sh --fold`) names such files; the repair is an `mv` to the correct name,
+> content unchanged — and every running watcher delivers the renamed file once.
+
 ```markdown
 ---
 from: session-a          # author participant id

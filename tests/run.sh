@@ -324,7 +324,7 @@ test_watcher() {
   if printf '%s\n' "$fold" | grep -q "^NOTE: 2 thread(s) without a 'sets-owner'"; then
     ok "--fold names the count under its own keyword"
   else bad "--fold names the count under its own keyword" "$fold"; fi
-  if printf '%s\n' "$fold" | grep -q '012-done'; then
+  if printf '%s\n' "$fold" | grep -qE '^ +012-done'; then   # anchored: the name check lists fixture PATHS (threads/012-done/msgs/…), the owner note lists SLUGS
     bad "--fold stays quiet about an ownerless DONE thread" "$fold"
   else ok "--fold stays quiet about an ownerless DONE thread"; fi
   if printf '%s\n' "$fold" | grep -qE '^ +010-nostate +status: \?$'; then
@@ -341,6 +341,59 @@ test_watcher() {
   if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'NOTE:'; then
     bad "--fold prints no owner note when there is nothing to report"
   else ok "--fold prints no owner note when there is nothing to report"; fi
+
+  head_ "watcher: filenames that do not sort (the name is what folds)"
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  # 001-mine: handed to app on the 1st, closed by app on the 3rd ...
+  post_state "$b" 001-mine 2026-01-01T000000Z__other__a1 other app   OPEN
+  post_state "$b" 001-mine 2026-01-03T000000Z__app__b2   app   other DONE
+  # ... but a message from the 2nd with a compact stamp (dashes forgotten) sorts
+  # AFTER the 3rd ('-' < '0') and re-opens the thread in every fold — the field case.
+  post_state "$b" 001-mine 20260102T000000Z__other__c3   other app   OPEN
+  # a temp leftover next to its finished message: sorts first, never wins, not a message
+  post_state "$b" 001-mine .tmp-other-c3                 other app   OPEN
+  # an archived thread is checked too (a wrong name comes back on reactivation) ...
+  mkdir -p "$b/_archiv/000-old/msgs"
+  printf -- '---\nfrom: x\nto: y\ntype: fyi\ndate: 2026-01-01T00:00:00Z\nsets-status: DONE\n---\n\nbody\n' \
+    > "$b/_archiv/000-old/msgs/badname.md"
+  # ... an underscore directory under threads/ is not (never folded either)
+  post "$b" badname app other _hidden
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q '^Name check: 3 file(s)'; then
+    ok "--fold counts the files whose name does not start with the timestamp pattern"
+  else bad "--fold counts the files whose name does not start with the timestamp pattern" "$fold"; fi
+  assert_eq "--fold names them with their path (compact stamp, temp leftover, archived)" \
+    "_archiv/000-old/msgs/badname.md threads/001-mine/msgs/.tmp-other-c3.md threads/001-mine/msgs/20260102T000000Z__other__c3.md" \
+    "$(printf '%s\n' "$fold" | sed -n 's/^ \{12\}\([^ ]*msgs\/[^ ]*\)$/\1/p' | sort | paste -sd' ' -)"
+  if printf '%s\n' "$fold" | grep -q '_hidden'; then
+    bad "--fold: the name check skips underscore directories under threads/" "$fold"
+  else ok "--fold: the name check skips underscore directories under threads/"; fi
+  # the reason the check exists: the wrong name has flipped the state the list shows
+  if printf '%s\n' "$fold" | grep -qE '^001-mine +OPEN +20260102T000000Z__other__c3\.md'; then
+    ok "a compact stamp wins the fold over a younger, well-formed DONE (the defect)"
+  else bad "a compact stamp wins the fold over a younger, well-formed DONE (the defect)" "$fold"; fi
+  nc="$(printf '%s\n' "$fold" | grep -n '^Name check:' | cut -d: -f1)"
+  tl="$(printf '%s\n' "$fold" | grep -n '^001-mine' | cut -d: -f1)"
+  if [[ -n "$nc" && -n "$tl" && "$nc" -lt "$tl" ]]; then
+    ok "--fold prints the name check ABOVE the thread list"
+  else bad "--fold prints the name check ABOVE the thread list" "$fold"; fi
+  bash "$WATCHER" --fold app >/dev/null 2>&1
+  assert_eq "--fold still exits 0 with the name check printed" "0" "$?"
+  # the repair is a rename, content unchanged — and it heals the fold
+  mv "$b/threads/001-mine/msgs/20260102T000000Z__other__c3.md" "$b/threads/001-mine/msgs/2026-01-02T000000Z__other__c3.md"
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q "no open thread with owner 'app'"; then
+    ok "after the rename the younger DONE wins again"
+  else bad "after the rename the younger DONE wins again" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -q '^Name check: 2 file(s)'; then
+    ok "the renamed file drops out of the name check, the other two stay"
+  else bad "the renamed file drops out of the name check, the other two stay" "$fold"; fi
+  # ... and silence when every name is well-formed (the random suffix is free-form)
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  post_state "$b" 001-mine 2026-01-01T000000Z__other__k4n7 other app OPEN
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'Name check'; then
+    bad "--fold prints no name check when every name is well-formed"
+  else ok "--fold prints no name check when every name is well-formed"; fi
 
   unset WATCH_BRIDGE_SETTLE
 }
