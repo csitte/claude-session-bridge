@@ -54,6 +54,42 @@ Two details that are easy to get wrong and cost us an evening each:
   `mintty -e bash -lc "…"`, i.e. two levels of nested quoting, and the backticks that markdown
   wording is full of would be command substitutions there. `$(cat file)` sidesteps all of it.
 
+## A running session is not started twice
+
+Neither the launcher nor the session manager used to check whether a project already had a
+session; the only skip reason was a missing directory. A second window means two sessions in
+one tree — and the second one is **silent**: its watcher arm steps aside because one already
+delivers for that id (the same picture as [two checkouts sharing one id](watcher.md#two-checkouts-one-claudemd--the-wrong-id),
+from a different cause).
+
+`cc_session_running` in `_lib.sh` reads Claude Code's own session registry,
+`~/.claude/sessions/*.json` — one file per running session with `pid`, `cwd` and `name`, a
+by-product of native cross-session messaging — and compares `name` and `cwd` **exactly**, never
+as a substring (`app` is contained in `app-product`). `cc_launch` returns its own **2** for
+"already running": that is the normal case on a second run and must not keep the starter
+console open as an error; `--force` starts anyway.
+
+**Not the mintty window title.** The title belongs to the *window*, not the session, and
+`exec bash` keeps the window open after claude exits — measured once: 16 windows, 15
+sessions.
+
+**An entry counts only with a live pid.** The registry file disappears only on a clean exit.
+After an unattended reboot the entries of every killed session were still on disk; the
+launcher took each one for running and started nothing — a second attempt worked only because
+Claude Code prunes dead entries when it starts. So the pid is checked against the running
+`claude` processes (`ps -W`, no PowerShell call per project); the process name matters, or a
+pid reused after the reboot would count. An **empty** process list means "nothing is alive",
+not "check broken" — after a reboot it is rightly empty, and exactly then the start must go
+through. `CC_LIVE_PIDS` injects the list for tests.
+
+Two traps met while building it: the config carries msys paths (`/d/work/x`), the registry
+Windows paths (`D:\work\x`) — without the rewrite the `cwd` branch would have been dead and
+only the name would ever have matched, and a comparison that never matches looks like one that
+finds nothing. And test fixtures written with `printf` produced invalid JSON twice; the
+bash side greps and tolerated it, PowerShell's `ConvertFrom-Json` failed silently. Write
+fixtures with a JSON library, compact form (the registry has no spaces after the colons, and
+the grep relies on that).
+
 ## Closing a fleet
 
 `close-cc-sessions.ps1` kills the session windows and then collects leftover watcher
@@ -67,7 +103,9 @@ The window dies from its terminal going away, which the watcher does not notice.
 ## Session manager
 
 `session-manager.ps1` is a small GUI over the same config: see which sessions are up, start
-individual ones (`start-one.sh`), stop them. Convenience, not part of the mechanism.
+individual ones (`start-one.sh`), stop them. Convenience, not part of the mechanism. Its RUN
+marker in this repository still reads mintty window titles — the registry-based marker with
+the live-pid check described above lives in our field version and has not been ported yet.
 
 ## Testing note, learned the hard way
 

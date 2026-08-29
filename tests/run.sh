@@ -851,6 +851,42 @@ test_checkout() {
   unset WATCH_BRIDGE_SETTLE SESSION_BRIDGE_DIR
 }
 
+# --------------------------------------------------------------------------
+# launcher
+# --------------------------------------------------------------------------
+
+test_launcher() {
+  head_ "launcher: is a session already running? (registry, exact match, live pid only)"
+  local cfg="$TMPROOT/cfg.$RANDOM"; mkdir -p "$cfg/sessions"
+  reg() { # $1=file $2=pid ('' = no pid field) $3=cwd tail under D:\work $4=name
+    if [[ -n "$2" ]]; then
+      printf '{"pid":%s,"cwd":"D:\\\\work\\\\%s","name":"%s","status":"idle"}' "$2" "$3" "$4"
+    else
+      printf '{"cwd":"D:\\\\work\\\\%s","name":"%s","status":"idle"}' "$3" "$4"
+    fi > "$cfg/sessions/$1.json"
+  }
+  reg dead  4242 deadproj deadproj      # pid not alive: a leftover from a reboot
+  reg live  1717 liveproj liveproj      # alive
+  reg nopid ''   nopid    nopid         # no pid field at all
+  reg pfx   1717 app      appx          # prefix traps: cwd D:\work\app, name appx
+  local out
+  run() { # $1=name $2=dir [$3=CC_LIVE_PIDS override] [$4=config dir override]
+    ( export CLAUDE_CONFIG_DIR="${4-$cfg}" CC_LIVE_PIDS="${3-1717}"
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      cc_session_running "$1" "$2" && echo running || echo not )
+  }
+  assert_eq "a live entry matched by name counts as running"        "running" "$(run liveproj /d/work/liveproj)"
+  assert_eq "a live entry matched by cwd alone counts as running"    "running" "$(run other /d/work/liveproj)"
+  assert_eq "a dead pid is a leftover and does not count"            "not"     "$(run deadproj /d/work/deadproj)"
+  assert_eq "an entry without a pid field does not count"            "not"     "$(run nopid /d/work/nopid)"
+  assert_eq "cwd is matched whole: app does not cover app-product"   "not"     "$(run app /d/work/app-product)"
+  assert_eq "name is matched whole: app does not cover appx"         "not"     "$(run app /d/work/somewhere)"
+  assert_eq "after a reboot (no claude alive) nothing counts"        "not"     "$(run liveproj /d/work/liveproj '')"
+  assert_eq "the injected pid list decides, not the file"            "running" "$(run deadproj /d/work/deadproj 4242)"
+  assert_eq "no registry at all -> not running (start proceeds)"     "not"     "$(run liveproj /d/work/liveproj 1717 "$TMPROOT/none.$RANDOM")"
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   install) test_install ;;
@@ -858,8 +894,9 @@ case "${1:-all}" in
   newthread) test_new_thread ;;
   coverage) test_coverage ;;
   checkout) test_checkout ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|all]" >&2; exit 64 ;;
+  launcher) test_launcher ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

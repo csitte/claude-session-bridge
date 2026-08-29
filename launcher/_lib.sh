@@ -35,9 +35,75 @@ cc_resolve_config() {
   printf '%s\n' "$cfg"
 }
 
+# cc_session_running — is a Claude session already running for this entry?
+#
+# Neither the launcher nor the session manager ever checked this; cc_launch knew
+# exactly one reason to skip, the missing directory. A second start puts a second
+# window on the same project; both sessions then work in the same tree, and at the
+# bridge watcher the second arm steps aside (see docs/watcher.md), so the new
+# session is SILENT — the same picture as two checkouts sharing one id, from a
+# different cause.
+#
+# Source is ~/.claude/sessions/*.json — one file per RUNNING session, with `pid`,
+# `cwd` and `name` (a by-product of Claude Code's native cross-session messaging).
+#
+# Why not the mintty window title: the title belongs to the WINDOW, not to the
+# session. `exec bash` keeps the window open after claude exits — the title outlives
+# the session it names. Measured once: 16 mintty windows, 15 running sessions.
+#
+# `cwd` is compared as a WHOLE path and `name` as a whole token, never as a
+# substring: `D:/work/app` is contained in `D:/work/app-product`.
+#
+# No registry (older Claude version, another CLAUDE_CONFIG_DIR) means NO, and the
+# start proceeds as before: better a duplicate window than a session that can no
+# longer be started.
+#
+# An entry counts only if its `pid` is ALIVE: the registry file disappears only on
+# a clean exit. After an unattended reboot the entries of every killed session were
+# still there, the launcher took each one for running and started nothing — a
+# second attempt worked only because Claude Code prunes dead entries when it
+# starts. The process must be named `claude`, or a pid reused after the reboot
+# would count as a hit. An EMPTY list means "nothing is alive", not "check broken":
+# after a reboot it is rightly empty, and exactly then the start must go through.
+#
+# Test hook: CC_LIVE_PIDS (set, even if empty) replaces the process list.
+
+# cc_live_claude_pids — Windows pids of all running claude processes, one per line.
+# `ps -W` (msys) shows the Windows pid in column 4 and the command path last; the
+# registry carries the same Windows pid. Without `ps -W` (not msys) the list is empty.
+cc_live_claude_pids() {
+  ps -W 2>/dev/null | awk 'NR > 1 && $NF ~ /[\/\\]claude(\.exe)?$/ { print $4 }'
+}
+
+cc_session_running() { # $1 = name, $2 = directory (msys path) -> 0 = already running
+  local want_name="$1" want_dir="$2" f n c win pid pids
+  local dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
+  [[ -d "$dir" ]] || return 1
+
+  # msys path -> the Windows form the registry uses; without cygpath (not msys)
+  # rewrite /d/x by hand, or the cwd branch is dead and only the name ever matches.
+  win="$(cygpath -m "$want_dir" 2>/dev/null || printf '%s' "$want_dir" | sed -E 's|^/([a-zA-Z])/|\1:/|')"
+  win="$(printf '%s' "$win" | tr 'A-Z' 'a-z' | tr -s '/' | sed 's|/$||')"
+  pids="${CC_LIVE_PIDS-$(cc_live_claude_pids)}"
+
+  for f in "$dir"/*.json; do
+    [[ -f "$f" ]] || continue
+    # A dead pid is a leftover entry and does not count. No pid field: same.
+    pid="$(grep -oE '"pid":[0-9]+' "$f" | head -1 | cut -d: -f2)"
+    [[ -n "$pid" ]] && grep -qx "$pid" <<<"$pids" || continue
+    n="$(grep -oE '"name":"[^"]*"' "$f" | head -1 | cut -d'"' -f4 | tr 'A-Z' 'a-z')"
+    c="$(grep -oE '"cwd":"[^"]*"' "$f" | head -1 | cut -d'"' -f4 \
+         | awk '{ gsub(/\\\\/,"/"); print tolower($0) }' | tr -s '/' | sed 's|/$||')"
+    [[ -n "$c" && "$c" == "$win" ]] && return 0
+    [[ -n "$n" && "$n" == "$(printf '%s' "$want_name" | tr 'A-Z' 'a-z')" ]] && return 0
+  done
+  return 1
+}
+
 # cc_launch — starts ONE entry in its own mintty window.
 # Format:  "name|path"  or  "name|path|extra-args"  (3rd field passed to claude as-is).
-# Returns: 0 = started, 1 = skipped (directory missing).
+# Returns: 0 = started, 1 = skipped (directory missing),
+#          2 = already running (not an error, see cc_session_running).
 cc_launch() {
   local entry="$1" name rest dir extra=""
   name="${entry%%|*}"
@@ -48,6 +114,15 @@ cc_launch() {
   if [[ ! -d "$dir" ]]; then
     echo "[skipped] $name: directory '$dir' does not exist." >&2
     return 1
+  fi
+
+  # Its own return value, not 1: "already running" is the normal case on a second
+  # run and must not keep the starter console open as an error.
+  # CC_FORCE=1 (--force) starts anyway — there are legitimate cases, e.g. a second
+  # window on the same project for a quick job on the side.
+  if [[ "${CC_FORCE:-0}" != "1" ]] && cc_session_running "$name" "$dir"; then
+    echo "[running] $name: a session is already running in '$dir' — not started again." >&2
+    return 2
   fi
 
   # Start prompt: '--continue' alone runs NO turn — the session is there, but never
