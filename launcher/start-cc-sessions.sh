@@ -5,7 +5,7 @@
 # Mechanics: _lib.sh (identical on every machine)
 # Data:      projects.<host>.conf  (example: projects.example.conf)
 #
-# From Git Bash:   ./start-cc-sessions.sh [--force]
+# From Git Bash:   ./start-cc-sessions.sh [--force] [--no-pull]
 # By double click: start-cc.cmd (finds this script relative to itself).
 #
 # Resuming: the launch passes '--continue'. If --remote-control falls back to a NEW
@@ -13,6 +13,11 @@
 #
 # A project whose session is already running is not started again (registry
 # ~/.claude/sessions/, live pid only — see cc_session_running). --force starts anyway.
+#
+# Before each start the project repo is pulled from 'vps' (fast-forward only; a failure
+# is reported and the session starts anyway — cc_pull_before_start in _lib.sh), because
+# sessions alternate between machines and the state only travels by push/pull.
+# --no-pull skips that, e.g. offline.
 
 set -euo pipefail
 
@@ -21,14 +26,17 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/_lib.sh"
 
 force=0
+nopull=0
 for arg in "$@"; do
   case "$arg" in
     --force) force=1 ;;
-    -h|--help) echo "usage: $(basename "$0") [--force]"; exit 0 ;;
-    *) echo "[error] unknown argument '$arg' (allowed: --force)." >&2; exit 2 ;;
+    --no-pull) nopull=1 ;;
+    -h|--help) echo "usage: $(basename "$0") [--force] [--no-pull]"; exit 0 ;;
+    *) echo "[error] unknown argument '$arg' (allowed: --force, --no-pull)." >&2; exit 2 ;;
   esac
 done
 export CC_FORCE="$force"
+export CC_NO_PULL="$nopull"
 
 cfg="$(cc_resolve_config)" || { read -n 1 -s -r -p "Press any key to close ..."; echo; exit 1; }
 # shellcheck source=/dev/null

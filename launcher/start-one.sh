@@ -2,11 +2,13 @@
 #
 # start-one.sh — starts exactly ONE session from the host config.
 #
-# Usage:  ./start-one.sh [--force] "<project name>"
+# Usage:  ./start-one.sh [--force] [--no-pull] "<project name>"
 #
 # Finds the entry in projects.<host>.conf — including ones disabled with #off
 # (starting something once does not make it an autostart). Used by the session
 # manager (session-manager.ps1), but works directly from Git Bash too.
+# --no-pull: do not pull the project repo from 'vps' before the start (see
+# cc_pull_before_start in _lib.sh) — e.g. offline.
 
 set -euo pipefail
 
@@ -15,9 +17,18 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/_lib.sh"
 
 force=0
-if [[ "${1:-}" == "--force" ]]; then force=1; shift; fi
-name="${1:?usage: start-one.sh [--force] <project name>}"
+nopull=0
+name=""
+for arg in "$@"; do
+  case "$arg" in
+    --force) force=1 ;;
+    --no-pull) nopull=1 ;;
+    *) name="$arg" ;;
+  esac
+done
+[[ -n "$name" ]] || { echo "usage: start-one.sh [--force] [--no-pull] <project name>" >&2; exit 2; }
 export CC_FORCE="$force"
+export CC_NO_PULL="${CC_NO_PULL:-$nopull}"
 
 # Return 2 from cc_launch means "already running" and is NOT a failure — the
 # session manager reads the exit code and would otherwise report an error where

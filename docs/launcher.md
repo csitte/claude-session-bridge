@@ -54,6 +54,42 @@ Two details that are easy to get wrong and cost us an evening each:
   `mintty -e bash -lc "…"`, i.e. two levels of nested quoting, and the backticks that markdown
   wording is full of would be command substitutions there. `$(cat file)` sidesteps all of it.
 
+## Alternating between two machines: pull before the start, memory in the repo
+
+When sessions alternate between two machines, only what is pushed travels — the repo and
+the bridge — and **not** the profile under `~/.claude/` (memory, transcripts, settings,
+commands). Two pieces of mechanics for that:
+
+**Pull before the start.** `cc_launch` pulls the project repo from a remote named `vps`
+(else from the branch's upstream) before the session starts — fast-forward only. A local
+lead, a dirty tree or a sleeping remote are **reported**, and the session starts anyway: a
+silently skipped pull would be the worse failure. Not a repo: silent. `--no-pull` (both
+starters) or `CC_NO_PULL=1` skips the step, e.g. offline. ssh runs with `ConnectTimeout=5`
+and `BatchMode` so that neither a sleeping host nor a passphrase prompt holds up the start.
+
+**Memory in the repo.** Claude Code keeps a project's memory under
+`~/.claude/projects/<slug>/memory/`, and the slug is the **path** (`D--work-app` on one
+machine, `C--work-app` on the other) — so it never travels. `launcher/link-memory.sh` moves
+it to `<repo>/memory/` and turns the profile path into a junction (Windows) or symlink
+pointing there; once per machine:
+
+```bash
+bash launcher/link-memory.sh /d/work/app
+```
+
+From then on the memory rides the push the wrap-up makes anyway, and every memory write
+shows up as a diff in `git status`. The script refuses to merge a file that differs on both
+sides (abort, nothing touched), reports "already linked" on a second run, and cross-checks
+by listing the repo **through** the link. Removing the junction again: `rm <path>` in Git
+Bash (msys treats it as a link; `rmdir` says "Not a directory"). Checked: `rm` and `rm -rf`
+in Git Bash do **not** follow the junction, the repo stays intact — with PowerShell
+`Remove-Item -Recurse` that depends on the version, so do not delete there.
+
+The counterparts when leaving a machine belong in the wrap-up ritual: WIP commit and push
+are mandatory, the hand-over goes into a file that travels (the memory), the session is
+closed (two live sessions in one project both answer the same threads and both commit),
+and the sync client is given time to upload before the machine sleeps.
+
 ## A running session is not started twice
 
 Neither the launcher nor the session manager used to check whether a project already had a

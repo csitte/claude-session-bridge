@@ -100,6 +100,40 @@ cc_session_running() { # $1 = name, $2 = directory (msys path) -> 0 = already ru
   return 1
 }
 
+# cc_pull_before_start — pulls the project repo from 'vps' (else from the upstream)
+# BEFORE the session starts. Motivation: sessions alternate between two machines, and
+# the launcher used to start whatever state happened to be on disk — CLAUDE.md,
+# scripts and (with link-memory.sh) the memory only travel by push/pull.
+# Fast-forward only. A local lead, a dirty tree, a sleeping remote are REPORTED and the
+# session starts anyway: a silently skipped pull would be the worse failure (same rule
+# as a lost --continue). Not a repo: silent. Neither 'vps' nor an upstream: said, not
+# pulled. CC_NO_PULL=1 (--no-pull) skips the step, e.g. offline. ssh with ConnectTimeout
+# and BatchMode so that neither a sleeping remote nor a passphrase prompt holds up the
+# start. Always returns 0 — the pull never decides about the start.
+cc_pull_before_start() { # $1 = name, $2 = directory (msys path)
+  local name="$1" dir="$2" remote branch before after out
+  [[ "${CC_NO_PULL:-0}" == "1" ]] && return 0
+  git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  if git -C "$dir" remote get-url vps >/dev/null 2>&1; then
+    remote=vps; branch="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true)"
+  elif branch="$(git -C "$dir" rev-parse --abbrev-ref '@{u}' 2>/dev/null)"; then
+    remote="${branch%%/*}"; branch="${branch#*/}"
+  else
+    echo "[pull] $name: neither a remote 'vps' nor an upstream -- not pulled." >&2; return 0
+  fi
+  [[ -n "$branch" ]] || { echo "[pull] $name: no branch (detached HEAD) -- not pulled." >&2; return 0; }
+  before="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || true)"
+  if out="$(GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o ConnectTimeout=5 -o BatchMode=yes" \
+            git -C "$dir" pull --ff-only "$remote" "$branch" 2>&1)"; then
+    after="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || true)"
+    [[ "$before" == "$after" ]] || echo "[pull] $name: $remote/$branch caught up ($before -> $after)." >&2
+  else
+    echo "[pull] $name: $remote/$branch NOT pulled -- the session starts with the state on disk:" >&2
+    printf '       %s\n' "$(printf '%s\n' "$out" | grep -v '^$' | tail -3)" >&2
+  fi
+  return 0
+}
+
 # cc_launch — starts ONE entry in its own mintty window.
 # Format:  "name|path"  or  "name|path|extra-args"  (3rd field passed to claude as-is).
 # Returns: 0 = started, 1 = skipped (directory missing),
@@ -124,6 +158,10 @@ cc_launch() {
     echo "[running] $name: a session is already running in '$dir' — not started again." >&2
     return 2
   fi
+
+  # Pull first, then start — otherwise the session runs on the other machine's state
+  # from yesterday (see cc_pull_before_start).
+  cc_pull_before_start "$name" "$dir"
 
   # Start prompt: '--continue' alone runs NO turn — the session is there, but never
   # executes the arming ritual from its CLAUDE.md. After one machine restart we

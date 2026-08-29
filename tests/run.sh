@@ -957,6 +957,97 @@ test_launcher() {
   assert_eq "no registry at all -> not running (start proceeds)"     "not"     "$(run liveproj /d/work/liveproj 1717 "$TMPROOT/none.$RANDOM")"
 }
 
+# --------------------------------------------------------------------------
+# launcher: pull before the start
+# --------------------------------------------------------------------------
+
+test_pull() {
+  head_ "launcher: pull from 'vps' before the start (fast-forward only, never fatal)"
+  local root="$TMPROOT/pull.$RANDOM"; mkdir -p "$root"
+  local G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
+  $G init -q --bare "$root/bare.git"   # $G: the bare HEAD must name the same default branch
+  $G init -q "$root/a"
+  ( cd "$root/a" && echo one > f && $G add f && $G commit -qm one && git remote add vps "$root/bare.git" && git push -q vps HEAD:main )
+  git clone -q "$root/bare.git" "$root/b"; ( cd "$root/b" && git remote rename origin vps )
+  ( cd "$root/a" && echo two > f && $G commit -qam two && git push -q vps HEAD:main )
+  pull() { # $1=dir [$2=CC_NO_PULL] -> stderr lines + "rc=N"
+    ( export CC_NO_PULL="${2:-0}"
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      cc_pull_before_start proj "$1" 2>&1; echo "rc=$?" )
+  }
+  local out
+  out="$(pull "$root/b")"
+  assert_eq "a fast-forward pull catches up" "two" "$(cat "$root/b/f")"
+  if printf '%s\n' "$out" | grep -q 'caught up'; then ok "... and says so"; else bad "... and says so" "$out"; fi
+  out="$(pull "$root/b")"
+  if printf '%s\n' "$out" | grep -q '^\[pull\]'; then bad "nothing to pull -> silent" "$out"; else ok "nothing to pull -> silent"; fi
+  # local changes in the way: reported, not fatal, tree untouched
+  ( cd "$root/a" && echo three > f && $G commit -qam three && git push -q vps HEAD:main )
+  echo local > "$root/b/f"
+  out="$(pull "$root/b")"
+  assert_eq "a pull that would overwrite local changes leaves the tree alone" "local" "$(cat "$root/b/f")"
+  if printf '%s\n' "$out" | grep -q 'NOT pulled'; then ok "... and reports it"; else bad "... and reports it" "$out"; fi
+  if printf '%s\n' "$out" | grep -q '^rc=0$'; then ok "... and returns 0 (the pull never decides about the start)"; else bad "... and returns 0" "$out"; fi
+  git -C "$root/b" checkout -q -- f
+  out="$(pull "$root/b" 1)"
+  assert_eq "CC_NO_PULL=1 skips the pull" "two" "$(cat "$root/b/f")"
+  assert_eq "... silently" "rc=0" "$out"
+  # no 'vps' but an upstream: pull from there
+  git clone -q "$root/bare.git" "$root/c"
+  ( cd "$root/a" && echo four > f && $G commit -qam four && git push -q vps HEAD:main )
+  pull "$root/c" >/dev/null
+  assert_eq "without 'vps' the upstream is used" "four" "$(cat "$root/c/f")"
+  # neither: said, not pulled
+  $G init -q "$root/d"; ( cd "$root/d" && echo x > f && $G add f && $G commit -qm x )
+  out="$(pull "$root/d")"
+  if printf '%s\n' "$out" | grep -q 'neither'; then ok "neither vps nor upstream -> said, not pulled"; else bad "neither vps nor upstream -> said, not pulled" "$out"; fi
+  # not a repo: silent
+  mkdir -p "$root/e"
+  assert_eq "not a repo -> silent, rc 0" "rc=0" "$(pull "$root/e")"
+}
+
+# --------------------------------------------------------------------------
+# link-memory: profile memory -> repo, linked
+# --------------------------------------------------------------------------
+
+test_linkmemory() {
+  head_ "link-memory: profile memory moves into the repo, profile path becomes a link"
+  local LM="$ROOT/launcher/link-memory.sh"
+  local cfg="$TMPROOT/lmcfg.$RANDOM"; mkdir -p "$cfg"
+  local repo="$TMPROOT/lmrepo.$RANDOM"; mkdir -p "$repo"
+  # the slug the way Claude Code derives it (Windows form under msys, every non-alnum -> '-')
+  local native slug mem out rc
+  native="$(cygpath -w "$repo" 2>/dev/null || printf '%s' "$repo")"
+  slug="$(printf '%s' "$native" | sed 's/[^A-Za-z0-9]/-/g')"
+  mem="$cfg/projects/$slug/memory"
+  mkdir -p "$mem"; echo idx > "$mem/MEMORY.md"; echo a > "$mem/a.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" -n "$repo" 2>&1)" || rc=$?
+  assert_eq "-n: exit 0" "0" "$rc"
+  assert_eq "-n changes nothing" "" "$(ls -A "$repo")"
+  if printf '%s\n' "$out" | grep -q '2 file(s) from the profile'; then ok "-n announces the move"; else bad "-n announces the move" "$out"; fi
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" "$repo" 2>&1)" || rc=$?
+  assert_eq "link: exit 0" "0" "$rc"
+  assert_eq "the files moved into the repo" "MEMORY.md a.md" "$(ls -A "$repo/memory" | LC_ALL=C sort | paste -sd' ' -)"
+  assert_eq "ls through the link shows the repo" "MEMORY.md a.md" "$(ls -A "$mem" | LC_ALL=C sort | paste -sd' ' -)"
+  echo b > "$mem/b.md"
+  assert_eq "a write through the link lands in the repo" "b" "$(cat "$repo/memory/b.md")"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" "$repo" 2>&1)" || rc=$?
+  if [[ $rc -eq 0 ]] && printf '%s\n' "$out" | grep -q 'already linked'; then ok "second run: already linked, exit 0"; else bad "second run: already linked, exit 0" "$out"; fi
+  # same file, different content on both sides -> abort, nothing touched
+  local cfg2="$TMPROOT/lmcfg2.$RANDOM" mem2; mem2="$cfg2/projects/$slug/memory"; mkdir -p "$mem2"
+  echo other > "$mem2/a.md"; echo idx > "$mem2/MEMORY.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg2" bash "$LM" "$repo" 2>&1)" || rc=$?
+  assert_eq "conflict -> exit 1" "1" "$rc"
+  assert_eq "conflict -> profile untouched" "other idx" "$(cat "$mem2/a.md" "$mem2/MEMORY.md" | paste -sd' ' -)"
+  assert_eq "conflict -> repo untouched" "a" "$(cat "$repo/memory/a.md")"
+  if printf '%s\n' "$out" | grep -q 'a.md'; then ok "conflict names the file"; else bad "conflict names the file" "$out"; fi
+  # no profile memory at all -> created and linked
+  local cfg3="$TMPROOT/lmcfg3.$RANDOM"; mkdir -p "$cfg3"
+  CLAUDE_CONFIG_DIR="$cfg3" bash "$LM" "$repo" >/dev/null 2>&1
+  assert_eq "missing profile memory -> link created" "MEMORY.md a.md b.md" "$(ls -A "$cfg3/projects/$slug/memory" | LC_ALL=C sort | paste -sd' ' -)"
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   install) test_install ;;
@@ -965,8 +1056,10 @@ case "${1:-all}" in
   coverage) test_coverage ;;
   checkout) test_checkout ;;
   launcher) test_launcher ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|all]" >&2; exit 64 ;;
+  pull) test_pull ;;
+  linkmemory) test_linkmemory ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"
