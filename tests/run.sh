@@ -1240,6 +1240,31 @@ test_stamp() {
   echo idx > "$memS/MEMORY.md"; printf 'somehost 2026-08-30T07:11:51Z 1\n' > "$memS/.last-wrap"
   SESSION_MEMORY_DIR="$cloudS" CLAUDE_CONFIG_DIR="$cfgS" bash "$LM" --cloud --name m "$repoS" >/dev/null 2>&1
   assert_eq "the stamp does not travel into the target" "MEMORY.md" "$(ls -A "$cloudS/m" | LC_ALL=C sort | paste -sd' ' -)"
+  # THE case the count exists for: nothing but the stamp is there yet. Both the stamp and
+  # the launcher line used to count with `ls | grep -v`, which returns 1 when nothing is
+  # left -- with `set -euo pipefail` in the callers that aborted the run instead of warning.
+  local cfgE="$TMPROOT/stcfg3.$RANDOM" repoE slugE memE
+  repoE="$TMPROOT/strepo4.$RANDOM"; mkdir -p "$repoE"
+  slugE="$(printf '%s' "$(cygpath -w "$repoE" 2>/dev/null || printf '%s' "$repoE")" | sed 's/[^A-Za-z0-9]/-/g')"
+  memE="$cfgE/projects/$slugE/memory"; mkdir -p "$memE"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfgE" bash "$LM" --stamp "$repoE" 2>&1)" || rc=$?
+  assert_eq "--stamp on an empty memory: exit 0, not a silent abort" "0" "$rc"
+  assert_eq "--stamp on an empty memory counts 0" "0" "$(cut -d' ' -f3 < "$memE/.last-wrap")"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfgE" bash "$LM" --stamp "$repoE" 2>&1)" || rc=$?
+  assert_eq "--stamp with only the stamp present: still exit 0" "0" "$rc"
+  printf 'other-host 2026-08-30T07:00:00Z 5\n' > "$memE/.last-wrap"
+  out="$( CLAUDE_CONFIG_DIR="$cfgE" bash -c '
+            set -euo pipefail
+            # shellcheck source=/dev/null
+            source "$1/launcher/_lib.sh"
+            cc_memory_state proj "$2"
+            echo REACHED' _ "$ROOT" "$repoE" 2>&1 )"
+  if printf '%s\n' "$out" | grep -q '5 file(s) expected, 0 present'; then
+    ok "the launcher reports a shortfall when only the stamp has arrived"
+  else bad "the launcher reports a shortfall when only the stamp has arrived" "$out"; fi
+  if printf '%s\n' "$out" | grep -q '^REACHED$'; then
+    ok "... and the start run continues (no abort under set -euo pipefail)"
+  else bad "... and the start run continues (no abort under set -euo pipefail)" "$out"; fi
   # --stamp on a project without a linked memory: says so, exit 0
   local repo2; repo2="$TMPROOT/strepo2.$RANDOM"; mkdir -p "$repo2"
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo2" 2>&1)" || rc=$?

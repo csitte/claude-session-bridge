@@ -83,7 +83,11 @@ mem="$profile/projects/$slug/memory"
 # after writing and every start would report a shortfall. Exactly one `date -u` reading.
 if (( stamp )); then
   [[ -d "$mem" ]] || { echo "[stamp] no linked memory for '$slug' -- nothing to stamp."; exit 0; }
-  n=$(ls -A "$mem" 2>/dev/null | grep -vxF '.last-wrap' | wc -l | tr -d ' ')
+  # Counted with `find`, NOT with `ls | grep -v`: if nothing remains after filtering (an
+  # empty memory, or only the stamp itself present), `grep` returns 1, `pipefail` passes it
+  # on and `set -e` ends the script -- no stamp, no message. Exactly the cold-start case
+  # the count was built for. `find` returns 0 on no matches.
+  n=$(find "$mem" -maxdepth 1 -mindepth 1 ! -name '.last-wrap' 2>/dev/null | wc -l | tr -d ' ')
   printf '%s %s %s\n' "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$n" > "$mem/.last-wrap"
   echo "[stamp] $mem/.last-wrap: $(cat "$mem/.last-wrap")"
   exit 0

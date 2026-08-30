@@ -163,7 +163,10 @@ cc_memory_state() { # $1 = name, $2 = directory (msys path)
   [[ -d "$mem" && -r "$mem/.last-wrap" ]] || return 0
   read -r shost sts scount < "$mem/.last-wrap" 2>/dev/null || return 0
   [[ -n "$scount" && "$scount" != *[!0-9]* ]] || return 0
-  actual="$(ls -A "$mem" 2>/dev/null | grep -vxF '.last-wrap' | wc -l | tr -d ' ')"
+  # `find`, not `ls | grep -v`: if ONLY the stamp is there -- the cold-start case this
+  # function exists for -- `grep` returns 1, and the starters run with `set -euo pipefail`,
+  # so the warning would have aborted the whole start run instead of warning. Measured.
+  actual="$(find "$mem" -maxdepth 1 -mindepth 1 ! -name '.last-wrap' 2>/dev/null | wc -l | tr -d ' ')"
   # Age only if `date -d` understands the stamp -- otherwise show the raw time.
   if ts_s="$(date -u -d "$sts" +%s 2>/dev/null)" && now_s="$(date -u +%s)"; then
     age=" ($(( (now_s - ts_s) / 60 )) min ago)"
