@@ -1373,11 +1373,63 @@ test_lineendings() {
   else bad "the CR check detects a CRLF file (it can go red)" "probe not detected"; fi
 }
 
+# --------------------------------------------------------------------------
+# process inventory: both spellings of the id in a watcher command line
+# --------------------------------------------------------------------------
+
+# The arming paragraph exists in two forms: with a literal id, and -- for checkouts that
+# share one CLAUDE.md -- as `$(head -1 <tree>/.session-id)`. The wrapper process carries the
+# line UNEXPANDED, so an inventory that only knows literal ids attributes the wrapper to no
+# id at all. In the field that made `--status` call a delivering session a silent remnant,
+# and the next arm reaped the working wrapper. The processes cannot be reproduced here, but
+# the RULE can: the same two regexes the script uses, against both spellings.
+test_inventory_ids() {
+  head_ "process inventory: literal id and the .session-id form both resolve"
+  if ! has_inventory; then
+    printf '  skip no PowerShell — the inventory regexes cannot be exercised here\n'
+    return 0
+  fi
+  local W="$ROOT/bridge/watch-bridge.sh"
+  local rx rxs sid="$TMPROOT/inv.$RANDOM"
+  mkdir -p "$sid"; printf 'app\n' > "$sid/.session-id"
+  # Fixed-string search on purpose: the lines start with a literal `$`, and escaping that
+  # through bash into a regex is exactly the kind of quoting that fails silently and would
+  # leave the check green over an empty pattern.
+  rx="$(grep -m1 -F '$rx  = ' "$W" | sed 's/^[^"]*"//; s/"$//')"
+  rxs="$(grep -m1 -F '$rxs = ' "$W" | sed "s/^[^']*'//; s/'\$//")"
+  if [[ -z "$rx" || -z "$rxs" ]]; then
+    bad "both id patterns are present in the inventory" "rx='$rx' rxs='$rxs'"; return 0
+  fi
+  ok "both id patterns are present in the inventory"
+  local win; win="$(cygpath -m "$sid" 2>/dev/null || printf '%s' "$sid")"
+  # The literal-id pattern contains single quotes itself; inside a PowerShell single-quoted
+  # string each one has to be doubled, or the snippet dies with a parser error and the test
+  # would report a mismatch that is the harness's fault, not the script's.
+  local rxq="${rx//\'/\'\'}" rxsq="${rxs//\'/\'\'}"
+  local out
+  out="$(powershell.exe -NoProfile -NonInteractive -Command "
+    \$rx = '$rxq'; \$rxs = '$rxsq'
+    \$lines = @(
+      'bash -c ''bash /x/watch-bridge.sh app''',
+      'bash -c ''bash /x/watch-bridge.sh \$(head -1 $win/.session-id)'''
+    )
+    foreach (\$l in \$lines) {
+      \$id = \$null
+      if (\$l -match \$rx) { \$id = \$Matches[1] }
+      if (-not \$id -and \$l -match \$rxs) {
+        try { \$id = (Get-Content -LiteralPath \$Matches[1] -TotalCount 1 -ErrorAction Stop).Trim() } catch { \$id = \$null }
+      }
+      if (\$id) { \$id } else { 'NONE' }
+    }" 2>/dev/null | tr -d '\r' | paste -sd' ' -)"
+  assert_eq "both spellings resolve to the same id" "app app" "$out"
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   stamp) test_stamp ;;
   ruleparity) test_ruleparity ;;
   lineendings) test_lineendings ;;
+  inventoryids) test_inventory_ids ;;
   install) test_install ;;
   numbers) test_numbers ;;
   newthread) test_new_thread ;;
@@ -1386,8 +1438,8 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

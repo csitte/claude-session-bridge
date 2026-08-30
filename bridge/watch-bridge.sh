@@ -399,10 +399,23 @@ Get-CimInstance Win32_Process | ForEach-Object { $all[[int]$_.ProcessId] = $_ }
 $now = Get-Date
 # First character deliberately excludes "-": otherwise our own `--status` call matches as an id.
 $rx  = "watch-bridge\.sh'?\s+'?([A-Za-z0-9._][A-Za-z0-9._-]*)"
+# Second form: the arming paragraph written by `install-watcher.sh --shared` passes the id
+# NOT literally but as `$(head -1 <tree>/.session-id)`. In the wrapper process that line
+# stands UNEXPANDED, while the script process carries the resolved value. The id regex above
+# therefore matched only the script process; the live wrapper under claude.exe stayed without
+# an id, `delivering` was never set, and `--status` reported a delivering session as a silent
+# remnant. Worse than the false alarm: the next arm reaped the working wrapper as a supposed
+# remnant. Reported from the field and measured (wrapper under claude.exe, regex no match).
+# The file is named in the command line -- so read it.
+$rxs = 'watch-bridge\.sh\s+\$\(head -1 ([^)]+\.session-id)\)'
 foreach ($p in $all.Values) {
   if ($p.Name -ne 'bash.exe') { continue }
-  if ($p.CommandLine -notmatch $rx) { continue }
-  $id    = $Matches[1]
+  $id = $null
+  if ($p.CommandLine -match $rx)  { $id = $Matches[1] }
+  if (-not $id -and $p.CommandLine -match $rxs) {
+    try { $id = (Get-Content -LiteralPath $Matches[1] -TotalCount 1 -ErrorAction Stop).Trim() } catch { $id = $null }
+  }
+  if (-not $id) { continue }
   $kind  = if ($p.CommandLine -like '* -c *') { 'wrapper' } else { 'script' }
   $under = 0
   if ($kind -eq 'wrapper') {
