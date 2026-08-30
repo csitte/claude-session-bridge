@@ -556,6 +556,15 @@ coverage_hint() {
   done
   echo "         Not fixable from outside: that session has to arm the monitor tool itself"
   echo "         (the arming paragraph in its CLAUDE.md) — or it gets restarted."
+  # And not by message either. The bridge route is out by definition (no watcher — that is
+  # the finding), and a native cross-session message is held when the recipient's inbound
+  # policy is set to hold, i.e. it waits for a human. Someone tried exactly that and got the
+  # "held for approval" notice three minutes later. Both routes end at a person; the shortest
+  # is to ask them directly. The line lives here because this output is where the wrong
+  # assumption is formed.
+  echo "         Not reachable by message either: the bridge needs a watcher (which is what"
+  echo "         is missing), and a native message is held if inbound approval is required."
+  echo "         Someone has to type something in that session's window."
 }
 
 # One directory, two spellings: msys (`/tmp/x`) and Windows
