@@ -1349,10 +1349,35 @@ test_ruleparity() {
   else ok "watch-bridge reads the same table (no suspicion in the matching directory)"; fi
 }
 
+# --------------------------------------------------------------------------
+# shipped scripts: LF only
+# --------------------------------------------------------------------------
+
+# A tooling trap, not a code bug: several editors and some scripting languages write CRLF by
+# default on Windows, and a shell script with CR endings fails in ways that read like a syntax
+# error somewhere else. `.gitattributes` keeps the COMMIT clean -- which is exactly why a
+# working copy can be broken while everything looks fine in git. The warning against this
+# lived in a notes file: read when looking something up, not when typing. So it lives here
+# now, where it fires at the moment the change is made -- the test run before the push.
+test_lineendings() {
+  head_ "shipped scripts have LF line endings"
+  local f broken=""
+  for f in "$ROOT"/bridge/*.sh "$ROOT"/launcher/*.sh "$ROOT"/tests/*.sh; do
+    [[ -f "$f" ]] || continue
+    if LC_ALL=C grep -qU $'\r' "$f"; then broken+="${broken:+ }${f##*/}"; fi
+  done
+  assert_eq "no shell script carries CR (a CRLF script fails in confusing ways)" "" "$broken"
+  # the check must be able to fail -- otherwise it guards nothing
+  local probe="$TMPROOT/crlf.$RANDOM.sh"; printf '#!/bin/sh\r\necho hi\r\n' > "$probe"
+  if LC_ALL=C grep -qU $'\r' "$probe"; then ok "the CR check detects a CRLF file (it can go red)"
+  else bad "the CR check detects a CRLF file (it can go red)" "probe not detected"; fi
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   stamp) test_stamp ;;
   ruleparity) test_ruleparity ;;
+  lineendings) test_lineendings ;;
   install) test_install ;;
   numbers) test_numbers ;;
   newthread) test_new_thread ;;
@@ -1361,8 +1386,8 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"
