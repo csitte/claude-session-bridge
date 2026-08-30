@@ -1265,6 +1265,43 @@ test_stamp() {
   if printf '%s\n' "$out" | grep -q '^REACHED$'; then
     ok "... and the start run continues (no abort under set -euo pipefail)"
   else bad "... and the start run continues (no abort under set -euo pipefail)" "$out"; fi
+  # THE case a real deployment always has: the memory is reached THROUGH A LINK. `ls`
+  # follows it, `find` without -L does not -- an interim fix using plain `find` counted 0,
+  # which makes `actual < scount` unsatisfiable and silences the shortfall warning for every
+  # migrated project. A test against a plain directory cannot see that.
+  local cfgL="$TMPROOT/stcfg4.$RANDOM" repoL slugL memL realL
+  repoL="$TMPROOT/strepo5.$RANDOM"; realL="$TMPROOT/streal.$RANDOM"
+  mkdir -p "$repoL" "$realL"; echo a > "$realL/a.md"; echo b > "$realL/b.md"; echo c > "$realL/c.md"
+  slugL="$(printf '%s' "$(cygpath -w "$repoL" 2>/dev/null || printf '%s' "$repoL")" | sed 's/[^A-Za-z0-9]/-/g')"
+  memL="$cfgL/projects/$slugL/memory"; mkdir -p "$(dirname "$memL")"
+  if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+    powershell.exe -NoProfile -NonInteractive -Command \
+      "New-Item -ItemType Junction -Path '$(cygpath -w "$memL")' -Target '$(cygpath -w "$realL")' | Out-Null" >/dev/null 2>&1
+  else
+    ln -s "$realL" "$memL"
+  fi
+  CLAUDE_CONFIG_DIR="$cfgL" bash "$LM" --stamp "$repoL" >/dev/null 2>&1
+  assert_eq "--stamp counts THROUGH the link, not 0" "3" "$(cut -d' ' -f3 < "$realL/.last-wrap")"
+  printf 'other-host 2026-08-30T07:00:00Z 5\n' > "$realL/.last-wrap"
+  out="$( CLAUDE_CONFIG_DIR="$cfgL" bash -c '
+            set -euo pipefail
+            # shellcheck source=/dev/null
+            source "$1/launcher/_lib.sh"
+            cc_memory_state proj "$2"
+            echo REACHED' _ "$ROOT" "$repoL" 2>&1 )"
+  if printf '%s\n' "$out" | grep -q '5 file(s) expected, 3 present'; then
+    ok "the shortfall warning fires through the link"
+  else bad "the shortfall warning fires through the link" "$out"; fi
+  if printf '%s\n' "$out" | grep -q '^REACHED$'; then ok "... and the run continues"; else bad "... and the run continues" "$out"; fi
+  rm -f "$realL"/*.md
+  out="$( CLAUDE_CONFIG_DIR="$cfgL" bash -c '
+            set -euo pipefail
+            source "$1/launcher/_lib.sh"
+            cc_memory_state proj "$2"
+            echo REACHED' _ "$ROOT" "$repoL" 2>&1 )"
+  if printf '%s\n' "$out" | grep -q '5 file(s) expected, 0 present' && printf '%s\n' "$out" | grep -q REACHED; then
+    ok "an empty linked memory reports 0 and does not abort"
+  else bad "an empty linked memory reports 0 and does not abort" "$out"; fi
   # --stamp on a project without a linked memory: says so, exit 0
   local repo2; repo2="$TMPROOT/strepo2.$RANDOM"; mkdir -p "$repo2"
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo2" 2>&1)" || rc=$?
@@ -1272,9 +1309,50 @@ test_stamp() {
   if printf '%s\n' "$out" | grep -q 'nothing to stamp'; then ok "... and says so"; else bad "... and says so" "$out"; fi
 }
 
+# --------------------------------------------------------------------------
+# the participant-table rule exists in more than one file -- keep them equal
+# --------------------------------------------------------------------------
+
+# Suggested by the coordinating session after a backslash fix had to be applied by hand to
+# every copy of this rule: instead of carrying the duplication as a documented debt, let a
+# test carry it. It compares the rule's defining lines across the files that implement it,
+# and runs one shared fixture through both, so divergence goes red on its own.
+test_ruleparity() {
+  head_ "participant-table rule: all copies stay identical"
+  local a="$ROOT/bridge/watch-bridge.sh" b="$ROOT/launcher/link-memory.sh"
+  rule() { # the defining lines of the parse rule, whitespace-normalised
+    grep -hE 'gsub\(/\[ `\]/|split\(\$4, parts|p=parts\[i\]|print id "\\t" tolower\(p\)' "$1" \
+      | sed 's/^[[:space:]]*//; s/[[:space:]]\{1,\}/ /g' | LC_ALL=C sort
+  }
+  assert_eq "watch-bridge.sh and link-memory.sh parse the table with the same rule" \
+    "$(rule "$a")" "$(rule "$b")"
+  if [[ -n "$(rule "$a")" ]]; then ok "the rule was actually found (the check can go red)"
+  else bad "the rule was actually found (the check can go red)" "grep matched nothing"; fi
+  # and one shared fixture through both implementations
+  local bridge="$TMPROOT/parity.$RANDOM"; mkdir -p "$bridge/threads/001-x/msgs"
+  local proj="$TMPROOT/parityproj.$RANDOM"; mkdir -p "$proj"
+  local win; win="$(cygpath -w "$proj" 2>/dev/null || printf '%s' "$proj")"
+  {
+    printf '| id | session | repo / working dir |\n|---|---|---|\n'
+    printf '| `app` | x | `%s` (`main`) |\n' "$win"          # backslashes on Windows, slashes on Linux
+  } > "$bridge/README.md"
+  local cfgP="$TMPROOT/paritycfg.$RANDOM" cloudP="$TMPROOT/paritycloud.$RANDOM"
+  mkdir -p "$cloudP"
+  SESSION_BRIDGE_DIR="$bridge" SESSION_MEMORY_DIR="$cloudP" CLAUDE_CONFIG_DIR="$cfgP" \
+    bash "$ROOT/launcher/link-memory.sh" --cloud "$proj" >/dev/null 2>&1
+  if [[ -d "$cloudP/app" ]]; then ok "link-memory resolves the fixture table to 'app'"
+  else bad "link-memory resolves the fixture table to 'app'" "$(ls "$cloudP")"; fi
+  # the watcher reads the same table: from the matching directory its id check stays silent
+  ( cd "$proj" && SESSION_BRIDGE_DIR="$bridge" bash "$a" --fold app 2>&1 ) > "$TMPROOT/parity.out" || true
+  if grep -q 'SUSPICION' "$TMPROOT/parity.out"; then
+    bad "watch-bridge reads the same table (no suspicion in the matching directory)" "$(cat "$TMPROOT/parity.out")"
+  else ok "watch-bridge reads the same table (no suspicion in the matching directory)"; fi
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   stamp) test_stamp ;;
+  ruleparity) test_ruleparity ;;
   install) test_install ;;
   numbers) test_numbers ;;
   newthread) test_new_thread ;;
@@ -1283,8 +1361,8 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

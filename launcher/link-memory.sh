@@ -83,11 +83,26 @@ mem="$profile/projects/$slug/memory"
 # after writing and every start would report a shortfall. Exactly one `date -u` reading.
 if (( stamp )); then
   [[ -d "$mem" ]] || { echo "[stamp] no linked memory for '$slug' -- nothing to stamp."; exit 0; }
-  # Counted with `find`, NOT with `ls | grep -v`: if nothing remains after filtering (an
-  # empty memory, or only the stamp itself present), `grep` returns 1, `pipefail` passes it
-  # on and `set -e` ends the script -- no stamp, no message. Exactly the cold-start case
-  # the count was built for. `find` returns 0 on no matches.
-  n=$(find "$mem" -maxdepth 1 -mindepth 1 ! -name '.last-wrap' 2>/dev/null | wc -l | tr -d ' ')
+  # Counting happens THROUGH the link, and `ls` and `find` differ there:
+  #   - `ls -A "$mem"` follows the link and counts correctly. Its only flaw was the exit
+  #     code: if nothing remains after filtering (an empty memory, or only the stamp
+  #     present), `grep` returns 1, `pipefail` passes it on and `set -e` ends the script.
+  #     Hence `{ grep … || true; }` -- exit code neutralised, behaviour unchanged.
+  #   - `find "$mem" -mindepth 1` does NOT follow the link (msys treats a junction like a
+  #     symlink) and therefore returned **0**. That was worse than the bug before it: `0`
+  #     makes the condition `actual < scount` unsatisfiable, so the shortfall warning could
+  #     never fire again -- for EVERY migrated project, because a link is what they have by
+  #     definition. "Loudly wrong" had become "silently wrong".
+  #
+  # So: two counts with tools that work DIFFERENTLY, and no stamp is written if they
+  # disagree. A number nobody cross-checks is a claim.
+  n=$(ls -A "$mem" 2>/dev/null | { grep -vxF '.last-wrap' || true; } | wc -l | tr -d ' ')
+  n2=$(find -L "$mem" -maxdepth 1 -mindepth 1 ! -name '.last-wrap' 2>/dev/null | wc -l | tr -d ' ')
+  if [[ "$n" != "$n2" ]]; then
+    echo "[ATTENTION] counts disagree (ls=$n, find=$n2) in $mem -- no stamp written." >&2
+    echo "            The stamp would be a claim; please look at what is there." >&2
+    exit 1
+  fi
   printf '%s %s %s\n' "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$n" > "$mem/.last-wrap"
   echo "[stamp] $mem/.last-wrap: $(cat "$mem/.last-wrap")"
   exit 0
