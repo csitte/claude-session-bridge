@@ -21,9 +21,10 @@
 #               PRODUCT repo: the memory is Claude's working notes (customers, prices,
 #               failures) and belongs in neither a public nor a shared history. The sync
 #               client carries it without a commit; version history is the cloud's own.
-#               The cloud root is machine-dependent (edit the list below, or set
-#               SESSION_MEMORY_DIR, which wins). <id>: --name, else line 1 of .session-id
-#               in the repo, else the directory name.
+#               Point SESSION_MEMORY_DIR at your sync folder (it is required unless you add
+#               your own machine paths to CLOUD_ROOTS below -- this script ships without
+#               any, because the folder differs per machine and per person).
+#               <id>: --name, else line 1 of .session-id in the repo, else the directory name.
 #
 # Cases:
 #   profile memory is already the link to the target      -> nothing to do (exit 0)
@@ -65,15 +66,20 @@ slug="$(printf '%s' "$native" | sed 's/[^A-Za-z0-9]/-/g')"
 profile="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 mem="$profile/projects/$slug/memory"
 
+# Your sync-folder roots, one per machine (e.g. "/d/SyncFolder" "/e/SyncFolder"). Empty on
+# purpose: the path differs per machine and per person, so SESSION_MEMORY_DIR is the
+# supported way and this list is only a convenience if you prefer to bake yours in.
+CLOUD_ROOTS=()
+
 if (( cloud )); then
   if [[ -n "${SESSION_MEMORY_DIR:-}" ]]; then
     root="${SESSION_MEMORY_DIR%/}"
   else
     root=""
-    for p in "/d/etc/Google Drive" "/f/Meine Ablage"; do   # machine-dependent cloud roots — adjust
+    for p in ${CLOUD_ROOTS[@]+"${CLOUD_ROOTS[@]}"}; do
       if [[ -d "$p" ]]; then root="$p/_session-memory"; break; fi
     done
-    [[ -n "$root" ]] || { echo "[error] no cloud folder found (set SESSION_MEMORY_DIR)." >&2; exit 1; }
+    [[ -n "$root" ]] || { echo "[error] no sync folder configured -- set SESSION_MEMORY_DIR (or fill CLOUD_ROOTS in this script)." >&2; exit 1; }
   fi
   if [[ -z "$name" && -r "$repo/.session-id" ]]; then name="$(head -1 "$repo/.session-id" | tr -d '\r[:space:]')"; fi
   [[ -n "$name" ]] || name="${repo##*/}"

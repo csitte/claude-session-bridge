@@ -970,8 +970,8 @@ test_pull() {
   ( cd "$root/a" && echo one > f && $G add f && $G commit -qm one && git remote add vps "$root/bare.git" && git push -q vps HEAD:main )
   git clone -q "$root/bare.git" "$root/b"; ( cd "$root/b" && git remote rename origin vps )
   ( cd "$root/a" && echo two > f && $G commit -qam two && git push -q vps HEAD:main )
-  pull() { # $1=dir [$2=CC_NO_PULL] -> stderr lines + "rc=N"
-    ( export CC_NO_PULL="${2:-0}"
+  pull() { # $1=dir [$2=CC_NO_PULL] [$3=CC_PULL_REMOTE] -> stderr lines + "rc=N"
+    ( export CC_NO_PULL="${2:-0}" CC_PULL_REMOTE="${3:-}"
       # shellcheck source=/dev/null
       source "$ROOT/launcher/_lib.sh"
       cc_pull_before_start proj "$1" 2>&1; echo "rc=$?" )
@@ -993,15 +993,22 @@ test_pull() {
   out="$(pull "$root/b" 1)"
   assert_eq "CC_NO_PULL=1 skips the pull" "two" "$(cat "$root/b/f")"
   assert_eq "... silently" "rc=0" "$out"
-  # no 'vps' but an upstream: pull from there
+  # a clone with an upstream but no CC_PULL_REMOTE: the upstream is used
   git clone -q "$root/bare.git" "$root/c"
   ( cd "$root/a" && echo four > f && $G commit -qam four && git push -q vps HEAD:main )
   pull "$root/c" >/dev/null
-  assert_eq "without 'vps' the upstream is used" "four" "$(cat "$root/c/f")"
+  assert_eq "without CC_PULL_REMOTE the upstream is used" "four" "$(cat "$root/c/f")"
+  # CC_PULL_REMOTE wins where it exists, and is ignored where it does not
+  ( cd "$root/a" && echo five > f && $G commit -qam five && git push -q vps HEAD:main )
+  pull "$root/b" 0 vps >/dev/null
+  assert_eq "CC_PULL_REMOTE names the remote to use" "five" "$(cat "$root/b/f")"
+  ( cd "$root/a" && echo six > f && $G commit -qam six && git push -q vps HEAD:main )
+  pull "$root/c" 0 nosuch >/dev/null
+  assert_eq "an unknown CC_PULL_REMOTE falls back to the upstream" "six" "$(cat "$root/c/f")"
   # neither: said, not pulled
   $G init -q "$root/d"; ( cd "$root/d" && echo x > f && $G add f && $G commit -qm x )
   out="$(pull "$root/d")"
-  if printf '%s\n' "$out" | grep -q 'neither'; then ok "neither vps nor upstream -> said, not pulled"; else bad "neither vps nor upstream -> said, not pulled" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'no upstream'; then ok "no upstream and no CC_PULL_REMOTE -> said, not pulled"; else bad "no upstream and no CC_PULL_REMOTE -> said, not pulled" "$out"; fi
   # not a repo: silent
   mkdir -p "$root/e"
   assert_eq "not a repo -> silent, rc 0" "rc=0" "$(pull "$root/e")"
@@ -1064,6 +1071,9 @@ test_linkmemory() {
   repo5="$TMPROOT/lmrepo5.$RANDOM"; mkdir -p "$repo5"
   slug5="$(printf '%s' "$(cygpath -w "$repo5" 2>/dev/null || printf '%s' "$repo5")" | sed 's/[^A-Za-z0-9]/-/g')"
   mem5="$cfg5/projects/$slug5/memory"; mkdir -p "$mem5"; echo idx > "$mem5/MEMORY.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg5" bash "$LM" --cloud "$repo5" 2>&1)" || rc=$?
+  assert_eq "--cloud without SESSION_MEMORY_DIR: refused, not guessed" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'no sync folder configured'; then ok "... and says how to configure it"; else bad "... and says how to configure it" "$out"; fi
   rc=0; out="$(SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg5" bash "$LM" --cloud "$repo5" 2>&1)" || rc=$?
   assert_eq "--cloud: exit 0" "0" "$rc"
   assert_eq "--cloud: the id defaults to the directory name" "MEMORY.md" "$(ls -A "$cloud/${repo5##*/}" 2>/dev/null)"

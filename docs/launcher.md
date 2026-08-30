@@ -60,12 +60,13 @@ When sessions alternate between two machines, only what is pushed travels — th
 the bridge — and **not** the profile under `~/.claude/` (memory, transcripts, settings,
 commands). Two pieces of mechanics for that:
 
-**Pull before the start.** `cc_launch` pulls the project repo from a remote named `vps`
-(else from the branch's upstream) before the session starts — fast-forward only. A local
-lead, a dirty tree or a sleeping remote are **reported**, and the session starts anyway: a
-silently skipped pull would be the worse failure. Not a repo: silent. `--no-pull` (both
-starters) or `CC_NO_PULL=1` skips the step, e.g. offline. ssh runs with `ConnectTimeout=5`
-and `BatchMode` so that neither a sleeping host nor a passphrase prompt holds up the start.
+**Pull before the start.** `cc_launch` pulls the project repo before the session starts —
+fast-forward only. The remote is `CC_PULL_REMOTE` if you set it and the repo has it, else
+the branch's upstream, else nothing (said, not pulled). A local lead, a dirty tree or a
+sleeping remote are **reported**, and the session starts anyway: a silently skipped pull
+would be the worse failure. Not a repo: silent. `--no-pull` (both starters) or
+`CC_NO_PULL=1` skips the step, e.g. offline. ssh runs with `ConnectTimeout=5` and
+`BatchMode` so that neither a sleeping host nor a passphrase prompt holds up the start.
 
 **Memory in the repo.** Claude Code keeps a project's memory under
 `~/.claude/projects/<slug>/memory/`, and the slug is the **path** (`D--work-app` on one

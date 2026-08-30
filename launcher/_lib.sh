@@ -100,26 +100,29 @@ cc_session_running() { # $1 = name, $2 = directory (msys path) -> 0 = already ru
   return 1
 }
 
-# cc_pull_before_start — pulls the project repo from 'vps' (else from the upstream)
-# BEFORE the session starts. Motivation: sessions alternate between two machines, and
-# the launcher used to start whatever state happened to be on disk — CLAUDE.md,
-# scripts and (with link-memory.sh) the memory only travel by push/pull.
+# cc_pull_before_start — pulls the project repo BEFORE the session starts. Motivation:
+# sessions alternate between two machines, and the launcher used to start whatever state
+# happened to be on disk — CLAUDE.md, scripts and (with link-memory.sh) the memory only
+# travel by push/pull.
+# Which remote: CC_PULL_REMOTE if set and present in this repo, else the branch's
+# upstream, else nothing (said, not pulled). Set CC_PULL_REMOTE in your starter if your
+# machines share a remote under a fixed name.
 # Fast-forward only. A local lead, a dirty tree, a sleeping remote are REPORTED and the
 # session starts anyway: a silently skipped pull would be the worse failure (same rule
-# as a lost --continue). Not a repo: silent. Neither 'vps' nor an upstream: said, not
-# pulled. CC_NO_PULL=1 (--no-pull) skips the step, e.g. offline. ssh with ConnectTimeout
-# and BatchMode so that neither a sleeping remote nor a passphrase prompt holds up the
-# start. Always returns 0 — the pull never decides about the start.
+# as a lost --continue). Not a repo: silent. CC_NO_PULL=1 (--no-pull) skips the step,
+# e.g. offline. ssh with ConnectTimeout and BatchMode so that neither a sleeping remote
+# nor a passphrase prompt holds up the start. Always returns 0 — the pull never decides
+# about the start.
 cc_pull_before_start() { # $1 = name, $2 = directory (msys path)
   local name="$1" dir="$2" remote branch before after out
   [[ "${CC_NO_PULL:-0}" == "1" ]] && return 0
   git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
-  if git -C "$dir" remote get-url vps >/dev/null 2>&1; then
-    remote=vps; branch="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true)"
+  if [[ -n "${CC_PULL_REMOTE:-}" ]] && git -C "$dir" remote get-url "$CC_PULL_REMOTE" >/dev/null 2>&1; then
+    remote="$CC_PULL_REMOTE"; branch="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null || true)"
   elif branch="$(git -C "$dir" rev-parse --abbrev-ref '@{u}' 2>/dev/null)"; then
     remote="${branch%%/*}"; branch="${branch#*/}"
   else
-    echo "[pull] $name: neither a remote 'vps' nor an upstream -- not pulled." >&2; return 0
+    echo "[pull] $name: no upstream and no CC_PULL_REMOTE -- not pulled." >&2; return 0
   fi
   [[ -n "$branch" ]] || { echo "[pull] $name: no branch (detached HEAD) -- not pulled." >&2; return 0; }
   before="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || true)"
