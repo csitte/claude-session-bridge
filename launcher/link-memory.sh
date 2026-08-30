@@ -94,29 +94,46 @@ fi
 # supported way and this list is only a convenience if you prefer to bake yours in.
 CLOUD_ROOTS=()
 
-if (( cloud )); then
-  if [[ -n "${SESSION_MEMORY_DIR:-}" ]]; then
-    root="${SESSION_MEMORY_DIR%/}"
-  else
-    root=""
-    for p in ${CLOUD_ROOTS[@]+"${CLOUD_ROOTS[@]}"}; do
-      if [[ -d "$p" ]]; then root="$p/_session-memory"; break; fi
-    done
-    [[ -n "$root" ]] || { echo "[error] no sync folder configured -- set SESSION_MEMORY_DIR (or fill CLOUD_ROOTS in this script)." >&2; exit 1; }
-  fi
-  if [[ -z "$name" && -r "$repo/.session-id" ]]; then name="$(head -1 "$repo/.session-id" | tr -d '\r[:space:]')"; fi
-  [[ -n "$name" ]] || name="${repo##*/}"
-  # Always lower case, whatever the source: directory names are often capitalised, and if
-  # one machine created `<root>/Notes` and the other later `<root>/notes`, the sync service
-  # may well carry TWO folders. Locally on a case-insensitive filesystem that is invisible;
-  # in the cloud, and on a case-sensitive filesystem, it is not.
-  name="$(printf '%s' "$name" | tr 'A-Z' 'a-z')"
-  target="$root/$name"
-  mode="cloud"
-else
-  target="$repo/memory"
-  mode="repo"
-fi
+
+# --- Id from the participant table of the bridge README ----------------------
+# Overall order: --name > .session-id > THIS table > directory name, all lower-cased.
+# Motivation: a directory name often differs from the session id (`app-web` vs `app`,
+# capitalised sync folders, sometimes a completely unrelated name). The participant table
+# is the one place where path and id stand together.
+#
+# TWO comparisons, both as a WHOLE path (equal or below, trailing '/'), never as a prefix
+# -- otherwise `.../app` would catch the project `.../app-product`:
+#   1. the full path as it stands in the table;
+#   2. the same path WITHOUT a drive letter, so a second machine mirroring the layout under
+#      another drive resolves too -- without a second column of paths nobody can verify.
+#      Where the layout genuinely differs, `.session-id` carries it.
+#
+# The parse rule is the same as `readme_pathmap` in watch-bridge.sh: a path is any
+# backticked field of the last column that is absolute. **Two copies of one rule** --
+# change the table format and you change both; it says so here so the second is not
+# forgotten. No bridge reachable or id not listed: empty, and the caller falls back to the
+# directory name. SESSION_BRIDGE_DIR points at the bridge folder.
+id_from_table() {
+  local br="" map cwd tail hit
+  [[ -n "${SESSION_BRIDGE_DIR:-}" ]] && br="${SESSION_BRIDGE_DIR%/}"
+  [[ -n "$br" && -r "$br/README.md" ]] || return 0
+  map="$(awk -F'|' '/^\| `[a-z0-9.-]+` \|/ {
+           id=$2; gsub(/[ `]/,"",id)
+           n=split($4, parts, "`")
+           for (i=2; i<=n; i+=2) {
+             p=parts[i]; gsub(/^ +| +$/,"",p); gsub(/\\/,"/",p)
+             if (p ~ /^\// || p ~ /^[A-Za-z]:/) print id "\t" tolower(p)
+           }
+         }' "$br/README.md" | tr -d '\r' | tr -s '/' | sed 's|/$||')"
+  [[ -n "$map" ]] || return 0
+  cwd="$(norm "$repo")"
+  tail="${cwd#[a-z]:}"
+  hit="$(awk -F'\t' -v c="$cwd" -v t="$tail" '
+           { p=$2; q=p; sub(/^[a-z]:/,"",q)
+             if (c==p || index(c, p "/")==1) { print $1; exit }
+             if (t==q || index(t, q "/")==1) { print $1; exit } }' <<<"$map")"
+  printf '%s' "$hit"
+}
 
 norm() { # make a path comparable: one form, lower case, '/', no trailing '/'
   local p="$1"
@@ -153,6 +170,31 @@ make_link() { # $1 = target (a parameter, so the rollback can restore the OLD li
 # inside_repo — is $1 INSIDE the repo we were given? Compared with a trailing '/', never
 # as a prefix: `/d/work/app` would otherwise match `/d/work/app-product`.
 inside_repo() { local p; p="$(norm "$1")/"; [[ "$p" == "$(norm "$repo")/"* ]]; }
+
+if (( cloud )); then
+  if [[ -n "${SESSION_MEMORY_DIR:-}" ]]; then
+    root="${SESSION_MEMORY_DIR%/}"
+  else
+    root=""
+    for p in ${CLOUD_ROOTS[@]+"${CLOUD_ROOTS[@]}"}; do
+      if [[ -d "$p" ]]; then root="$p/_session-memory"; break; fi
+    done
+    [[ -n "$root" ]] || { echo "[error] no sync folder configured -- set SESSION_MEMORY_DIR (or fill CLOUD_ROOTS in this script)." >&2; exit 1; }
+  fi
+  if [[ -z "$name" && -r "$repo/.session-id" ]]; then name="$(head -1 "$repo/.session-id" | tr -d '\r[:space:]')"; fi
+  [[ -n "$name" ]] || name="$(id_from_table)"
+  [[ -n "$name" ]] || name="${repo##*/}"
+  # Always lower case, whatever the source: directory names are often capitalised, and if
+  # one machine created `<root>/Notes` and the other later `<root>/notes`, the sync service
+  # may well carry TWO folders. Locally on a case-insensitive filesystem that is invisible;
+  # in the cloud, and on a case-sensitive filesystem, it is not.
+  name="$(printf '%s' "$name" | tr 'A-Z' 'a-z')"
+  target="$root/$name"
+  mode="cloud"
+else
+  target="$repo/memory"
+  mode="repo"
+fi
 
 echo "project:  $native"
 echo "profile:  $mem"
@@ -214,6 +256,11 @@ if [[ $kind == dir || $relinking == 1 ]]; then
     if (( ${index_merge:-0} )); then
       n_new=$(grep -vxFf "$target/MEMORY.md" "$mem/MEMORY.md" | grep -c . || true)
       echo "[index] MEMORY.md differs on both sides -- $n_new line(s) will be appended to the target index."
+      # Appending loses nothing, but two grown indexes bring two headings into the middle of
+      # the file and possibly duplicate entries. A line-wise merge cannot know that -- so say
+      # it instead of leaving it: the file is READ at session start, not looked at.
+      echo "        Please look over it once: two grown indexes bring two headings and"
+      echo "        possible duplicate entries; order and title are handwork."
     fi
 fi
 

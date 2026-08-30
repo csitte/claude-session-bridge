@@ -1144,6 +1144,39 @@ test_linkmemory() {
   if [[ -e "$other.pre-link" ]]; then bad "--relink shared: nothing outside the repo is renamed" "$other.pre-link exists"
   else ok "--relink shared: nothing outside the repo is renamed"; fi
   if printf '%s\n' "$out" | grep -q 'left untouched'; then ok "... and it says so"; else bad "... and it says so" "$out"; fi
+  # --- the id comes from the participant table when nothing better is at hand ---
+  local bridge="$TMPROOT/lmbridge.$RANDOM"; mkdir -p "$bridge"
+  local repoW="$TMPROOT/app-web.$RANDOM" repoP="$TMPROOT/app-product.$RANDOM"
+  mkdir -p "$repoW" "$repoP"
+  # the table lists the WEB directory under the id `app`; app-product is a different id
+  {
+    printf '| id | session | repo / working dir |\n|---|---|---|\n'
+    printf '| `app` | web | `%s` (`main`) |\n' "$(cygpath -w "$repoW" 2>/dev/null || printf '%s' "$repoW")"
+    printf '| `app-product` | product | `%s` (`main`) |\n' "$(cygpath -w "$repoP" 2>/dev/null || printf '%s' "$repoP")"
+  } > "$bridge/README.md"
+  local cfgV="$TMPROOT/lmcfg11.$RANDOM"
+  SESSION_BRIDGE_DIR="$bridge" SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfgV" \
+    bash "$LM" --cloud "$repoW" >/dev/null 2>&1
+  if [[ -d "$cloud/app" ]]; then ok "the id comes from the participant table, not the directory name"
+  else bad "the id comes from the participant table, not the directory name" "$(ls "$cloud")"; fi
+  # ... and the neighbouring id must not be caught by a prefix match
+  local cfgW="$TMPROOT/lmcfg12.$RANDOM"
+  SESSION_BRIDGE_DIR="$bridge" SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfgW" \
+    bash "$LM" --cloud "$repoP" >/dev/null 2>&1
+  if [[ -d "$cloud/app-product" ]]; then ok "a neighbouring path is not caught by a prefix match"
+  else bad "a neighbouring path is not caught by a prefix match" "$(ls "$cloud")"; fi
+  # .session-id still wins over the table
+  local cfgX="$TMPROOT/lmcfg13.$RANDOM"; printf 'explicit\n' > "$repoW/.session-id"
+  SESSION_BRIDGE_DIR="$bridge" SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfgX" \
+    bash "$LM" --cloud "$repoW" >/dev/null 2>&1
+  if [[ -d "$cloud/explicit" ]]; then ok ".session-id wins over the table"; else bad ".session-id wins over the table" "$(ls "$cloud")"; fi
+  rm "$repoW/.session-id"
+  # no bridge at all -> silent fall back to the directory name
+  local cfgY="$TMPROOT/lmcfg14.$RANDOM"
+  SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfgY" bash "$LM" --cloud "$repoW" >/dev/null 2>&1
+  if [[ -d "$cloud/$(printf '%s' "${repoW##*/}" | tr 'A-Z' 'a-z')" ]]; then
+    ok "without a bridge the directory name is used"
+  else bad "without a bridge the directory name is used" "$(ls "$cloud")"; fi
   # --relink without an existing link is a harmless no-op
   local cfgU="$TMPROOT/rlcfg3.$RANDOM" repoU
   repoU="$TMPROOT/rlrepo3.$RANDOM"; mkdir -p "$repoU"

@@ -86,8 +86,12 @@ or private **product** repo takes cloud mode: the memory is Claude's working not
 customers, prices, failures — and belongs in neither a public nor a shared history, and every
 memory write would be a commit there. In cloud mode the sync client carries it without a
 commit (with the cloud's own version history); the cloud root is machine-dependent (a short
-list in the script, or `SESSION_MEMORY_DIR`, which wins), `<id>` is `--name`, else line 1 of
-`.session-id`, else the directory name. Caveat: the memory is read **once** at session start
+list in the script, or `SESSION_MEMORY_DIR`, which wins), `<id>` is resolved in this order, all lower-cased: `--name`, else line 1 of `.session-id` in
+the tree, else the **participant table of the bridge README** matched by working directory
+(set `SESSION_BRIDGE_DIR`), else the directory name. The table matters because a directory
+name often differs from the session id; the path is compared as a **whole** path, once as
+written and once without its drive letter, so a second machine mirroring the layout under
+another drive resolves without a second column of paths nobody can verify. Caveat: the memory is read **once** at session start
 with no warning line — after a cold start give the sync client a moment before starting.
 
 **Moving an existing link: `--relink`.** If the profile path already links somewhere else the

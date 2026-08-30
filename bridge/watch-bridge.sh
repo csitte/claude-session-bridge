@@ -491,7 +491,7 @@ readme_pathmap() { # $1 = README.md
     id=$2; gsub(/[ `]/,"",id)
     n=split($4, parts, "`")
     for (i=2; i<=n; i+=2) {
-      p=parts[i]; gsub(/^ +| +$/,"",p)
+      p=parts[i]; gsub(/^ +| +$/,"",p); gsub(/\\/,"/",p)
       if (p ~ /^\// || p ~ /^[A-Za-z]:/) print id "\t" tolower(p)
     }
   }' "$1" | tr -d '\r' | tr -s '/' | sed 's|/$||'
@@ -615,7 +615,8 @@ checkout_hint() { # $1 = the id it was called with; prints to stdout
 
   if [[ -r .session-id ]]; then
     sid=$(head -1 .session-id 2>/dev/null | tr -d '\r' | tr -d ' ')
-    sidpath=$(sed -n 2p .session-id 2>/dev/null | tr -d '')
+    sidpath=$(sed -n 2p .session-id 2>/dev/null | tr -d '
+')
     [[ -n "$sidpath" ]] && sidpath="$(path_resolve "$sidpath")"
     if [[ -n "$sid" && "$sid" != "$me" ]]; then
       echo "SUSPECT: called as '$me', but .session-id in this directory says '$sid'."
