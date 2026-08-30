@@ -728,10 +728,24 @@ checkout_hint() { # $1 = the id it was called with; prints to stdout
   [[ -n "$paths" ]] || return 0          # id not in the table -> no statement
 
   local p ok=0
+  # TWO comparisons, the same as in `id_from_table` (link-memory.sh): the full path, and the
+  # same path **without its drive letter**. A second machine typically mirrors the layout
+  # under another drive (`C:/work/app` against the table's `D:/work/app`), and writing a
+  # column of second-machine paths that nobody can verify from the first machine would be
+  # guessing rather than knowing.
+  #
+  # This was missing here after the two-way comparison had been built in link-memory.sh:
+  # on the second machine the fold then reported a suspicion for **almost every** session —
+  # and a warning that is always there gets skipped, so the check would be useless exactly
+  # where it has the most to say. One tool changed, the second one with the same input
+  # forgotten.
+  local cwd_tail="${cwd#[a-z]:}" p_tail
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
+    p_tail="${p#[a-z]:}"
     # Equal OR below — with a trailing slash, or 'app' would match 'app-bgd'.
     [[ "$cwd" == "$p" || "$cwd" == "$p"/* ]] && { ok=1; break; }
+    [[ "$cwd_tail" == "$p_tail" || "$cwd_tail" == "$p_tail"/* ]] && { ok=1; break; }
   done <<<"$paths"
   [[ $ok -eq 1 ]] && return 0
 
