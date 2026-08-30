@@ -1057,6 +1057,33 @@ test_linkmemory() {
   assert_eq "index merge: no backup left behind" "" "$(ls "$repo/memory" | grep pre-link)"
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg4" bash "$LM" "$repo" 2>&1)" || rc=$?
   if [[ $rc -eq 0 ]] && printf '%s\n' "$out" | grep -q 'already linked'; then ok "index merge: second run already linked"; else bad "index merge: second run already linked" "$out"; fi
+
+  # --cloud: the target is <SESSION_MEMORY_DIR>/<id>, the repo stays untouched
+  local cloud="$TMPROOT/lmcloud.$RANDOM"; mkdir -p "$cloud"
+  local cfg5="$TMPROOT/lmcfg5.$RANDOM" repo5 slug5 mem5
+  repo5="$TMPROOT/lmrepo5.$RANDOM"; mkdir -p "$repo5"
+  slug5="$(printf '%s' "$(cygpath -w "$repo5" 2>/dev/null || printf '%s' "$repo5")" | sed 's/[^A-Za-z0-9]/-/g')"
+  mem5="$cfg5/projects/$slug5/memory"; mkdir -p "$mem5"; echo idx > "$mem5/MEMORY.md"
+  rc=0; out="$(SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg5" bash "$LM" --cloud "$repo5" 2>&1)" || rc=$?
+  assert_eq "--cloud: exit 0" "0" "$rc"
+  assert_eq "--cloud: the id defaults to the directory name" "MEMORY.md" "$(ls -A "$cloud/${repo5##*/}" 2>/dev/null)"
+  assert_eq "--cloud: nothing lands in the repo" "" "$(ls -A "$repo5")"
+  assert_eq "--cloud: ls through the link shows the cloud folder" "MEMORY.md" "$(ls -A "$mem5")"
+  if printf '%s\n' "$out" | grep -q 'no commit'; then ok "--cloud: the closing line says no commit is needed"; else bad "--cloud: the closing line says no commit is needed" "$out"; fi
+  # .session-id (line 1) names the folder; --name overrides it
+  local cfg6="$TMPROOT/lmcfg6.$RANDOM" repo6
+  repo6="$TMPROOT/lmrepo6.$RANDOM"; mkdir -p "$repo6"; printf 'app-x\n/some/tree\n' > "$repo6/.session-id"
+  SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg6" bash "$LM" --cloud "$repo6" >/dev/null 2>&1
+  if [[ -d "$cloud/app-x" ]]; then ok "--cloud: line 1 of .session-id names the folder"; else bad "--cloud: line 1 of .session-id names the folder" "$(ls "$cloud")"; fi
+  local cfg7="$TMPROOT/lmcfg7.$RANDOM"
+  SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg7" bash "$LM" --cloud --name custom "$repo6" >/dev/null 2>&1
+  if [[ -d "$cloud/custom" ]]; then ok "--cloud --name wins over .session-id"; else bad "--cloud --name wins over .session-id" "$(ls "$cloud")"; fi
+  rc=0; SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg7" bash "$LM" --name custom "$repo6" >/dev/null 2>&1 || rc=$?
+  assert_eq "--name without --cloud is a usage error" "64" "$rc"
+  # a link that points elsewhere (repo -> cloud switch) is refused, nothing touched
+  rc=0; out="$(SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --cloud "$repo" 2>&1)" || rc=$?
+  assert_eq "a link to another target is refused" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q "rm "; then ok "... and the message says how to switch"; else bad "... and the message says how to switch" "$out"; fi
 }
 
 case "${1:-all}" in

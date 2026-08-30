@@ -74,11 +74,20 @@ it to `<repo>/memory/` and turns the profile path into a junction (Windows) or s
 pointing there; once per machine:
 
 ```bash
-bash launcher/link-memory.sh /d/work/app
+bash launcher/link-memory.sh /d/work/app            # repo mode:  <repo>/memory/
+bash launcher/link-memory.sh --cloud /d/work/app    # cloud mode: <cloud>/_session-memory/<id>/
 ```
 
-From then on the memory rides the push the wrap-up makes anyway, and every memory write
-shows up as a diff in `git status`. If the machine already has a memory of its own, its files
+**Which mode?** Repo mode only for infrastructure repos that exist for this purpose alone
+(the bridge tooling, a launcher config repo): the memory rides the push the wrap-up makes
+anyway, and every memory write shows up as a diff in `git status`. Everything with a public
+or private **product** repo takes cloud mode: the memory is Claude's working notes —
+customers, prices, failures — and belongs in neither a public nor a shared history, and every
+memory write would be a commit there. In cloud mode the sync client carries it without a
+commit (with the cloud's own version history); the cloud root is machine-dependent (a short
+list in the script, or `SESSION_MEMORY_DIR`, which wins), `<id>` is `--name`, else line 1 of
+`.session-id`, else the directory name. Caveat: the memory is read **once** at session start
+with no warning line — after a cold start give the sync client a moment before starting. If the machine already has a memory of its own, its files
 move along; a `MEMORY.md` that differs on both sides — the normal case for a second machine —
 is merged (repo lines first, then the lines only the profile has). Any other file that differs
 on both sides aborts the run with nothing touched. A second run reports "already linked", and
