@@ -7,7 +7,7 @@
 # Finds the entry in projects.<host>.conf — including ones disabled with #off
 # (starting something once does not make it an autostart). Used by the session
 # manager (session-manager.ps1), but works directly from Git Bash too.
-# --no-pull: do not pull the project repo from 'vps' before the start (see
+# --no-pull: do not pull the project repo before the start (see
 # cc_pull_before_start in _lib.sh) — e.g. offline.
 
 set -euo pipefail

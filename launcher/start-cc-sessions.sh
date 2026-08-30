@@ -14,10 +14,10 @@
 # A project whose session is already running is not started again (registry
 # ~/.claude/sessions/, live pid only — see cc_session_running). --force starts anyway.
 #
-# Before each start the project repo is pulled from 'vps' (fast-forward only; a failure
-# is reported and the session starts anyway — cc_pull_before_start in _lib.sh), because
-# sessions alternate between machines and the state only travels by push/pull.
-# --no-pull skips that, e.g. offline.
+# Before each start the project repo is pulled — fast-forward only, from CC_PULL_REMOTE
+# or the branch's upstream; a failure is reported and the session starts anyway (see
+# cc_pull_before_start in _lib.sh). Reason: sessions alternate between machines and the
+# state only travels by push/pull. --no-pull skips that, e.g. offline.
 
 set -euo pipefail
 
