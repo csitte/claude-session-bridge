@@ -88,7 +88,17 @@ memory write would be a commit there. In cloud mode the sync client carries it w
 commit (with the cloud's own version history); the cloud root is machine-dependent (a short
 list in the script, or `SESSION_MEMORY_DIR`, which wins), `<id>` is `--name`, else line 1 of
 `.session-id`, else the directory name. Caveat: the memory is read **once** at session start
-with no warning line — after a cold start give the sync client a moment before starting. If the machine already has a memory of its own, its files
+with no warning line — after a cold start give the sync client a moment before starting.
+
+**Moving an existing link: `--relink`.** If the profile path already links somewhere else the
+run aborts; with `--relink` the link is moved and the files come along. Two cases: a project
+leaving repo mode for cloud mode, and a second checkout that shares another session's memory
+by junction and should point at the same cloud folder. The **old** target folder is moved
+aside (`….pre-link`) only if it lies **inside** the repo you passed — otherwise it is left
+untouched and only named, because there it may be another session's memory. If it was
+versioned, `git rm -r --cached memory` and `memory/` in `.gitignore` follow — and then
+`git check-ignore -v memory/`: an ignore rule that silently does nothing looks exactly like
+one that works. If the machine already has a memory of its own, its files
 move along; a `MEMORY.md` that differs on both sides — the normal case for a second machine —
 is merged (repo lines first, then the lines only the profile has). Any other file that differs
 on both sides aborts the run with nothing touched. A second run reports "already linked", and
