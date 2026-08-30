@@ -267,9 +267,26 @@ if [[ $kind == dir || $relinking == 1 ]]; then
         if [[ $b == MEMORY.md ]]; then index_merge=1; else conflicts+=("$b"); fi
       else moves+=("$b"); fi
     done
+    # Merging is NOT the script's job but the session's. A line tool would have to guess
+    # which version holds; the session wrote both and understands the content. So hand it
+    # what it needs: both **full paths**, the size of the difference (so it is visible
+    # whether this is one line or a whole file) and the procedure. Listing bare filenames --
+    # which is what this printed before -- is too little to start without searching.
     if (( ${#conflicts[@]} )); then
-      echo "[abort] same file with different content in profile and target -- merge by hand, nothing touched:" >&2
-      printf '        %s\n' "${conflicts[@]}" >&2; exit 1
+      echo "[abort] ${#conflicts[@]} file(s) exist on both sides with different content -- nothing touched." >&2
+      echo "        This session knows both versions and consolidates them itself:" >&2
+      # No `local`: this block sits in the script body, not in a function.
+      for c in "${conflicts[@]}"; do
+        dl=$(diff "$mem/$c" "$target/$c" 2>/dev/null | grep -c '^[<>]' || true)
+        printf '\n        %s  (%s line(s) differ)\n' "$c" "$dl" >&2
+        printf '          profile: %s\n' "$mem/$c" >&2
+        printf '          target:  %s\n' "$target/$c" >&2
+      done
+      echo "" >&2
+      echo "        Per file: read both, write the consolidation into the TARGET version," >&2
+      echo "        delete the profile version. Then run this again -- it reports the next" >&2
+      echo "        conflict or goes through. Nothing is overwritten while conflicts remain." >&2
+      exit 1
     fi
     echo "[move] ${#moves[@]} file(s) into the target${moves[*]:+: ${moves[*]}}"
     if (( ${index_merge:-0} )); then

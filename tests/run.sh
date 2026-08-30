@@ -1092,6 +1092,17 @@ test_linkmemory() {
   assert_eq "conflict -> profile untouched" "other idx" "$(cat "$mem2/a.md" "$mem2/MEMORY.md" | paste -sd' ' -)"
   assert_eq "conflict -> repo untouched" "a" "$(cat "$repo/memory/a.md")"
   if printf '%s\n' "$out" | grep -q 'a.md'; then ok "conflict names the file"; else bad "conflict names the file" "$out"; fi
+  # The session does the consolidating, so the abort has to hand it enough to start:
+  # both full paths and how much differs. Bare filenames meant searching first.
+  if printf '%s\n' "$out" | grep -q 'line(s) differ'; then
+    ok "conflict states how much differs"
+  else bad "conflict states how much differs" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'profile: .*a\.md' && printf '%s\n' "$out" | grep -q 'target:  .*a\.md'; then
+    ok "conflict gives both full paths"
+  else bad "conflict gives both full paths" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'consolidates them itself'; then
+    ok "conflict says who merges"
+  else bad "conflict says who merges" "$out"; fi
   # no profile memory at all -> created and linked
   local cfg3="$TMPROOT/lmcfg3.$RANDOM"; mkdir -p "$cfg3"
   CLAUDE_CONFIG_DIR="$cfg3" bash "$LM" "$repo" >/dev/null 2>&1

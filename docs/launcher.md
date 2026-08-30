@@ -105,7 +105,12 @@ versioned, `git rm -r --cached memory` and `memory/` in `.gitignore` follow — 
 one that works. If the machine already has a memory of its own, its files
 move along; a `MEMORY.md` that differs on both sides — the normal case for a second machine —
 is merged (repo lines first, then the lines only the profile has). Any other file that differs
-on both sides aborts the run with nothing touched. A second run reports "already linked", and
+on both sides aborts the run with nothing touched -- and the abort hands over what is needed
+to resolve it: both full paths and how many lines differ. **Merging is not the script's job.**
+A line tool would have to guess which version holds; the session wrote both versions and
+understands the content, so it consolidates them itself: read both, write the result into the
+target version, delete the profile version, run again. The script only refuses to guess and
+keeps both sides intact until then. A second run reports "already linked", and
 every run cross-checks by listing the repo **through** the link. Removing the junction again: `rm <path>` in Git
 Bash (msys treats it as a link; `rmdir` says "Not a directory"). Checked: `rm` and `rm -rf`
 in Git Bash do **not** follow the junction, the repo stays intact — with PowerShell
