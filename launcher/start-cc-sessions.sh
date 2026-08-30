@@ -42,6 +42,12 @@ cfg="$(cc_resolve_config)" || { read -n 1 -s -r -p "Press any key to close ...";
 # shellcheck source=/dev/null
 source "$cfg"   # defines projects=(...)
 
+# Machine state, ONCE per start run (not per project): if the global slash commands differ
+# from the repo copy, a travelled version is having no effect -- on a name collision
+# ~/.claude/commands wins. Purely advisory (cc_check_commands always returns 0 and only
+# speaks when there is something to do).
+cc_check_commands
+
 skipped=0
 started=0
 running=0

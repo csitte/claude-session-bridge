@@ -1478,8 +1478,91 @@ test_inventory_ids() {
   assert_eq "both spellings resolve to the same id" "app app" "$out"
 }
 
+# --------------------------------------------------------------------------
+# slash commands: global copy vs. repo copy
+# --------------------------------------------------------------------------
+
+# On a name collision the GLOBAL command file wins over the repo copy, so a file can have
+# travelled with the repo and still do nothing -- and a file listing shows both, which is
+# why this went unnoticed for six weeks in the field. The check runs once per start run.
+# `cc_check_commands` resolves its repo as the parent of the directory holding _lib.sh,
+# so the fixture has to be a real little repo with a real history: the whole point is that
+# the blob hash, not the mtime, decides which case it is.
+test_commands() {
+  head_ "slash commands: outdated / not in repo / not shared"
+  local G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
+  local root="$TMPROOT/cmd.$RANDOM" out
+  mkdir -p "$root/repo/launcher" "$root/repo/.claude/commands" "$root/profile/commands"
+  cp "$ROOT/launcher/_lib.sh" "$root/repo/launcher/_lib.sh"
+  $G init -q "$root/repo"
+  run_check() {
+    ( export CLAUDE_CONFIG_DIR="$root/profile"
+      # shellcheck source=/dev/null
+      source "$root/repo/launcher/_lib.sh"
+      cc_check_commands 2>&1
+      echo "findings=${CC_COMMANDS_FINDINGS:-unset}" )
+  }
+  # v1 committed, then v2 committed -> the repo file has a history
+  printf 'version one\n' > "$root/repo/.claude/commands/wrap.md"
+  ( cd "$root/repo" && $G add -A && $G commit -qm v1 )
+  printf 'version two\n' > "$root/repo/.claude/commands/wrap.md"
+  ( cd "$root/repo" && $G add -A && $G commit -qm v2 )
+
+  # 1. identical -> silence
+  cp "$root/repo/.claude/commands/wrap.md" "$root/profile/commands/wrap.md"
+  assert_eq "identical copies produce no finding" "findings=0" "$(run_check)"
+
+  # 2. the global copy is the OLD committed version -> OUTDATED (history decides, not mtime)
+  printf 'version one\n' > "$root/profile/commands/wrap.md"
+  out="$(run_check)"
+  if printf '%s\n' "$out" | grep -q 'wrap.md: OUTDATED'; then
+    ok "an older checked-in version is reported as outdated"
+  else bad "an older checked-in version is reported as outdated" "$out"; fi
+  # and the mtime points the other way -- the repo file is the newer one on disk
+  touch "$root/repo/.claude/commands/wrap.md"
+  if printf '%s\n' "$(run_check)" | grep -q 'OUTDATED'; then
+    ok "... even when the repo file has the newer mtime (a pull stamps it)"
+  else bad "... even when the repo file has the newer mtime" "$(run_check)"; fi
+
+  # 3. the global copy is in no commit -> NOT IN REPO, and it must not be overwritten
+  printf 'local edits nobody saved\n' > "$root/profile/commands/wrap.md"
+  out="$(run_check)"
+  if printf '%s\n' "$out" | grep -q 'wrap.md: NOT IN REPO'; then
+    ok "an uncommitted global version is reported as not in the repo"
+  else bad "an uncommitted global version is reported as not in the repo" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'do not overwrite'; then
+    ok "... and the fix says not to overwrite it"
+  else bad "... and the fix says not to overwrite it" "$out"; fi
+
+  # 4. global only -> NOT SHARED (does not exist on the other machine)
+  rm "$root/profile/commands/wrap.md"
+  cp "$root/repo/.claude/commands/wrap.md" "$root/profile/commands/wrap.md"
+  printf 'only here\n' > "$root/profile/commands/solo.md"
+  out="$(run_check)"
+  if printf '%s\n' "$out" | grep -q 'solo.md: NOT SHARED'; then
+    ok "a global-only command is reported as not shared"
+  else bad "a global-only command is reported as not shared" "$out"; fi
+  assert_eq "... and it is the only finding" "findings=1" "$(printf '%s\n' "$out" | tail -1)"
+
+  # 5. repo only is deliberately NOT a finding (those work through --add-dir)
+  rm "$root/profile/commands/solo.md"
+  printf 'repo side only\n' > "$root/repo/.claude/commands/repoonly.md"
+  ( cd "$root/repo" && $G add -A && $G commit -qm repoonly )
+  assert_eq "a repo-only command is not a finding" "findings=0" "$(run_check)"
+
+  # 6. nothing to compare -> silent, and never fatal
+  rm -rf "$root/repo/.claude"
+  assert_eq "no repo copy -> silent" "findings=0" "$(run_check)"
+  # the by-hand entry point says so instead of staying silent
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$root/profile" bash "$ROOT/launcher/check-commands.sh" 2>&1)" || rc=$?
+  if [[ $rc -eq 1 ]] && printf '%s\n' "$out" | grep -q 'nothing to compare'; then
+    ok "check-commands.sh says when there is nothing to compare"
+  else bad "check-commands.sh says when there is nothing to compare" "rc=$rc $out"; fi
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
+  commands) test_commands ;;
   stamp) test_stamp ;;
   ruleparity) test_ruleparity ;;
   lineendings) test_lineendings ;;
@@ -1492,8 +1575,8 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

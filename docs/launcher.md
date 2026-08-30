@@ -139,6 +139,36 @@ are mandatory, the hand-over goes into a file that travels (the memory), the ses
 closed (two live sessions in one project both answer the same threads and both commit),
 and the sync client is given time to upload before the machine sleeps.
 
+## A command file can travel and still do nothing
+
+Claude Code reads slash commands from two places: `~/.claude/commands` (global, per machine)
+and `<repo>/.claude/commands` (project, travels with the repo). **On a name collision the
+global file wins.** So a command can be committed, pulled onto the second machine, sit right
+there in the listing — and have no effect at all. In our own setup a wrap-up command ran for
+six weeks in a version six weeks old for exactly that reason; the current one was next to it,
+unused. Nothing looks broken: the profile under `~/.claude/` does not travel, and nobody
+compares it by hand.
+
+`cc_check_commands` compares the two once per start run (a machine state, not a per-project
+one) and reports three cases, staying silent otherwise:
+
+| | |
+|---|---|
+| `OUTDATED` | both exist and differ, and the global content appears in the repo file's **history** — an older checked-in copy. Fix: copy from the repo. |
+| `NOT IN REPO` | both exist and differ, and the global content is in no commit — it carries changes saved nowhere. Fix: adopt it, do **not** overwrite it. |
+| `NOT SHARED` | global only — it does not exist on the other machine. Fix: put it in the repo. |
+
+Repo-only is deliberately not a finding: those work through `--add-dir`.
+
+**Why the history decides and not the mtime.** A `git pull` stamps the repo file with the
+checkout time, so it always looks newer than the global one — including in the incident above,
+where its content was in fact the current one. The blob hash does not lie; a timestamp here
+says only when a file was written, not which version it is. The test suite pins this: the
+outdated case is still detected after the repo file is given the newer mtime.
+
+`check-commands.sh` is the same check by hand, with one addition — it reports the all-clear.
+During a start run silence is right; when you ask, you want to know that it looked.
+
 ## A running session is not started twice
 
 Neither the launcher nor the session manager used to check whether a project already had a

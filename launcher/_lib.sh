@@ -100,6 +100,73 @@ cc_session_running() { # $1 = name, $2 = directory (msys path) -> 0 = already ru
   return 1
 }
 
+# cc_check_commands — compares the global slash commands under ~/.claude/commands with a
+# copy kept in this repo under .claude/commands. ONCE per start run, not per project: this
+# is a state of the MACHINE, and showing the same message fifteen times would be noise.
+#
+# Why it exists: on a name collision the **global** file wins over the project copy. A
+# command file can therefore have travelled correctly with the repo and still do nothing —
+# and the file listing shows both, so it looks right. In the field one wrap-up command ran
+# for six weeks in a version from six weeks earlier while the current one sat next to it,
+# unused. The profile under ~/.claude/ does not travel between machines, and nobody
+# compares it by hand.
+#
+# Three findings, silence otherwise:
+#   OUTDATED     Both exist, contents differ, and the global version appears in the repo
+#                file's history -> it is an older checked-in copy. Fix: copy from the repo.
+#   NOT IN REPO  Both exist, differ, and the global version is in no commit -> it carries
+#                changes that are saved nowhere. Fix: adopt it into the repo, do not
+#                overwrite it.
+#   NOT SHARED   Global only -> it does not exist on the other machine. Fix: put it in the
+#                repo.
+# "Repo only" is deliberately not a finding: such commands work through --add-dir.
+#
+# Why history and not mtime decides: a `git pull` stamps the repo file with the checkout
+# time, so it always looks newer, even when its content is older. That is exactly the case
+# that hid the incident above. The blob hash does not lie.
+#
+# Always returns 0 -- the display never decides about the start. The number of findings is
+# left in CC_COMMANDS_FINDINGS for check-commands.sh, which also reports the all-clear.
+cc_check_commands() {
+  local repo glob rel f name h rev b found n=0
+  repo="$(cd "$CC_SCRIPT_DIR/.." && pwd)"
+  glob="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/commands"
+  CC_COMMANDS_FINDINGS=0
+  [[ -d "$repo/.claude/commands" && -d "$glob" ]] || return 0
+  git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+
+  for f in "$glob"/*.md; do
+    [[ -f "$f" ]] || continue
+    name="$(basename "$f")"
+    rel=".claude/commands/$name"
+    if [[ ! -f "$repo/$rel" ]]; then
+      echo "[commands] $name: NOT SHARED -- only in this profile, missing from the repo." >&2
+      echo "           Fix: put it in $repo/$rel and commit." >&2
+      n=$((n + 1)); continue
+    fi
+    cmp -s "$f" "$repo/$rel" && continue
+    # Does the global file's content appear in the history of the repo file?
+    h="$(git -C "$repo" hash-object -- "$f" 2>/dev/null || true)"
+    found=0
+    if [[ -n "$h" ]]; then
+      for rev in $(git -C "$repo" rev-list --max-count=50 HEAD -- "$rel" 2>/dev/null || true); do
+        b="$(git -C "$repo" rev-parse "$rev:$rel" 2>/dev/null || true)"
+        [[ "$b" == "$h" ]] && { found=1; break; }
+      done
+    fi
+    if [[ "$found" == "1" ]]; then
+      echo "[commands] $name: OUTDATED -- the global copy is an older checked-in version." >&2
+      echo "           Fix: cp \"$repo/$rel\" \"$f\"" >&2
+    else
+      echo "[commands] $name: NOT IN REPO -- the global version is in no commit." >&2
+      echo "           Fix: review it, then adopt it into $repo/$rel (do not overwrite)." >&2
+    fi
+    n=$((n + 1))
+  done
+  CC_COMMANDS_FINDINGS="$n"
+  return 0
+}
+
 # cc_pull_before_start — pulls the project repo BEFORE the session starts. Motivation:
 # sessions alternate between two machines, and the launcher used to start whatever state
 # happened to be on disk — CLAUDE.md, scripts and (with link-memory.sh) the memory only
