@@ -43,13 +43,14 @@
 
 set -euo pipefail
 
-usage() { echo "usage: $(basename "$0") [-n] [--cloud [--name <id>]] [<repo-dir>]
+usage() { echo "usage: $(basename "$0") [-n] [--relink] [--cloud [--name <id>]] [<repo-dir>]
        $(basename "$0") --stamp [<repo-dir>]   (write the stamp, see below)" >&2; exit 64; }
-dry=0 cloud=0 stamp=0 name=""
+dry=0 cloud=0 stamp=0 relink=0 name=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n|--dry-run) dry=1; shift ;;
     --cloud) cloud=1; shift ;;
+    --relink) relink=1; shift ;;
     --stamp) stamp=1; shift ;;
     --name) [[ -n "${2:-}" ]] || usage; name="$2"; shift 2 ;;
     -h|--help) usage ;;
@@ -136,37 +137,65 @@ link_kind() { # $1 = path -> "none" | "dir" | "link:<target>"
   fi
 }
 
-make_link() {
+make_link() { # $1 = target (a parameter, so the rollback can restore the OLD link)
+  local to="$1"
   if [[ $iswin == 1 ]]; then
     # PowerShell rather than `cmd /c mklink /J "…" "…"`: with /c, cmd strips the first
     # and last quote of the line, and mklink then sees a broken path ("The filename,
     # directory name, or volume label syntax is incorrect") -- failed twice that way.
     powershell.exe -NoProfile -NonInteractive -Command \
-      "New-Item -ItemType Junction -Path '$(cygpath -w "$mem")' -Target '$(cygpath -w "$target")' | Out-Null" >/dev/null 2>&1
+      "New-Item -ItemType Junction -Path '$(cygpath -w "$mem")' -Target '$(cygpath -w "$to")' | Out-Null" >/dev/null 2>&1
   else
-    ln -s "$target" "$mem"
+    ln -s "$to" "$mem"
   fi
 }
+
+# inside_repo — is $1 INSIDE the repo we were given? Compared with a trailing '/', never
+# as a prefix: `/d/work/app` would otherwise match `/d/work/app-product`.
+inside_repo() { local p; p="$(norm "$1")/"; [[ "$p" == "$(norm "$repo")/"* ]]; }
 
 echo "project:  $native"
 echo "profile:  $mem"
 echo "target:   $target  ($mode)"
 
+# --- --relink: move an existing link to a different target -------------------
+# Two real cases, and both abort without this flag. (1) A project moves from repo mode to
+# cloud mode -- otherwise a six-step recipe by hand, including an `mv` of the folder to
+# where the script looks for it. (2) A second checkout shares another session's memory by
+# junction; its link points elsewhere on purpose and has to be moved to the same cloud
+# folder as the other one.
+#
+# The files are read THROUGH the old link -- for the collection loop a junction is a
+# directory, so the code below is the same as for a real folder.
+#
+# The OLD target folder is moved aside only if it lies INSIDE the repo we were given
+# (case 1: `<repo>/memory` -- otherwise a folder stays there that looks alive and travels
+# along on the next `git add`). Outside, it is left untouched and only named: in case 2
+# that is ANOTHER SESSION'S memory, and we do not touch it.
 kind="$(link_kind "$mem")"
-moves=()
+moves=(); relinking=0; oldtarget=""
 case "$kind" in
   link:*)
-    if [[ "$(norm "${kind#link:}")" == "$(norm "$target")" ]]; then
+    oldtarget="${kind#link:}"
+    if [[ "$(norm "$oldtarget")" == "$(norm "$target")" ]]; then
       echo "[ok] already linked -- nothing to do."; exit 0
     fi
-    echo "[abort] $mem points to '${kind#link:}', not to the target -- nothing touched. (To change the target: remove the link with 'rm $mem', then rerun.)" >&2; exit 1 ;;
+    if (( relink )); then
+      relinking=1
+      echo "[relink] $mem points to '$oldtarget' -- moving it to $target."
+    else
+      echo "[abort] $mem points to '$oldtarget', not to the target -- nothing touched. (To move it: --relink, or remove the link with 'rm $mem' and rerun.)" >&2; exit 1
+    fi ;;
   none)
     echo "[new] no profile memory for '$slug' -- $target will be created and linked." ;;
-  dir)
+esac
+
+if [[ $kind == dir || $relinking == 1 ]]; then
     shopt -s nullglob dotglob
     conflicts=()
     for f in "$mem"/*; do
       b="${f##*/}"
+      [[ "$b" == ".last-wrap" ]] && continue     # per-machine stamp, does not travel
       if [[ -e "$target/$b" ]]; then
         cmp -s "$f" "$target/$b" && continue
         # MEMORY.md is the index -- one line per memory, order without meaning. Two
@@ -181,12 +210,12 @@ case "$kind" in
       echo "[abort] same file with different content in profile and target -- merge by hand, nothing touched:" >&2
       printf '        %s\n' "${conflicts[@]}" >&2; exit 1
     fi
-    echo "[move] ${#moves[@]} file(s) from the profile into the target${moves[*]:+: ${moves[*]}}"
+    echo "[move] ${#moves[@]} file(s) into the target${moves[*]:+: ${moves[*]}}"
     if (( ${index_merge:-0} )); then
       n_new=$(grep -vxFf "$target/MEMORY.md" "$mem/MEMORY.md" | grep -c . || true)
-      echo "[index] MEMORY.md differs on both sides -- $n_new line(s) from the profile will be appended to the target index."
-    fi ;;
-esac
+      echo "[index] MEMORY.md differs on both sides -- $n_new line(s) will be appended to the target index."
+    fi
+fi
 
 if (( dry )); then echo "[dry-run] nothing changed."; exit 0; fi
 
@@ -195,17 +224,19 @@ if (( dry )); then echo "[dry-run] nothing changed."; exit 0; fi
 # deleted before mklink ran -- when mklink then failed on an over-long path (>260 chars
 # in a test), the profile memory was gone.
 mkdir -p "$target" "$(dirname "$mem")"
-if [[ $kind == dir ]]; then
+if [[ $kind == dir || $relinking == 1 ]]; then
   for b in "${moves[@]}"; do cp -p "$mem/$b" "$target/$b"; done
   if (( ${index_merge:-0} )); then
     cp -p "$target/MEMORY.md" "$target/MEMORY.md.pre-link"          # for the rollback
     grep -vxFf "$target/MEMORY.md" "$mem/MEMORY.md" | grep . >> "$target/MEMORY.md" || true
   fi
-  mv "$mem" "$mem.pre-link"
+  # When relinking, only the link is removed -- the files live in the OLD target and stay
+  # there until the cross-check below passes.
+  if (( relinking )); then rm "$mem"; else mv "$mem" "$mem.pre-link"; fi
 fi
-if ! make_link; then
-  if [[ $kind == dir ]]; then
-    mv "$mem.pre-link" "$mem"
+if ! make_link "$target"; then
+  if [[ $kind == dir || $relinking == 1 ]]; then
+    if (( relinking )); then make_link "$oldtarget" || true; else mv "$mem.pre-link" "$mem"; fi
     for b in "${moves[@]}"; do rm -f "$target/$b"; done
     if (( ${index_merge:-0} )); then mv -f "$target/MEMORY.md.pre-link" "$target/MEMORY.md"; fi
     rmdir "$target" 2>/dev/null || true
@@ -218,6 +249,16 @@ fi
 if [[ "$(ls -A "$mem" 2>/dev/null | LC_ALL=C sort)" == "$(ls -A "$target" | LC_ALL=C sort)" ]]; then
   [[ $kind == dir ]] && rm -rf "$mem.pre-link"
   rm -f "$target/MEMORY.md.pre-link"
+  if (( relinking )); then
+    if inside_repo "$oldtarget"; then
+      mv "$oldtarget" "$oldtarget.pre-link"
+      echo "[old] $oldtarget lies inside the repo and became '$oldtarget.pre-link' -- check and delete it once you are satisfied."
+      echo "      If it was versioned: 'git rm -r --cached memory' and put 'memory/' in .gitignore -- then verify with"
+      echo "      'git check-ignore -v memory/', because an ignore rule that silently does nothing looks exactly like one that works."
+    else
+      echo "[old] $oldtarget left untouched (outside $repo -- possibly another session's memory)."
+    fi
+  fi
   n=$(ls -A "$target" | wc -l | tr -d ' ')
   if [[ $mode == cloud ]]; then
     echo "[ok] $mem -> $target ($n file(s)). The sync client carries it -- no commit; let it upload before switching machines."

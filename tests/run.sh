@@ -1032,7 +1032,7 @@ test_linkmemory() {
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" -n "$repo" 2>&1)" || rc=$?
   assert_eq "-n: exit 0" "0" "$rc"
   assert_eq "-n changes nothing" "" "$(ls -A "$repo")"
-  if printf '%s\n' "$out" | grep -q '2 file(s) from the profile'; then ok "-n announces the move"; else bad "-n announces the move" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF '[move] 2 file(s) into the target'; then ok "-n announces the move"; else bad "-n announces the move" "$out"; fi
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" "$repo" 2>&1)" || rc=$?
   assert_eq "link: exit 0" "0" "$rc"
   assert_eq "the files moved into the repo" "MEMORY.md a.md" "$(ls -A "$repo/memory" | LC_ALL=C sort | paste -sd' ' -)"
@@ -1107,7 +1107,48 @@ test_linkmemory() {
   # a link that points elsewhere (repo -> cloud switch) is refused, nothing touched
   rc=0; out="$(SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --cloud "$repo" 2>&1)" || rc=$?
   assert_eq "a link to another target is refused" "1" "$rc"
-  if printf '%s\n' "$out" | grep -q "rm "; then ok "... and the message says how to switch"; else bad "... and the message says how to switch" "$out"; fi
+  if printf '%s\n' "$out" | grep -q '\-\-relink'; then ok "... and the message names --relink"; else bad "... and the message names --relink" "$out"; fi
+
+  # --- --relink case 1: repo mode -> cloud mode, old target inside the repo ---
+  local cfgR="$TMPROOT/rlcfg.$RANDOM" repoR slugR memR cloudR
+  repoR="$TMPROOT/rlrepo.$RANDOM"; mkdir -p "$repoR/memory"; cloudR="$TMPROOT/rlcloud.$RANDOM"; mkdir -p "$cloudR"
+  echo idx > "$repoR/memory/MEMORY.md"; echo a > "$repoR/memory/a.md"
+  slugR="$(printf '%s' "$(cygpath -w "$repoR" 2>/dev/null || printf '%s' "$repoR")" | sed 's/[^A-Za-z0-9]/-/g')"
+  memR="$cfgR/projects/$slugR/memory"; mkdir -p "$(dirname "$memR")"
+  CLAUDE_CONFIG_DIR="$cfgR" bash "$LM" "$repoR" >/dev/null 2>&1     # repo mode first
+  rc=0; out="$(SESSION_MEMORY_DIR="$cloudR" CLAUDE_CONFIG_DIR="$cfgR" bash "$LM" --relink --cloud --name proj "$repoR" 2>&1)" || rc=$?
+  assert_eq "--relink repo->cloud: exit 0" "0" "$rc"
+  assert_eq "--relink moved the files to the new target" "MEMORY.md a.md" "$(ls -A "$cloudR/proj" | LC_ALL=C sort | paste -sd' ' -)"
+  assert_eq "--relink: ls through the link shows the new target" "MEMORY.md a.md" "$(ls -A "$memR" | LC_ALL=C sort | paste -sd' ' -)"
+  assert_eq "--relink: the old folder inside the repo is moved aside" "memory.pre-link" "$(ls -A "$repoR" | LC_ALL=C sort | paste -sd' ' -)"
+  if printf '%s\n' "$out" | grep -q 'check-ignore'; then ok "--relink names the ignore-rule cross-check"; else bad "--relink names the ignore-rule cross-check" "$out"; fi
+  rc=0; out="$(SESSION_MEMORY_DIR="$cloudR" CLAUDE_CONFIG_DIR="$cfgR" bash "$LM" --relink --cloud --name proj "$repoR" 2>&1)" || rc=$?
+  if [[ $rc -eq 0 ]] && printf '%s\n' "$out" | grep -q 'already linked'; then ok "--relink is idempotent"; else bad "--relink is idempotent" "$out"; fi
+
+  # --- --relink case 2: shared memory -- the other session's folder is NOT touched ---
+  local cfgT="$TMPROOT/rlcfg2.$RANDOM" repoT slugT memT other cloudT
+  repoT="$TMPROOT/rlrepo2.$RANDOM"; mkdir -p "$repoT"; cloudT="$TMPROOT/rlcloud2.$RANDOM"; mkdir -p "$cloudT"
+  other="$TMPROOT/rlother.$RANDOM"; mkdir -p "$other"; echo idx > "$other/MEMORY.md"; echo x > "$other/x.md"
+  slugT="$(printf '%s' "$(cygpath -w "$repoT" 2>/dev/null || printf '%s' "$repoT")" | sed 's/[^A-Za-z0-9]/-/g')"
+  memT="$cfgT/projects/$slugT/memory"; mkdir -p "$(dirname "$memT")"
+  if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+    powershell.exe -NoProfile -NonInteractive -Command \
+      "New-Item -ItemType Junction -Path '$(cygpath -w "$memT")' -Target '$(cygpath -w "$other")' | Out-Null" >/dev/null 2>&1
+  else
+    ln -s "$other" "$memT"
+  fi
+  rc=0; out="$(SESSION_MEMORY_DIR="$cloudT" CLAUDE_CONFIG_DIR="$cfgT" bash "$LM" --relink --cloud --name shared "$repoT" 2>&1)" || rc=$?
+  assert_eq "--relink shared: exit 0" "0" "$rc"
+  assert_eq "--relink shared: files copied to the common folder" "MEMORY.md x.md" "$(ls -A "$cloudT/shared" | LC_ALL=C sort | paste -sd' ' -)"
+  assert_eq "--relink shared: the other session's memory is untouched" "MEMORY.md x.md" "$(ls -A "$other" | LC_ALL=C sort | paste -sd' ' -)"
+  if [[ -e "$other.pre-link" ]]; then bad "--relink shared: nothing outside the repo is renamed" "$other.pre-link exists"
+  else ok "--relink shared: nothing outside the repo is renamed"; fi
+  if printf '%s\n' "$out" | grep -q 'left untouched'; then ok "... and it says so"; else bad "... and it says so" "$out"; fi
+  # --relink without an existing link is a harmless no-op
+  local cfgU="$TMPROOT/rlcfg3.$RANDOM" repoU
+  repoU="$TMPROOT/rlrepo3.$RANDOM"; mkdir -p "$repoU"
+  rc=0; SESSION_MEMORY_DIR="$cloudT" CLAUDE_CONFIG_DIR="$cfgU" bash "$LM" --relink --cloud --name fresh "$repoU" >/dev/null 2>&1 || rc=$?
+  assert_eq "--relink without an existing link: harmless" "0" "$rc"
 }
 
 # --------------------------------------------------------------------------
@@ -1158,6 +1199,14 @@ test_stamp() {
   assert_eq "a garbled stamp is ignored, not reported" "" "$(state)"
   printf 'host 2026-08-30T07:11:51Z notanumber\n' > "$mem/.last-wrap"
   assert_eq "a non-numeric count is ignored" "" "$(state)"
+  # the stamp is per-machine and must not travel into the target on a move
+  local cfgS="$TMPROOT/stcfg2.$RANDOM" repoS slugS memS cloudS
+  repoS="$TMPROOT/strepo3.$RANDOM"; mkdir -p "$repoS"; cloudS="$TMPROOT/stcloud.$RANDOM"; mkdir -p "$cloudS"
+  slugS="$(printf '%s' "$(cygpath -w "$repoS" 2>/dev/null || printf '%s' "$repoS")" | sed 's/[^A-Za-z0-9]/-/g')"
+  memS="$cfgS/projects/$slugS/memory"; mkdir -p "$memS"
+  echo idx > "$memS/MEMORY.md"; printf 'somehost 2026-08-30T07:11:51Z 1\n' > "$memS/.last-wrap"
+  SESSION_MEMORY_DIR="$cloudS" CLAUDE_CONFIG_DIR="$cfgS" bash "$LM" --cloud --name m "$repoS" >/dev/null 2>&1
+  assert_eq "the stamp does not travel into the target" "MEMORY.md" "$(ls -A "$cloudS/m" | LC_ALL=C sort | paste -sd' ' -)"
   # --stamp on a project without a linked memory: says so, exit 0
   local repo2; repo2="$TMPROOT/strepo2.$RANDOM"; mkdir -p "$repo2"
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo2" 2>&1)" || rc=$?
