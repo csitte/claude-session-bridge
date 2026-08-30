@@ -1088,6 +1088,20 @@ test_linkmemory() {
   local cfg7="$TMPROOT/lmcfg7.$RANDOM"
   SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg7" bash "$LM" --cloud --name custom "$repo6" >/dev/null 2>&1
   if [[ -d "$cloud/custom" ]]; then ok "--cloud --name wins over .session-id"; else bad "--cloud --name wins over .session-id" "$(ls "$cloud")"; fi
+  # the id is lower-cased whatever its source -- two machines must not create two folders
+  local cfg8="$TMPROOT/lmcfg8.$RANDOM"
+  SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg8" bash "$LM" --cloud --name MiXeD "$repo6" >/dev/null 2>&1
+  if [[ -d "$cloud/mixed" ]]; then ok "--name is lower-cased"; else bad "--name is lower-cased" "$(ls "$cloud")"; fi
+  local cfg9="$TMPROOT/lmcfg9.$RANDOM" repo9
+  repo9="$TMPROOT/Capitalised.$RANDOM"; mkdir -p "$repo9"
+  SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg9" bash "$LM" --cloud "$repo9" >/dev/null 2>&1
+  if [[ -d "$cloud/$(printf '%s' "${repo9##*/}" | tr 'A-Z' 'a-z')" ]]; then
+    ok "a capitalised directory name is lower-cased too"
+  else bad "a capitalised directory name is lower-cased too" "$(ls "$cloud")"; fi
+  local cfg10="$TMPROOT/lmcfg10.$RANDOM" repo10
+  repo10="$TMPROOT/lmrepo10.$RANDOM"; mkdir -p "$repo10"; printf 'App-X\n' > "$repo10/.session-id"
+  SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg10" bash "$LM" --cloud "$repo10" >/dev/null 2>&1
+  if [[ -d "$cloud/app-x" ]]; then ok "a capitalised .session-id is lower-cased too"; else bad "a capitalised .session-id is lower-cased too" "$(ls "$cloud")"; fi
   rc=0; SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfg7" bash "$LM" --name custom "$repo6" >/dev/null 2>&1 || rc=$?
   assert_eq "--name without --cloud is a usage error" "64" "$rc"
   # a link that points elsewhere (repo -> cloud switch) is refused, nothing touched
@@ -1096,8 +1110,64 @@ test_linkmemory() {
   if printf '%s\n' "$out" | grep -q "rm "; then ok "... and the message says how to switch"; else bad "... and the message says how to switch" "$out"; fi
 }
 
+# --------------------------------------------------------------------------
+# memory stamp + launcher display
+# --------------------------------------------------------------------------
+
+test_stamp() {
+  head_ "memory: the wrap stamp and what the launcher makes of it"
+  local LM="$ROOT/launcher/link-memory.sh"
+  local cfg="$TMPROOT/stcfg.$RANDOM" repo slug mem out
+  repo="$TMPROOT/strepo.$RANDOM"; mkdir -p "$repo"
+  slug="$(printf '%s' "$(cygpath -w "$repo" 2>/dev/null || printf '%s' "$repo")" | sed 's/[^A-Za-z0-9]/-/g')"
+  mem="$cfg/projects/$slug/memory"; mkdir -p "$mem"
+  echo idx > "$mem/MEMORY.md"; echo a > "$mem/a.md"; echo b > "$mem/b.md"
+  state() { # -> the launcher's lines for this project
+    ( export CLAUDE_CONFIG_DIR="$cfg"
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      cc_memory_state proj "$repo" 2>&1 )
+  }
+  assert_eq "no stamp -> the launcher says nothing" "" "$(state)"
+  CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo" >/dev/null
+  assert_eq "the stamp does not count itself" "3" "$(cut -d' ' -f3 < "$mem/.last-wrap")"
+  assert_eq "one line, three fields" "3" "$(wc -w < "$mem/.last-wrap" | tr -d ' ')"
+  assert_eq "the stamp is UTC in the protocol format" "0" \
+    "$(cut -d' ' -f2 < "$mem/.last-wrap" | grep -cvE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')"
+  assert_eq "own host, complete -> still silent" "" "$(state)"
+  # the case the count exists for: the stamp arrived, the files did not
+  rm "$mem/a.md" "$mem/b.md"
+  out="$(state)"
+  if printf '%s\n' "$out" | grep -qF '[memory] proj: 3 file(s) expected, 1 present'; then
+    ok "shortfall is reported with both numbers"
+  else bad "shortfall is reported with both numbers" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'reads the memory ONCE at start'; then
+    ok "... and names what to do about it"
+  else bad "... and names what to do about it" "$out"; fi
+  # more files than stamped is normal local work, not a finding
+  echo a > "$mem/a.md"; echo b > "$mem/b.md"; echo c > "$mem/c.md"
+  assert_eq "more files than stamped is not a finding" "" "$(state)"
+  # a stamp from the other machine gets one informational line
+  printf 'other-host 2026-08-30T07:11:51Z 4\n' > "$mem/.last-wrap"
+  out="$(state)"
+  if printf '%s\n' "$out" | grep -q '^\[memory\] proj: state from other-host'; then
+    ok "a stamp from another host is shown"
+  else bad "a stamp from another host is shown" "$out"; fi
+  # a garbled stamp must not produce noise or an error
+  printf 'garbage\n' > "$mem/.last-wrap"
+  assert_eq "a garbled stamp is ignored, not reported" "" "$(state)"
+  printf 'host 2026-08-30T07:11:51Z notanumber\n' > "$mem/.last-wrap"
+  assert_eq "a non-numeric count is ignored" "" "$(state)"
+  # --stamp on a project without a linked memory: says so, exit 0
+  local repo2; repo2="$TMPROOT/strepo2.$RANDOM"; mkdir -p "$repo2"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo2" 2>&1)" || rc=$?
+  assert_eq "--stamp without a linked memory: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -q 'nothing to stamp'; then ok "... and says so"; else bad "... and says so" "$out"; fi
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
+  stamp) test_stamp ;;
   install) test_install ;;
   numbers) test_numbers ;;
   newthread) test_new_thread ;;
@@ -1106,8 +1176,8 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

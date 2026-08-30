@@ -43,12 +43,14 @@
 
 set -euo pipefail
 
-usage() { echo "usage: $(basename "$0") [-n] [--cloud [--name <id>]] [<repo-dir>]" >&2; exit 64; }
-dry=0 cloud=0 name=""
+usage() { echo "usage: $(basename "$0") [-n] [--cloud [--name <id>]] [<repo-dir>]
+       $(basename "$0") --stamp [<repo-dir>]   (write the stamp, see below)" >&2; exit 64; }
+dry=0 cloud=0 stamp=0 name=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -n|--dry-run) dry=1; shift ;;
     --cloud) cloud=1; shift ;;
+    --stamp) stamp=1; shift ;;
     --name) [[ -n "${2:-}" ]] || usage; name="$2"; shift 2 ;;
     -h|--help) usage ;;
     --) shift; break ;;
@@ -65,6 +67,26 @@ if command -v cygpath >/dev/null 2>&1; then native="$(cygpath -w "$repo")"; iswi
 slug="$(printf '%s' "$native" | sed 's/[^A-Za-z0-9]/-/g')"
 profile="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 mem="$profile/projects/$slug/memory"
+
+# --- --stamp: what is here, and from when? -----------------------------------
+# Your wrap-up ritual writes `<host> <UTC> <file count>` to `<memory>/.last-wrap` at the
+# end; the launcher reads it before starting a session (cc_memory_state in _lib.sh).
+#
+# Why the FILE COUNT and not just a timestamp: a sync client transfers file by file, there
+# is no atomic state. The stamp is itself just a file and can arrive BEFORE the files it
+# vouches for; a pure freshness display would then say "up to date" over a half-loaded
+# folder -- falsely reassuring at exactly the dangerous moment. With the count it becomes a
+# completeness check.
+#
+# The stamp does not count itself -- otherwise the number would be one too small right
+# after writing and every start would report a shortfall. Exactly one `date -u` reading.
+if (( stamp )); then
+  [[ -d "$mem" ]] || { echo "[stamp] no linked memory for '$slug' -- nothing to stamp."; exit 0; }
+  n=$(ls -A "$mem" 2>/dev/null | grep -vxF '.last-wrap' | wc -l | tr -d ' ')
+  printf '%s %s %s\n' "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$n" > "$mem/.last-wrap"
+  echo "[stamp] $mem/.last-wrap: $(cat "$mem/.last-wrap")"
+  exit 0
+fi
 
 # Your sync-folder roots, one per machine (e.g. "/d/SyncFolder" "/e/SyncFolder"). Empty on
 # purpose: the path differs per machine and per person, so SESSION_MEMORY_DIR is the
@@ -83,6 +105,11 @@ if (( cloud )); then
   fi
   if [[ -z "$name" && -r "$repo/.session-id" ]]; then name="$(head -1 "$repo/.session-id" | tr -d '\r[:space:]')"; fi
   [[ -n "$name" ]] || name="${repo##*/}"
+  # Always lower case, whatever the source: directory names are often capitalised, and if
+  # one machine created `<root>/Notes` and the other later `<root>/notes`, the sync service
+  # may well carry TWO folders. Locally on a case-insensitive filesystem that is invisible;
+  # in the cloud, and on a case-sensitive filesystem, it is not.
+  name="$(printf '%s' "$name" | tr 'A-Z' 'a-z')"
   target="$root/$name"
   mode="cloud"
 else

@@ -137,6 +137,46 @@ cc_pull_before_start() { # $1 = name, $2 = directory (msys path)
   return 0
 }
 
+# cc_memory_state — reports the state of the project memory BEFORE the start. Source is
+# `<memory>/.last-wrap`, written by the wrap-up ritual via `link-memory.sh --stamp`:
+# `<host> <UTC> <file count>`.
+#
+# What is read is always the PROFILE path `~/.claude/projects/<slug>/memory` — that is the
+# link, no matter whether the repo or a sync folder sits behind it. The launcher therefore
+# does not need to know the mode.
+#
+# Two cases, silence otherwise (a message carries only if it names an action or says
+# something you do not already know):
+#   SHORTFALL    fewer files present than stamped -> the sync client is still loading.
+#                Loud, because this is exactly where a session used to start with half a
+#                memory.
+#   OTHER HOST   stamp from the other machine -> one line, so it is visible how old the
+#                state is. Own host = nothing travelled = nothing to say.
+# MORE files than stamped is normal (written locally since the wrap), not a case. No stamp
+# (not migrated, never wrapped) or unreadable: silent. Always returns 0 — the display never
+# decides about the start.
+cc_memory_state() { # $1 = name, $2 = directory (msys path)
+  local name="$1" dir="$2" native slug mem shost sts scount actual ts_s now_s age=""
+  native="$(cygpath -w "$dir" 2>/dev/null || printf '%s' "$dir")"
+  slug="$(printf '%s' "$native" | sed 's/[^A-Za-z0-9]/-/g')"
+  mem="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug/memory"
+  [[ -d "$mem" && -r "$mem/.last-wrap" ]] || return 0
+  read -r shost sts scount < "$mem/.last-wrap" 2>/dev/null || return 0
+  [[ -n "$scount" && "$scount" != *[!0-9]* ]] || return 0
+  actual="$(ls -A "$mem" 2>/dev/null | grep -vxF '.last-wrap' | wc -l | tr -d ' ')"
+  # Age only if `date -d` understands the stamp -- otherwise show the raw time.
+  if ts_s="$(date -u -d "$sts" +%s 2>/dev/null)" && now_s="$(date -u +%s)"; then
+    age=" ($(( (now_s - ts_s) / 60 )) min ago)"
+  fi
+  if (( actual < scount )); then
+    echo "[memory] $name: $scount file(s) expected, $actual present -- sync still running (state $shost $sts$age)." >&2
+    echo "         Wait a moment before working on; the session reads the memory ONCE at start." >&2
+  elif [[ "$shost" != "$(hostname)" ]]; then
+    echo "[memory] $name: state from $shost, $sts$age, $actual file(s)." >&2
+  fi
+  return 0
+}
+
 # cc_launch — starts ONE entry in its own mintty window.
 # Format:  "name|path"  or  "name|path|extra-args"  (3rd field passed to claude as-is).
 # Returns: 0 = started, 1 = skipped (directory missing),
@@ -165,6 +205,8 @@ cc_launch() {
   # Pull first, then start — otherwise the session runs on the other machine's state
   # from yesterday (see cc_pull_before_start).
   cc_pull_before_start "$name" "$dir"
+  # And say how old the memory is, or that it has not fully arrived yet.
+  cc_memory_state "$name" "$dir"
 
   # Start prompt: '--continue' alone runs NO turn — the session is there, but never
   # executes the arming ritual from its CLAUDE.md. After one machine restart we

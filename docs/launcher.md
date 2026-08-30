@@ -97,6 +97,24 @@ Bash (msys treats it as a link; `rmdir` says "Not a directory"). Checked: `rm` a
 in Git Bash do **not** follow the junction, the repo stays intact — with PowerShell
 `Remove-Item -Recurse` that depends on the version, so do not delete there.
 
+**The stamp, and what the launcher makes of it.** As the last step on the memory, your
+wrap-up ritual runs `link-memory.sh --stamp`, which writes `<memory>/.last-wrap` with
+`<host> <UTC> <file count>`. Before each start `cc_memory_state` reads it and says two
+things, staying silent otherwise:
+
+```
+[memory] app: 402 file(s) expected, 387 present -- sync still running (state other-host 2026-08-30T07:11:51Z (25 min ago)).
+[memory] app: state from other-host, 2026-08-30T07:11:51Z (25 min ago), 55 file(s).
+```
+
+Why the **file count** and not just the time: a sync client transfers file by file, there is
+no atomic state — the stamp is itself a file and can arrive *before* the ones it vouches for.
+A pure freshness display would then say "up to date" over a half-loaded folder, falsely
+reassuring at exactly the dangerous moment. More files than stamped is normal (written
+locally since the wrap) and is not reported. In repo mode, exclude `memory/.last-wrap` in
+`.gitignore`: there git guarantees completeness itself, and the stamp would only be conflict
+fodder between two machines that both wrap.
+
 The counterparts when leaving a machine belong in the wrap-up ritual: WIP commit and push
 are mandatory, the hand-over goes into a file that travels (the memory), the session is
 closed (two live sessions in one project both answer the same threads and both commit),
