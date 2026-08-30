@@ -423,6 +423,33 @@ Three choices, two of them against the first proposal:
 No protocol change: the one-call recipe has been in the protocol for weeks; the check only
 measures whether it was followed.
 
+### The fold names thread numbers handed out twice
+
+`--new-thread` allocates numbers collision-free, but **renaming** bypasses it: whoever
+repairs a collision by hand creates the next one with the same movement. A rule against that
+acts on the creator — and the creator is precisely who notices nothing. So the detector sits
+where every session looks at every start.
+
+```
+Thread number: handed out twice, and both threads are open -- the number means two things:
+              172-release-notes                            oldest message: 2026-08-29T153006Z__app__1d82.md
+              172-network-setup                            oldest message: 2026-08-27T080516Z__other__1c99.md
+              Whoever created the later one renames -- take the number from '--new-thread',
+              do not guess; renaming onto a guessed number is how this arose.
+```
+
+Three choices, each from a measurement rather than an opinion:
+
+- **Only where two of them are still open.** In the field there were nine duplicate numbers
+  under `threads/` and exactly one where both threads were open. Naming all nine would have
+  printed twenty lines into every fold, eighteen of them without an action. If one is DONE the
+  number is unambiguous enough. No status counts as open.
+- **`_archiv/` stays out** — historical duplicates are plentiful and settled; `--numbers` is
+  the command for those.
+- **The oldest message per folder** shows who came later and therefore renames. It is fetched
+  **only for the hits**: listing every candidate cost 3.7 s on a sync folder, the hits a
+  fraction of that.
+
 ### Two checkouts, one CLAUDE.md — the wrong id
 
 **What happened.** A background session living in a second checkout armed and folded under

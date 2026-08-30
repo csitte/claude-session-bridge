@@ -465,6 +465,49 @@ test_watcher() {
     ok "WATCH_BRIDGE_STAMP_SLACK lowers the threshold"
   else bad "WATCH_BRIDGE_STAMP_SLACK lowers the threshold"; fi
 
+  # --- duplicate thread numbers: reported only while two of them are still open ---
+  # new_bridge ships a `001-test`; it has to go here, or the fixture itself carries a
+  # duplicate number and the silence assertions below can never hold. (It did on the first
+  # run -- the detector was right and the fixture was wrong.)
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  rm -rf "$b/threads/001-test"
+  post_state "$b" 001-mine 2026-01-01T000000Z__other__a1 other app OPEN
+  # two folders sharing a number, both open -> reported
+  post_state "$b" 200-alpha 2026-01-01T000000Z__x__b1 x someone OPEN
+  post_state "$b" 200-beta  2026-01-02T000000Z__y__b2 y someone OPEN
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q '^Thread number: handed out twice'; then
+    ok "--fold reports a number used by two open threads"
+  else bad "--fold reports a number used by two open threads" "$fold"; fi
+  assert_eq "--fold names both folders with their oldest message" "200-alpha 200-beta" \
+    "$(printf '%s\n' "$fold" | sed -n 's/^ \{14\}\(200-[a-z]*\) .*/\1/p' | LC_ALL=C sort | paste -sd' ' -)"
+  if printf '%s\n' "$fold" | grep -q 'oldest message: 2026-01-01T000000Z__x__b1'; then
+    ok "... so the later one is recognisable"
+  else bad "... so the later one is recognisable" "$fold"; fi
+  nc="$(printf '%s\n' "$fold" | grep -n '^Thread number:' | cut -d: -f1)"
+  tl="$(printf '%s\n' "$fold" | grep -n '^001-mine' | cut -d: -f1)"
+  if [[ -n "$nc" && -n "$tl" && "$nc" -lt "$tl" ]]; then
+    ok "--fold prints the number check ABOVE the thread list"
+  else bad "--fold prints the number check ABOVE the thread list" "$fold"; fi
+  # one of the two closed -> the number is unambiguous enough, no line
+  post_state "$b" 200-beta 2026-01-03T000000Z__y__b3 y someone DONE
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q '^Thread number:'; then
+    bad "a duplicate number with only one open thread is not reported"
+  else ok "a duplicate number with only one open thread is not reported"; fi
+  # a duplicate that lives in _archiv/ is history, not a finding
+  mkdir -p "$b/_archiv/200-old/msgs"
+  printf -- '---\nfrom: z\nto: app\ntype: fyi\ndate: 2026-01-01T00:00:00Z\n---\n\nbody\n' > "$b/_archiv/200-old/msgs/2026-01-01T000000Z__z__c1.md"
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q '^Thread number:'; then
+    bad "an archived duplicate is not reported"
+  else ok "an archived duplicate is not reported"; fi
+  # no duplicates at all -> silent
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  rm -rf "$b/threads/001-test"
+  post_state "$b" 001-mine 2026-01-01T000000Z__other__a1 other app OPEN
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q '^Thread number:'; then
+    bad "--fold stays silent when every number is unique"
+  else ok "--fold stays silent when every number is unique"; fi
+
   unset WATCH_BRIDGE_SETTLE
 }
 

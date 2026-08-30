@@ -205,6 +205,70 @@ stamp_hint() {
   echo "            The line disappears once a younger message with sets-* supersedes the file -- it then decides nothing any more."
 }
 
+# --- Seventh check: thread numbers handed out twice --------------------------
+# Prompted by two collisions within fifteen minutes, both from sessions working carefully.
+# `--new-thread` allocates numbers collision-free (both directories, abort rather than
+# dodge when max+1 is taken) -- but RENAMING bypasses it: whoever repairs a collision by
+# hand creates the next one with the same movement. A rule against that lives in the
+# protocol, but it acts on the CREATOR, and the creator is precisely who notices nothing.
+# Hence this detector: it shows up in every session's next start scan, no matter who made
+# the collision or whether they knew the rule. Do not rely on discipline where you can
+# measure.
+#
+# `threads/` only, not `_archiv/`: historical duplicates are plentiful and settled -- that
+# is what `--numbers` is for.
+#
+# And there only where AT LEAST TWO of the same-numbered threads are still open. Measured,
+# not assumed: in the field there were nine duplicate numbers under `threads/`, but only one
+# where two threads were genuinely open. Naming all nine would print twenty lines into every
+# fold of every session, eighteen of which give nobody anything to do -- a message carries
+# only if it names an action. If one of the two is DONE the number is unambiguous enough:
+# people talk about the open one. No status counts as open.
+#
+# Per folder the oldest message is named: by the rule, whoever came later renames, and
+# without that column everyone would have to look it up.
+number_hint() {
+  local dup num d st n_open hits="" report="" st_all
+  dup=$( cd "$bridge/threads" 2>/dev/null || exit 0
+         ls -d -- */ 2>/dev/null | sed 's|/$||' | grep -vE '^_' \
+         | grep -E '^[0-9]+-' | cut -d- -f1 | LC_ALL=C sort | uniq -d )
+  [[ -n "$dup" ]] || return 0
+  # ONE grep pass over the candidate folders rather than one per folder: on a cloud-sync
+  # folder every access is a fetch round.
+  st_all=$( cd "$bridge/threads" 2>/dev/null || exit 0
+            local args=()
+            while IFS= read -r num; do [[ -n "$num" ]] && args+=("$num"-*/); done <<< "$dup"
+            (( ${#args[@]} )) || exit 0
+            grep -rHm1 --include='*.md' '^sets-status:' "${args[@]}" 2>/dev/null | tr -d '\r' )
+  # Two passes, and the expensive one runs over the hits only: listing the msgs/ directories
+  # (for the oldest message) costs a fetch round each -- measured 3.7 s over all candidates,
+  # a fraction over the hits. Decide what to report first, then fetch the display for it.
+  while IFS= read -r num; do
+    [[ -n "$num" ]] || continue
+    n_open=0
+    for d in "$bridge/threads/$num"-*/; do
+      [[ -d "$d" ]] || continue
+      st=$(printf '%s\n' "$st_all" | grep -F "$(basename "$d")/msgs/" | LC_ALL=C sort | tail -1 \
+           | sed 's/.*sets-status: *//')
+      [[ "$st" == "DONE" ]] || n_open=$((n_open+1))
+    done
+    (( n_open >= 2 )) && report+="$num"$'\n'
+  done <<< "$dup"
+  while IFS= read -r num; do
+    [[ -n "$num" ]] || continue
+    for d in "$bridge/threads/$num"-*/; do
+      [[ -d "$d" ]] || continue
+      hits+=$(printf '              %-44s oldest message: %s\n' \
+              "$(basename "$d")" "$(ls -A "$d/msgs" 2>/dev/null | LC_ALL=C sort | head -1)")$'\n'
+    done
+  done <<< "$report"
+  [[ -n "$hits" ]] || return 0
+  echo "Thread number: handed out twice, and both threads are open -- the number means two things:"
+  printf '%s' "$hits"
+  echo "              Whoever created the later one renames -- take the number from '--new-thread',"
+  echo "              do not guess; renaming onto a guessed number is how this arose."
+}
+
 fold_report() {
   local me="$1" settle="${WATCH_BRIDGE_SETTLE:-5}"
   resolve_bridge
@@ -277,6 +341,7 @@ fold_report() {
   # reader is about to take at face value.
   name_hint
   stamp_hint
+  number_hint
   local slug st ow last kind
   if ! grep -q '^T|' "$tmp"; then
     echo "no open thread with owner '$me'."
