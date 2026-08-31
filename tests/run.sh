@@ -433,6 +433,25 @@ test_watcher() {
   if printf '%s\n' "$fold" | grep -qF 'threads/001-mine/msgs/2026-01-02T000000Z__other__f1.md  (+4.0 h, written 2026-01-01T200000Z)'; then
     ok "--fold names the file with its lead and the name it should have had"
   else bad "--fold names the file with its lead and the name it should have had" "$fold"; fi
+  # An OPEN thread carries no expiry -- somebody has to act on it.
+  if printf '%s\n' "$fold" | grep -q 'archive-ripe'; then
+    bad "an open thread gets no archive date (it needs a person, not time)" "$fold"
+  else ok "an open thread gets no archive date (it needs a person, not time)"; fi
+  # ... and a DONE one does: the line then says it expires instead of standing forever.
+  # Filtering DONE away would have swallowed this check's own founding case, so it is
+  # annotated, not hidden. Own fixture on purpose: adding a message to the bridge above
+  # would change which file decides the fold and quietly invalidate the assertions before
+  # it -- that mistake was made once already today.
+  local bd="$(new_bridge)"
+  ( export SESSION_BRIDGE_DIR="$bd"; check_safety
+    # the shape seen in the field: the future-stamped message is itself the one setting DONE
+    post_state "$bd" 001-done 2026-01-02T000000Z__other__q1 other app DONE
+    touch -d '2026-01-01T20:00:00Z' "$bd/threads/001-done/msgs/2026-01-02T000000Z__other__q1.md"
+    bash "$WATCHER" --fold app 2>/dev/null ) > "$TMPROOT/donefold.txt"
+  if grep -q 'DONE -- archive-ripe from 09.01.' "$TMPROOT/donefold.txt"; then
+    ok "a DONE thread's line carries its archive date (last message + 7 days)"
+  else bad "a DONE thread's line carries its archive date (last message + 7 days)" "$(cat "$TMPROOT/donefold.txt")"; fi
+  export SESSION_BRIDGE_DIR="$b"
   sc="$(printf '%s\n' "$fold" | grep -n '^Stamp check:' | cut -d: -f1)"
   tl="$(printf '%s\n' "$fold" | grep -n '^001-mine' | cut -d: -f1)"
   if [[ -n "$sc" && -n "$tl" && "$sc" -lt "$tl" ]]; then
@@ -874,7 +893,6 @@ test_coverage() {
     if printf '%s\n' "$out" | grep -q 'UNARMED'; then
       bad "a session outside the participant table raises no alarm" "$out"
     else ok "a session outside the participant table raises no alarm"; fi
-
     # No README, no check — adding one later switches the check on, exactly like
     # the id validation in install-watcher.sh.
     rm -rf "$reg"; write_session "$reg" "$pid" '/repos/app' 'App'
@@ -981,6 +999,21 @@ test_checkout() {
   if printf '%s\n' "$out" | grep -q 'SUSPECT'; then
     bad "a consistent .session-id silences the table check" "$out"
   else ok "a consistent .session-id silences the table check"; fi
+
+  # Standing INSIDE the bridge the check has no basis -- the working directory is not a
+  # project tree at all. It used to fire there and send the reader off to have a `msgs`
+  # folder added to the participant table: work created for a third party who cannot
+  # resolve it. And it hits exactly the timestamp repairs, which are done in `msgs/`.
+  out="$(cd "$b/threads/001-test/msgs" && SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --fold app 2>&1)"
+  if printf '%s\n' "$out" | grep -q 'SUSPECT'; then
+    bad "inside the bridge the id check stays quiet" "$out"
+  else ok "inside the bridge the id check stays quiet"; fi
+  if printf '%s\n' "$out" | grep -q 'you are inside the bridge'; then
+    ok "... and says why instead of staying silent"
+  else bad "... and says why instead of staying silent" "$out"; fi
+  if printf '%s\n' "$out" | grep -qi 'participant table'; then
+    bad "... and sends nobody to the registry for a msgs folder" "$out"
+  else ok "... and sends nobody to the registry for a msgs folder"; fi
 
   unset WATCH_BRIDGE_SETTLE SESSION_BRIDGE_DIR
 }

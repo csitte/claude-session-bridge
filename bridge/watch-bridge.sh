@@ -198,9 +198,34 @@ stamp_hint() {
       } | LC_ALL=C sort -u )
   bad=$(printf '%s\n' "$bad" | awk -F'|' 'NR==FNR { d[$0]=1; next } ($1 in d)' <(printf '%s\n' "$deciding") -)
   [[ -n "$bad" ]] || return 0
+
+  # --- annotate archive-ripeness ------------------------------------------------
+  # Deliberately NOT filtered by status -- a `DONE` with a future stamp is the most
+  # dangerous case (it holds the thread shut until the clock catches up with the invented
+  # time; that is exactly what prompted this check), so a status filter would have swallowed
+  # its own founding case. But the line did not say whether it needs somebody or merely
+  # time: the advice "close the thread and it goes away" turned out to be wrong -- a thread
+  # can sit at DONE for days and the line stays. What ends it is the move to the archive
+  # (DONE AND last message >= 7 days). So do not filter, annotate: **a line with an expiry
+  # date is no longer a permanent line.**
+  local status_map
+  status_map=$( cd "$bridge/threads" 2>/dev/null || exit 0
+      grep -rHm1 --include='*.md' '^sets-status:' . 2>/dev/null | tr -d '\r' \
+      | awk -F: '{ p=$1; sub(/^\.\//,"",p); split(p,a,"/"); v=$3; gsub(/^[ \t]+|[ \t]+$/,"",v)
+                   if (a[3] > f[a[1]]) { f[a[1]]=a[3]; s[a[1]]=v } }
+                 END { for (t in s) print t "\t" s[t] }' )
+  annotate() { # $1 = path -> "" or ", DONE -- archive-ripe from DD.MM."
+    local t last d
+    t="$(printf '%s' "$1" | cut -d/ -f2)"
+    [[ "$(awk -F'\t' -v t="$t" '$1==t{print $2}' <<<"$status_map")" == "DONE" ]] || return 0
+    last="$(ls -A "$bridge/threads/$t/msgs" 2>/dev/null | LC_ALL=C sort | tail -1)"
+    d="$(TZ=UTC0 date -u -d "${last:0:10} +7 days" +%d.%m. 2>/dev/null)" || return 0
+    printf ', DONE -- archive-ripe from %s' "$d"
+  }
+
   n=$(printf '%s\n' "$bad" | wc -l | tr -d ' ')
   echo "Stamp check: $n file(s) in threads/*/msgs/ whose name lies more than $((slack/60)) min after the write time (mtime) -- typed, or local time with a 'Z'. They still decide the fold of their thread (last file, last sets-status or sets-owner) and win against everything written up to their stamp:"
-  while IFS='|' read -r line n2 wr; do printf '            %s  (+%s h, written %s)\n' "$line" "$n2" "$wr"; done <<< "$bad"
+  while IFS='|' read -r line n2 wr; do printf '            %s  (+%s h, written %s%s)\n' "$line" "$n2" "$wr" "$(annotate "$line")"; done <<< "$bad"
   echo "            Repair by the author: mv to the name derived from the write time (content unchanged). Running watchers deliver the renamed file once."
   echo "            The line disappears once a younger message with sets-* supersedes the file -- it then decides nothing any more."
 }
@@ -699,6 +724,22 @@ checkout_hint() { # $1 = the id it was called with; prints to stdout
   local me="$1" cwd sid sidpath owner base
   cwd="$(path_resolve .)"
   [[ -n "$cwd" ]] || return 0
+
+  # Called from INSIDE the bridge, this check measures something other than what it makes a
+  # statement about: it reads the working directory as "this session's project tree" and
+  # concluded that the registry was incomplete -- when in truth somebody is simply standing
+  # in a thread folder. That hits precisely the timestamp repairs (you work in `msgs/`), and
+  # the old wording sent the reporter off to have a `msgs` folder added to the participant
+  # table: work created for a third party who cannot resolve it. Reported from the field.
+  # Hence a quiet line here, no keyword and no registry pointer: the fold itself is fine,
+  # only the id check has no basis in this location.
+  local bdir; bdir="$(cd "$bridge" 2>/dev/null && path_resolve .)"
+  if [[ -n "$bdir" && ( "$cwd" == "$bdir" || "$cwd" == "$bdir"/* ) ]]; then
+    echo "Note: you are inside the bridge, not in a project directory -- the id check does"
+    echo "      not apply here (the fold itself does). Fold from the project directory if"
+    echo "      you need it."
+    return 0
+  fi
 
   if [[ -r .session-id ]]; then
     sid=$(head -1 .session-id 2>/dev/null | tr -d '\r' | tr -d ' ')
