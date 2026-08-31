@@ -256,7 +256,20 @@ case "$kind" in
       echo "[abort] $mem points to '$oldtarget', not to the target -- nothing touched. (To move it: --relink, or remove the link with 'rm $mem' and rerun.)" >&2; exit 1
     fi ;;
   none)
-    echo "[new] no profile memory for '$slug' -- $target will be created and linked." ;;
+    # Two different situations carry the same name, and only one of them is a fresh
+    # start. If the target already holds a memory, "no profile memory" is the NORMAL
+    # state on a second machine -- that machine has never been here, the memory has
+    # been there for a while. The old wording read like a deficiency in both cases.
+    # The behaviour was always right (the run goes through, exit 0); what was missing
+    # is the framing, and the framing decides whether somebody reports it as a bug.
+    n_target=$( (shopt -s nullglob; set -- "$target"/*.md; echo $#) 2>/dev/null || echo 0 )
+    if [[ -d "$target" ]] && (( n_target > 0 )); then
+      echo "[new] no profile memory for '$slug' -- normal on a second machine:"
+      echo "      $target is already there ($n_target file(s)) and is only being linked."
+      echo "      Expect: the profile path then shows the same number ($n_target); nothing is copied."
+    else
+      echo "[new] no profile memory for '$slug' -- $target will be created and linked."
+    fi ;;
 esac
 
 if [[ $kind == dir || $relinking == 1 ]]; then

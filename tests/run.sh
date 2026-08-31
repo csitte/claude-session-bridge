@@ -1809,6 +1809,62 @@ test_movesnotice() {
   else ok "nothing to move: no notice at all"; fi
 }
 
+# --------------------------------------------------------------------------
+# "no profile memory": a fresh start, or the normal state on a second machine?
+# --------------------------------------------------------------------------
+
+# Two different situations shared one message. On a machine that has never held this
+# project, the target is already full and nothing needs copying -- but the wording read
+# like a deficiency, and the run was reported as suspect. The behaviour was always right
+# (it goes through, exit 0, the count is correct); only the framing was missing, and the
+# framing is what decides whether somebody stops and asks. Reported from the field after
+# a stamp survey found this situation still ahead for almost every migrated project.
+test_secondmachine() {
+  head_ "link-memory: no profile memory is framed as normal when the target is populated"
+  local LM="$ROOT/launcher/link-memory.sh"
+  local cfg repo drive out rc
+  drive="$TMPROOT/smdrive.$RANDOM"; mkdir -p "$drive/proj"
+  printf 'a\n' > "$drive/proj/a.md"; printf 'b\n' > "$drive/proj/b.md"; printf 'i\n' > "$drive/proj/MEMORY.md"
+  cfg="$TMPROOT/smcfg.$RANDOM"; repo="$TMPROOT/smrepo.$RANDOM"; mkdir -p "$repo" "$cfg"
+
+  rc=0
+  out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$drive" bash "$LM" -n --cloud --name proj "$repo" 2>&1)" || rc=$?
+  assert_eq "populated target, no profile memory: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -qF 'normal on a second machine'; then
+    ok "it is named as the normal case, not as a deficiency"
+  else bad "it is named as the normal case, not as a deficiency" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF 'already there (3 file(s))'; then
+    ok "... and says how much is already in the target"
+  else bad "... and says how much is already in the target" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF 'the same number (3)'; then
+    ok "... and states the expected outcome, so a session can tell right from wrong"
+  else bad "... and states the expected outcome" "$out"; fi
+
+  # and the expectation has to hold when the run goes through
+  rc=0
+  out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$drive" bash "$LM" --cloud --name proj "$repo" 2>&1)" || rc=$?
+  assert_eq "link: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -qF '(3 file(s))'; then
+    ok "the promised number is the one actually reported after linking"
+  else bad "the promised number is the one actually reported after linking" "$out"; fi
+  assert_eq "nothing was copied -- the target is unchanged" "MEMORY.md a.md b.md" \
+    "$(ls -A "$drive/proj" | grep -v '^[.]last-wrap$' | LC_ALL=C sort | paste -sd' ' -)"
+
+  # an EMPTY target is a genuinely fresh start -- there the old wording is the right one
+  local cfg2 repo2 drive2
+  drive2="$TMPROOT/smdrive2.$RANDOM"; mkdir -p "$drive2"
+  cfg2="$TMPROOT/smcfg2.$RANDOM"; repo2="$TMPROOT/smrepo2.$RANDOM"; mkdir -p "$repo2" "$cfg2"
+  rc=0
+  out="$(CLAUDE_CONFIG_DIR="$cfg2" SESSION_MEMORY_DIR="$drive2" bash "$LM" -n --cloud --name fresh "$repo2" 2>&1)" || rc=$?
+  assert_eq "empty target: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -qF 'will be created and linked'; then
+    ok "empty target keeps the fresh-start wording"
+  else bad "empty target keeps the fresh-start wording" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF 'normal on a second machine'; then
+    bad "empty target does not claim a second machine" "$out"
+  else ok "empty target does not claim a second machine"; fi
+}
+
 test_canonicalise() {
   head_ "paths are canonicalised before becoming a slug or being compared"
   local f offenders=""
@@ -1853,6 +1909,7 @@ case "${1:-all}" in
   canonicalise) test_canonicalise ;;
   indexrename) test_indexrename ;;
   movesnotice) test_movesnotice ;;
+  secondmachine) test_secondmachine ;;
   stamp) test_stamp ;;
   ruleparity) test_ruleparity ;;
   lineendings) test_lineendings ;;
@@ -1865,7 +1922,7 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 

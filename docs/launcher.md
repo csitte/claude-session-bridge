@@ -134,6 +134,25 @@ The same blind spot applies to *measuring* such a situation: a per-file comparis
 intersection and nothing else. Measure in two stages — per file for the intersection, and each
 one-side-only file against the **whole** target corpus.
 
+**On a second machine, "no profile memory" is not a problem.** That machine has never held this
+project; the memory has been in the target all along and is only linked, nothing is copied. The
+message used to read like a deficiency in both situations. It now distinguishes them, and states
+the expected outcome so a session can tell a correct run from a broken one:
+
+```
+[new] no profile memory for '<slug>' -- normal on a second machine:
+      <target> is already there (4 file(s)) and is only being linked.
+      Expect: the profile path then shows the same number (4); nothing is copied.
+```
+
+With an empty target the original wording stays -- there it really is a fresh start. The
+behaviour was always right; the framing was what decided whether somebody stopped and asked.
+
+**What does *not* tell you whether a project still has its second machine ahead of it:** the
+wrap stamp. It holds the **last** wrap, not the history, so a project that migrated on the
+second machine and later wrapped on the first shows the first one. A point-in-time value cannot
+answer a question about history; the migration's own completion records can.
+
 keeps both sides intact until then. A second run reports "already linked", and
 every run cross-checks by listing the repo **through** the link. Removing the junction again: `rm <path>` in Git
 Bash (msys treats it as a link; `rmdir` says "Not a directory"). Checked: `rm` and `rm -rf`
