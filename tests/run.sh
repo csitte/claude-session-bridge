@@ -63,6 +63,11 @@ trap 'rm -rf "$TMPROOT"' EXIT
 # script looked under `C--Users-runneradmin-…` — 28 tests failed against a script that was
 # working correctly, and a real migration on the same platform had already proven it.
 # A fixture that computes a value differently from the code under test does not test it.
+# winpath_of — the Windows spelling of a directory, canonicalised first. A participant table
+# written from the raw path can carry the 8.3 short name while the script resolves the long
+# one; the fixture must describe the same reality the code under test sees.
+winpath_of() { local p; p="$(cd "$1" 2>/dev/null && pwd -P)" || p="$1"; cygpath -w "$p" 2>/dev/null || printf '%s' "$p"; }
+
 slug_of() { # $1 = directory (must exist)
   local p; p="$(cd "$1" 2>/dev/null && pwd -P)" || p="$1"
   printf '%s' "$(cygpath -w "$p" 2>/dev/null || printf '%s' "$p")" | sed 's/[^A-Za-z0-9]/-/g'
@@ -1221,8 +1226,8 @@ test_linkmemory() {
   # the table lists the WEB directory under the id `app`; app-product is a different id
   {
     printf '| id | session | repo / working dir |\n|---|---|---|\n'
-    printf '| `app` | web | `%s` (`main`) |\n' "$(cygpath -w "$repoW" 2>/dev/null || printf '%s' "$repoW")"
-    printf '| `app-product` | product | `%s` (`main`) |\n' "$(cygpath -w "$repoP" 2>/dev/null || printf '%s' "$repoP")"
+    printf '| `app` | web | `%s` (`main`) |\n' "$(winpath_of "$repoW")"
+    printf '| `app-product` | product | `%s` (`main`) |\n' "$(winpath_of "$repoP")"
   } > "$bridge/README.md"
   local cfgV="$TMPROOT/lmcfg11.$RANDOM"
   SESSION_BRIDGE_DIR="$bridge" SESSION_MEMORY_DIR="$cloud" CLAUDE_CONFIG_DIR="$cfgV" \
@@ -1401,7 +1406,7 @@ test_ruleparity() {
   # and one shared fixture through both implementations
   local bridge="$TMPROOT/parity.$RANDOM"; mkdir -p "$bridge/threads/001-x/msgs"
   local proj="$TMPROOT/parityproj.$RANDOM"; mkdir -p "$proj"
-  local win; win="$(cygpath -w "$proj" 2>/dev/null || printf '%s' "$proj")"
+  local win; win="$(winpath_of "$proj")"
   {
     printf '| id | session | repo / working dir |\n|---|---|---|\n'
     printf '| `app` | x | `%s` (`main`) |\n' "$win"          # backslashes on Windows, slashes on Linux

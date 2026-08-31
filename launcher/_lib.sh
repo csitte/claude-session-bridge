@@ -224,6 +224,12 @@ cc_pull_before_start() { # $1 = name, $2 = directory (msys path)
 # decides about the start.
 cc_memory_state() { # $1 = name, $2 = directory (msys path)
   local name="$1" dir="$2" native slug mem shost sts scount actual ts_s now_s age=""
+  # Canonicalise first, then build the slug -- exactly as link-memory.sh does when it creates
+  # the folder. Without it the two tools compute different slugs as soon as Windows keeps an
+  # 8.3 short name for a long directory (`C--Users-RUNNER-1-…` against
+  # `C--Users-runneradmin-…`): the launcher would never see a stamp and would stay silent --
+  # precisely the shortfall warning this function exists for. Measured on CI (5 cases).
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 0
   native="$(cygpath -w "$dir" 2>/dev/null || printf '%s' "$dir")"
   slug="$(printf '%s' "$native" | sed 's/[^A-Za-z0-9]/-/g')"
   mem="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug/memory"

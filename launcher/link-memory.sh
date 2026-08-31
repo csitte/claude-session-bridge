@@ -156,6 +156,14 @@ id_from_table() {
 
 norm() { # make a path comparable: one form, lower case, '/', no trailing '/'
   local p="$1"
+  # If the path exists, CANONICALISE it first. Otherwise two spellings of the same place are
+  # compared: Windows keeps an 8.3 short name for long directory names
+  # (`C:\Users\RUNNER~1\…` next to `C:\Users\runneradmin\…`), and which one you get
+  # depends on the tool -- PowerShell reports the long form for a junction target, `cygpath -m`
+  # on our own string may report the short one. An existing link then counts as "points
+  # elsewhere" and --relink moves it for nothing. Measured on CI; invisible on a machine where
+  # both spellings coincide.
+  if [[ -e "$p" ]]; then p="$(cd "$p" 2>/dev/null && pwd -P)" || p="$1"; fi
   [[ $iswin == 1 ]] && p="$(cygpath -m "$p" 2>/dev/null || printf '%s' "$p")"
   printf '%s' "$p" | tr 'A-Z' 'a-z' | tr '\\' '/' | tr -s '/' | sed 's|/$||'
 }
