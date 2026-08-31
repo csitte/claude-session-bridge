@@ -53,6 +53,30 @@ invisibility as handing off to a session that is not running.
    `WARNING`. An index may lag, so it is used strictly as a **lower bound**: a thread once
    indexed never disappears, it only moves. Threads too new to be indexed are check 1's job.
 
+   **Two explanations, not one.** "The sync client is still fetching" used to be asserted. The
+   second explanation is the ordinary case: the protocol resolves number collisions by
+   **renaming**, so every correctly executed repair produces exactly this warning — the index
+   is then merely older than the rename, and regenerating it is enough where the text told the
+   reader to wait. If the fold finds a thread with the **same name part under a different
+   number** (in `threads/` or `_archiv/`), it names both possibilities and shows the candidate:
+
+   ```
+   WARNING: listed in INDEX, but in neither threads/ nor _archiv/: 172-release-notes
+            Two explanations, both possible: the sync client is still fetching (then
+            repeat the fold later) — or the index is older than a rename (then
+            regenerate it). Same name part, different number:
+            172-release-notes -> 221-release-notes
+            Evidence, not proof — two threads may legitimately share a name.
+   ```
+
+   **Why the likelier explanation is not asserted:** two threads may carry the same name part
+   under different numbers without anyone having renamed anything. An asserted reason would
+   then be *plausible and wrong* — the very class of defect this tool had to fix three times in
+   one day, where a check measured something other than what it made a statement about. With no
+   candidate the original sentence stays: there the backlog really is the only explanation
+   available. Test group `indexrename` (10 cases; mutation-proved — disabling the candidate
+   search turns 5 of them red).
+
 Whatever is present is reported either way; the warning only says whether the result can be
 trusted yet. For tests, set `SESSION_BRIDGE_DIR` and `WATCH_BRIDGE_SETTLE=0`.
 

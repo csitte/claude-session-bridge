@@ -343,12 +343,34 @@ fold_report() {
 
   # INDEX slugs as a lower bound (advisory: an index is regenerable and may lag).
   local missing="" s idx_n=0
+  local -a missing_slugs=()
   if [[ -r "$bridge/INDEX.md" ]]; then
     while IFS= read -r s; do
       idx_n=$((idx_n+1))
-      [[ -d "$bridge/threads/$s" || -d "$bridge/_archiv/$s" ]] || missing+="${missing:+, }$s"
+      if [[ ! -d "$bridge/threads/$s" && ! -d "$bridge/_archiv/$s" ]]; then
+        missing+="${missing:+, }$s"; missing_slugs+=("$s")
+      fi
     done < <(sed -n 's/^| `\([^`]*\)` |.*/\1/p' "$bridge/INDEX.md" | tr -d '\r')
   fi
+
+  # A missing slug has two explanations and from the outside you cannot tell which
+  # one holds: the sync client is still fetching — or the index is older than a
+  # rename. The second is not a corner case: the protocol resolves number
+  # collisions by renaming, so *every* correctly executed repair produces this
+  # warning.
+  # A thread carrying the same name part under a different number is **evidence,
+  # not proof** — two threads may share a name without anyone having renamed
+  # anything. So it is shown as a candidate and the reason is not asserted: one
+  # extra line is cheaper than the next plausible wrong reason.
+  rename_candidates() { # $1 = missing slug -> one candidate per line
+    [[ "$1" == [0-9]*-* ]] || return 0
+    local tail="${1#*-}" d b
+    for d in "$bridge/threads/"*-"$tail" "$bridge/_archiv/"*-"$tail"; do
+      [[ -d "$d" ]] || continue
+      b="${d##*/}"
+      [[ "$b" == "$1" ]] || printf '%s\n' "$b"
+    done
+  }
 
   local note="stable" idx_note=""
   [[ "$n2" != "$n1" ]] && note="UNSTABLE ($n1 -> $n2)"
@@ -356,7 +378,21 @@ fold_report() {
   echo "Bridge fold for '$me': $n2 threads in threads/$idx_note — $note."
   if [[ -n "$missing" ]]; then
     echo "WARNING: listed in INDEX, but in neither threads/ nor _archiv/: $missing"
-    echo "         The sync client is probably still fetching — repeat the fold later."
+    local cand="" c
+    for s in "${missing_slugs[@]}"; do
+      while IFS= read -r c; do
+        [[ -n "$c" ]] && cand+="${cand:+, }$s -> $c"
+      done < <(rename_candidates "$s")
+    done
+    if [[ -n "$cand" ]]; then
+      echo "         Two explanations, both possible: the sync client is still fetching (then"
+      echo "         repeat the fold later) — or the index is older than a rename (then"
+      echo "         regenerate it). Same name part, different number:"
+      echo "         $cand"
+      echo "         Evidence, not proof — two threads may legitimately share a name."
+    else
+      echo "         The sync client is probably still fetching — repeat the fold later."
+    fi
   fi
   # BEFORE the thread list, not after: if the id is wrong the whole list belongs
   # to somebody else. In the incident above the session read the foreign inbox and

@@ -1651,6 +1651,96 @@ canon_slug_offenders() { # $1 = file, $2 = label -> blocks that slug without can
   ' "$1"
 }
 
+# --------------------------------------------------------------------------
+# a missing INDEX slug: sync backlog, or an index older than a rename?
+# --------------------------------------------------------------------------
+
+# Reported by the coordinating session: renaming is the prescribed way to resolve a number
+# collision, so EVERY correctly executed repair made the fold claim "the sync client is still
+# fetching" and send the reader off to wait. The fix does not swap one asserted reason for
+# another -- a thread with the same name part under a different number is evidence, not proof
+# (two threads may legitimately share a name), so both explanations are printed and the
+# candidate is shown as a candidate. Own fixture: adding a rename to a shared bridge would
+# move which file decides the fold and silently invalidate the neighbouring assertions.
+test_indexrename() {
+  head_ "INDEX: a missing slug names both explanations, and the rename candidate"
+  local b out
+  b="$TMPROOT/idxren.$RANDOM"
+  mkdir -p "$b/threads/221-release-notes/msgs" "$b/threads/003-unrelated/msgs" "$b/_archiv"
+  {
+    echo "# INDEX"
+    echo ""
+    echo "| Slug | Status |"
+    echo "|---|---|"
+    echo "| \`172-release-notes\` | OPEN |"
+    echo "| \`221-release-notes\` | OPEN |"
+    echo "| \`003-unrelated\` | OPEN |"
+  } > "$b/INDEX.md"
+  fold() { SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_SETTLE=0 bash "$ROOT/bridge/watch-bridge.sh" --fold someone 2>&1; }
+
+  out="$(fold)"
+  if printf '%s
+' "$out" | grep -qF 'Two explanations, both possible'; then
+    ok "a rename candidate makes the fold name both explanations"
+  else bad "a rename candidate makes the fold name both explanations" "$out"; fi
+  if printf '%s
+' "$out" | grep -qF '172-release-notes -> 221-release-notes'; then
+    ok "... and names the candidate, old slug to new"
+  else bad "... and names the candidate, old slug to new" "$out"; fi
+  if printf '%s
+' "$out" | grep -qF 'Evidence, not proof'; then
+    ok "... as a candidate, not as the reason (two threads may share a name)"
+  else bad "... as a candidate, not as the reason" "$out"; fi
+  if printf '%s
+' "$out" | grep -qF 'The sync client is probably still fetching'; then
+    bad "the asserted single reason is gone when a candidate exists" "$out"
+  else ok "the asserted single reason is gone when a candidate exists"; fi
+
+  # no candidate -> the old wording stays; the sync backlog really is the likely cause
+  rm -rf "$b/threads/221-release-notes"
+  out="$(fold)"
+  if printf '%s
+' "$out" | grep -qF 'The sync client is probably still fetching'; then
+    ok "without a candidate the sync-backlog wording stays"
+  else bad "without a candidate the sync-backlog wording stays" "$out"; fi
+  if printf '%s
+' "$out" | grep -qF 'Two explanations'; then
+    bad "no candidate, no candidate line" "$out"
+  else ok "no candidate, no candidate line"; fi
+
+  # the archive is a location too: a renamed thread may already have moved there
+  mkdir -p "$b/_archiv/221-release-notes/msgs"
+  out="$(fold)"
+  if printf '%s
+' "$out" | grep -qF '172-release-notes -> 221-release-notes'; then
+    ok "a candidate in _archiv/ counts as well"
+  else bad "a candidate in _archiv/ counts as well" "$out"; fi
+
+  # nothing missing -> no warning at all (the check must not invent work)
+  mkdir -p "$b/threads/172-release-notes/msgs"
+  out="$(fold)"
+  if printf '%s
+' "$out" | grep -qF 'listed in INDEX'; then
+    bad "complete index, no warning" "$out"
+  else ok "complete index, no warning"; fi
+
+  # a slug without a leading number has no number to differ in -> no candidate, no crash
+  rm -rf "$b/threads/172-release-notes"
+  {
+    echo "# INDEX"; echo ""; echo "| Slug | Status |"; echo "|---|---|"
+    echo "| \`release-notes\` | OPEN |"
+  } > "$b/INDEX.md"
+  out="$(fold)"
+  if printf '%s
+' "$out" | grep -qF 'Two explanations'; then
+    bad "a numberless slug yields no candidate" "$out"
+  else ok "a numberless slug yields no candidate"; fi
+  if printf '%s
+' "$out" | grep -qF 'listed in INDEX, but in neither'; then
+    ok "... but it is still reported as missing"
+  else bad "... but it is still reported as missing" "$out"; fi
+}
+
 test_canonicalise() {
   head_ "paths are canonicalised before becoming a slug or being compared"
   local f offenders=""
@@ -1693,6 +1783,7 @@ case "${1:-all}" in
   watcher) test_watcher ;;
   commands) test_commands ;;
   canonicalise) test_canonicalise ;;
+  indexrename) test_indexrename ;;
   stamp) test_stamp ;;
   ruleparity) test_ruleparity ;;
   lineendings) test_lineendings ;;
@@ -1705,7 +1796,7 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename ;;
   *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 
