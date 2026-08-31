@@ -80,6 +80,13 @@ cc_session_running() { # $1 = name, $2 = directory (msys path) -> 0 = already ru
   local dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
   [[ -d "$dir" ]] || return 1
 
+  # Canonicalise first, then convert -- the same rule as in cc_memory_state and
+  # link-memory.sh: two spellings of one directory (an 8.3 short name against the long one,
+  # or a mount alias like /tmp) give two different strings, and the cwd branch would then
+  # not find the running session -- the launcher would start a second one in the same tree,
+  # which is exactly what this function exists to prevent. If the directory does not exist
+  # the value is kept as passed: the name comparison below must still work.
+  want_dir="$(cd "$want_dir" 2>/dev/null && pwd -P)" || want_dir="$2"
   # msys path -> the Windows form the registry uses; without cygpath (not msys)
   # rewrite /d/x by hand, or the cwd branch is dead and only the name ever matches.
   win="$(cygpath -m "$want_dir" 2>/dev/null || printf '%s' "$want_dir" | sed -E 's|^/([a-zA-Z])/|\1:/|')"

@@ -1581,9 +1581,85 @@ test_commands() {
   else bad "check-commands.sh says when there is nothing to compare" "rc=$rc $out"; fi
 }
 
+# --------------------------------------------------------------------------
+# every path is canonicalised before it is compared or turned into a slug
+# --------------------------------------------------------------------------
+
+# The rule: `cd … && pwd -P` BEFORE `cygpath`, wherever a path becomes a profile slug or is
+# compared against another path. Windows keeps an 8.3 short name for long directories, and a
+# mount alias (`/tmp`) is a second spelling too -- compare two spellings of one directory and
+# you silently find nothing. Three places had drifted apart for two days.
+#
+# Why structural and not behavioural: on a machine where both spellings coincide the
+# behavioural tests pass no matter what -- which is exactly how it stayed unnoticed. This
+# reads the rule instead of its effect.
+#
+# Deliberately NOT a blanket "every cygpath must canonicalise": the first draft of this check
+# flagged install-watcher.sh, which converts a path in order to WRITE it into another
+# session's arming paragraph. There the unresolved spelling is the better one -- it is what
+# the reader typed. Emitting is not comparing. So the check has two precise halves instead of
+# one broad heuristic:
+#   A) any block that builds a slug (`[^A-Za-z0-9]/-/g`) -- a slug is always a lookup key;
+#   B) a named list of the functions that compare paths.
+# A new comparison site has to be added to (B) by hand; that is the price of not flagging
+# code which merely renders a path.
+canon_slug_offenders() { # $1 = file, $2 = label -> blocks that slug without canonicalising
+  awk -v F="$2" '
+    /^[ \t]*#/ { next }
+    /^[a-z_]+\(\)[ \t]*\{/ { fn=$1; sub(/\(\).*/,"",fn); inb=1; has=0; can=0; next }
+    inb && /^\}/ { if (has && !can) print F ": " fn; inb=0; next }
+    {
+      s = ($0 ~ /\[\^A-Za-z0-9\]\/-\/g/)
+      p = ($0 ~ /pwd -P/)
+      if (inb) { if (s) has=1; if (p) can=1 }
+      else     { if (s) mhas=1; if (p) mcan=1 }
+    }
+    END { if (mhas && !mcan) print F ": (top level)" }
+  ' "$1"
+}
+
+test_canonicalise() {
+  head_ "paths are canonicalised before becoming a slug or being compared"
+  local f offenders=""
+  # (A) the shipped scripts -- every slug there is a lookup key
+  for f in "$ROOT"/launcher/*.sh "$ROOT"/bridge/*.sh; do
+    [[ -f "$f" ]] || continue
+    offenders+="$(canon_slug_offenders "$f" "$(basename "$f")")"
+  done
+  assert_eq "no shipped script builds a slug without canonicalising first" "" "$offenders"
+
+  # (B) the functions that COMPARE paths, by name -- each must canonicalise
+  local fn file body missing=""
+  for fn in "cc_session_running:$ROOT/launcher/_lib.sh" \
+            "cc_memory_state:$ROOT/launcher/_lib.sh" \
+            "norm:$ROOT/launcher/link-memory.sh" \
+            "id_from_table:$ROOT/launcher/link-memory.sh"; do
+    file="${fn##*:}"; fn="${fn%%:*}"
+    # index() instead of a dynamic regex: escaping ( ) { inside an awk string is a trap of
+    # its own (it cost two attempts here), and a plain-text match is what is meant anyway.
+    body="$(awk -v n="$fn" 'index($0, n "() {")==1 {i=1} i {print} i && /^}/ {exit}' "$file")"
+    [[ -n "$body" ]] || { missing+="$fn (not found) "; continue; }
+    # id_from_table compares via norm(), so it counts as covered by norm's own check
+    if [[ "$fn" == "id_from_table" ]]; then
+      printf '%s' "$body" | grep -q 'norm ' || missing+="$fn "
+    else
+      printf '%s' "$body" | grep -q 'pwd -P' || missing+="$fn "
+    fi
+  done
+  assert_eq "every path-comparing function canonicalises (or delegates to one that does)" "" "$missing"
+
+  # the check must be able to fail, or it guards nothing
+  local probe="$TMPROOT/canon.$RANDOM.sh"
+  { printf 'f() {\n'; printf '  echo "$1" | sed s/[^A-Za-z0-9]/-/g\n'; printf '}\n'; } > "$probe"
+  if [[ -n "$(canon_slug_offenders "$probe" probe)" ]]; then
+    ok "the check detects a slug built without canonicalising (it can go red)"
+  else bad "the check detects a slug built without canonicalising (it can go red)" "probe not flagged"; fi
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   commands) test_commands ;;
+  canonicalise) test_canonicalise ;;
   stamp) test_stamp ;;
   ruleparity) test_ruleparity ;;
   lineendings) test_lineendings ;;
@@ -1596,8 +1672,8 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"
