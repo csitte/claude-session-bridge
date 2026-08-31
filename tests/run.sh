@@ -52,6 +52,22 @@ trap 'rm -rf "$TMPROOT"' EXIT
 # helpers
 # --------------------------------------------------------------------------
 
+# slug_of — the profile-directory name Claude Code derives from a working directory, the way
+# link-memory.sh derives it: **canonicalise first** (`cd … && pwd -P`), then the Windows form,
+# then every non-alphanumeric character becomes '-'.
+#
+# The canonicalisation is the whole point. Taking `cygpath -w` of the raw path instead looked
+# identical on one machine and diverged on CI: there `mktemp -d` returns a path under `/tmp`
+# whose Windows form carries the 8.3 SHORT name of the user directory, while `pwd -P` yields
+# the long one. The fixture then created the profile under `C--Users-RUNNER-1-…` while the
+# script looked under `C--Users-runneradmin-…` — 28 tests failed against a script that was
+# working correctly, and a real migration on the same platform had already proven it.
+# A fixture that computes a value differently from the code under test does not test it.
+slug_of() { # $1 = directory (must exist)
+  local p; p="$(cd "$1" 2>/dev/null && pwd -P)" || p="$1"
+  printf '%s' "$(cygpath -w "$p" 2>/dev/null || printf '%s' "$p")" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
 new_bridge() { # -> path of a fresh bridge with one thread
   local b="$TMPROOT/bridge.$RANDOM"
   mkdir -p "$b/threads/001-test/msgs" "$b/threads/_hidden/msgs"
@@ -1069,7 +1085,7 @@ test_linkmemory() {
   # the slug the way Claude Code derives it (Windows form under msys, every non-alnum -> '-')
   local native slug mem out rc
   native="$(cygpath -w "$repo" 2>/dev/null || printf '%s' "$repo")"
-  slug="$(printf '%s' "$native" | sed 's/[^A-Za-z0-9]/-/g')"
+  slug="$(slug_of "$repo")"
   mem="$cfg/projects/$slug/memory"
   mkdir -p "$mem"; echo idx > "$mem/MEMORY.md"; echo a > "$mem/a.md"
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" -n "$repo" 2>&1)" || rc=$?
@@ -1123,7 +1139,7 @@ test_linkmemory() {
   local cloud="$TMPROOT/lmcloud.$RANDOM"; mkdir -p "$cloud"
   local cfg5="$TMPROOT/lmcfg5.$RANDOM" repo5 slug5 mem5
   repo5="$TMPROOT/lmrepo5.$RANDOM"; mkdir -p "$repo5"
-  slug5="$(printf '%s' "$(cygpath -w "$repo5" 2>/dev/null || printf '%s' "$repo5")" | sed 's/[^A-Za-z0-9]/-/g')"
+  slug5="$(slug_of "$repo5")"
   mem5="$cfg5/projects/$slug5/memory"; mkdir -p "$mem5"; echo idx > "$mem5/MEMORY.md"
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg5" bash "$LM" --cloud "$repo5" 2>&1)" || rc=$?
   assert_eq "--cloud without SESSION_MEMORY_DIR: refused, not guessed" "1" "$rc"
@@ -1167,7 +1183,7 @@ test_linkmemory() {
   local cfgR="$TMPROOT/rlcfg.$RANDOM" repoR slugR memR cloudR
   repoR="$TMPROOT/rlrepo.$RANDOM"; mkdir -p "$repoR/memory"; cloudR="$TMPROOT/rlcloud.$RANDOM"; mkdir -p "$cloudR"
   echo idx > "$repoR/memory/MEMORY.md"; echo a > "$repoR/memory/a.md"
-  slugR="$(printf '%s' "$(cygpath -w "$repoR" 2>/dev/null || printf '%s' "$repoR")" | sed 's/[^A-Za-z0-9]/-/g')"
+  slugR="$(slug_of "$repoR")"
   memR="$cfgR/projects/$slugR/memory"; mkdir -p "$(dirname "$memR")"
   CLAUDE_CONFIG_DIR="$cfgR" bash "$LM" "$repoR" >/dev/null 2>&1     # repo mode first
   rc=0; out="$(SESSION_MEMORY_DIR="$cloudR" CLAUDE_CONFIG_DIR="$cfgR" bash "$LM" --relink --cloud --name proj "$repoR" 2>&1)" || rc=$?
@@ -1183,7 +1199,7 @@ test_linkmemory() {
   local cfgT="$TMPROOT/rlcfg2.$RANDOM" repoT slugT memT other cloudT
   repoT="$TMPROOT/rlrepo2.$RANDOM"; mkdir -p "$repoT"; cloudT="$TMPROOT/rlcloud2.$RANDOM"; mkdir -p "$cloudT"
   other="$TMPROOT/rlother.$RANDOM"; mkdir -p "$other"; echo idx > "$other/MEMORY.md"; echo x > "$other/x.md"
-  slugT="$(printf '%s' "$(cygpath -w "$repoT" 2>/dev/null || printf '%s' "$repoT")" | sed 's/[^A-Za-z0-9]/-/g')"
+  slugT="$(slug_of "$repoT")"
   memT="$cfgT/projects/$slugT/memory"; mkdir -p "$(dirname "$memT")"
   if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
     powershell.exe -NoProfile -NonInteractive -Command \
@@ -1247,7 +1263,7 @@ test_stamp() {
   local LM="$ROOT/launcher/link-memory.sh"
   local cfg="$TMPROOT/stcfg.$RANDOM" repo slug mem out
   repo="$TMPROOT/strepo.$RANDOM"; mkdir -p "$repo"
-  slug="$(printf '%s' "$(cygpath -w "$repo" 2>/dev/null || printf '%s' "$repo")" | sed 's/[^A-Za-z0-9]/-/g')"
+  slug="$(slug_of "$repo")"
   mem="$cfg/projects/$slug/memory"; mkdir -p "$mem"
   echo idx > "$mem/MEMORY.md"; echo a > "$mem/a.md"; echo b > "$mem/b.md"
   state() { # -> the launcher's lines for this project
@@ -1289,7 +1305,7 @@ test_stamp() {
   # the stamp is per-machine and must not travel into the target on a move
   local cfgS="$TMPROOT/stcfg2.$RANDOM" repoS slugS memS cloudS
   repoS="$TMPROOT/strepo3.$RANDOM"; mkdir -p "$repoS"; cloudS="$TMPROOT/stcloud.$RANDOM"; mkdir -p "$cloudS"
-  slugS="$(printf '%s' "$(cygpath -w "$repoS" 2>/dev/null || printf '%s' "$repoS")" | sed 's/[^A-Za-z0-9]/-/g')"
+  slugS="$(slug_of "$repoS")"
   memS="$cfgS/projects/$slugS/memory"; mkdir -p "$memS"
   echo idx > "$memS/MEMORY.md"; printf 'somehost 2026-08-30T07:11:51Z 1\n' > "$memS/.last-wrap"
   SESSION_MEMORY_DIR="$cloudS" CLAUDE_CONFIG_DIR="$cfgS" bash "$LM" --cloud --name m "$repoS" >/dev/null 2>&1
@@ -1299,7 +1315,7 @@ test_stamp() {
   # left -- with `set -euo pipefail` in the callers that aborted the run instead of warning.
   local cfgE="$TMPROOT/stcfg3.$RANDOM" repoE slugE memE
   repoE="$TMPROOT/strepo4.$RANDOM"; mkdir -p "$repoE"
-  slugE="$(printf '%s' "$(cygpath -w "$repoE" 2>/dev/null || printf '%s' "$repoE")" | sed 's/[^A-Za-z0-9]/-/g')"
+  slugE="$(slug_of "$repoE")"
   memE="$cfgE/projects/$slugE/memory"; mkdir -p "$memE"
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfgE" bash "$LM" --stamp "$repoE" 2>&1)" || rc=$?
   assert_eq "--stamp on an empty memory: exit 0, not a silent abort" "0" "$rc"
@@ -1326,7 +1342,7 @@ test_stamp() {
   local cfgL="$TMPROOT/stcfg4.$RANDOM" repoL slugL memL realL
   repoL="$TMPROOT/strepo5.$RANDOM"; realL="$TMPROOT/streal.$RANDOM"
   mkdir -p "$repoL" "$realL"; echo a > "$realL/a.md"; echo b > "$realL/b.md"; echo c > "$realL/c.md"
-  slugL="$(printf '%s' "$(cygpath -w "$repoL" 2>/dev/null || printf '%s' "$repoL")" | sed 's/[^A-Za-z0-9]/-/g')"
+  slugL="$(slug_of "$repoL")"
   memL="$cfgL/projects/$slugL/memory"; mkdir -p "$(dirname "$memL")"
   if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
     powershell.exe -NoProfile -NonInteractive -Command \
