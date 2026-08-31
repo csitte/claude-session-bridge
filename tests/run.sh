@@ -1129,7 +1129,7 @@ test_linkmemory() {
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" -n "$repo" 2>&1)" || rc=$?
   assert_eq "-n: exit 0" "0" "$rc"
   assert_eq "-n changes nothing" "" "$(ls -A "$repo")"
-  if printf '%s\n' "$out" | grep -qF '[move] 2 file(s) into the target'; then ok "-n announces the move"; else bad "-n announces the move" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF '[move] 2 file(s) exist only in the profile'; then ok "-n announces the move"; else bad "-n announces the move" "$out"; fi
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" "$repo" 2>&1)" || rc=$?
   assert_eq "link: exit 0" "0" "$rc"
   assert_eq "the files moved into the repo" "MEMORY.md a.md" "$(ls -A "$repo/memory" | LC_ALL=C sort | paste -sd' ' -)"
@@ -1741,6 +1741,74 @@ test_indexrename() {
   else bad "... but it is still reported as missing" "$out"; fi
 }
 
+# --------------------------------------------------------------------------
+# files that exist only in the profile: named BEFORE the conflict abort
+# --------------------------------------------------------------------------
+
+# Two sessions reported the same gap on the same day after consolidating their notebook
+# memory: a per-file comparison only ever sees the intersection, and the files that exist
+# on one side alone are copied in with no comparison at all -- which is where they found
+# three genuine contradictions with the target, while the one reported conflict file
+# carried five idle words. The tool did name those files, but only AFTER the abort had
+# already exited, so a session planning its work never saw them. The notice now comes
+# first. It stays silent about contradictions when the target is empty: there is nothing
+# there to contradict, and a warning would be false.
+test_movesnotice() {
+  head_ "link-memory: profile-only files are named before the conflict stops the run"
+  local LM="$ROOT/launcher/link-memory.sh"
+  local cfg repo slug mem out rc
+  cfg="$TMPROOT/mncfg.$RANDOM"; repo="$TMPROOT/mnrepo.$RANDOM"
+  mkdir -p "$repo/memory"
+  slug="$(slug_of "$repo")"; mem="$cfg/projects/$slug/memory"; mkdir -p "$mem"
+  # target already holds a memory; profile has one conflict and two files of its own
+  echo idx        > "$repo/memory/MEMORY.md"
+  echo target     > "$repo/memory/shared.md"
+  echo idx        > "$mem/MEMORY.md"
+  echo profile    > "$mem/shared.md"
+  echo own1       > "$mem/own1.md"
+  echo own2       > "$mem/own2.md"
+
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" -n "$repo" 2>&1)" || rc=$?
+  assert_eq "a conflict still stops the run" "1" "$rc"
+  if printf '%s\n' "$out" | grep -qF 'own1.md own2.md'; then
+    ok "the profile-only files are named even though the run aborts"
+  else bad "the profile-only files are named even though the run aborts" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF 'The script compares nothing for these'; then
+    ok "... and it says why they are the unchecked half"
+  else bad "... and it says why they are the unchecked half" "$out"; fi
+  # order matters: after the abort text the reader has already stopped reading
+  if [ "$(printf '%s\n' "$out" | grep -n 'only in the profile' | cut -d: -f1)" -lt \
+       "$(printf '%s\n' "$out" | grep -n 'nothing touched' | cut -d: -f1)" ]; then
+    ok "the notice comes before the abort, not after it"
+  else bad "the notice comes before the abort, not after it" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF 'shared.md'; then
+    ok "the conflict is still reported too"
+  else bad "the conflict is still reported too" "$out"; fi
+
+  # empty target -> the files come in, but there is nothing they could contradict
+  local repo2 cfg2 mem2
+  cfg2="$TMPROOT/mncfg2.$RANDOM"; repo2="$TMPROOT/mnrepo2.$RANDOM"; mkdir -p "$repo2"
+  mem2="$cfg2/projects/$(slug_of "$repo2")/memory"; mkdir -p "$mem2"
+  echo own1 > "$mem2/own1.md"; echo idx > "$mem2/MEMORY.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg2" bash "$LM" -n "$repo2" 2>&1)" || rc=$?
+  assert_eq "empty target: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -qF 'exist only in the profile'; then
+    ok "empty target: the files are still named"
+  else bad "empty target: the files are still named" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF 'may contradict'; then
+    bad "empty target: no contradiction warning (nothing to contradict)" "$out"
+  else ok "empty target: no contradiction warning (nothing to contradict)"; fi
+
+  # nothing profile-only at all -> no notice, no empty count line
+  local cfg3 mem3
+  cfg3="$TMPROOT/mncfg3.$RANDOM"; mem3="$cfg3/projects/$(slug_of "$repo")/memory"; mkdir -p "$mem3"
+  echo idx > "$mem3/MEMORY.md"; echo target > "$mem3/shared.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg3" bash "$LM" -n "$repo" 2>&1)" || rc=$?
+  if printf '%s\n' "$out" | grep -qF 'exist only in the profile'; then
+    bad "nothing to move: no notice at all" "$out"
+  else ok "nothing to move: no notice at all"; fi
+}
+
 test_canonicalise() {
   head_ "paths are canonicalised before becoming a slug or being compared"
   local f offenders=""
@@ -1784,6 +1852,7 @@ case "${1:-all}" in
   commands) test_commands ;;
   canonicalise) test_canonicalise ;;
   indexrename) test_indexrename ;;
+  movesnotice) test_movesnotice ;;
   stamp) test_stamp ;;
   ruleparity) test_ruleparity ;;
   lineendings) test_lineendings ;;
@@ -1796,7 +1865,7 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice ;;
   *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 

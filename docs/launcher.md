@@ -110,6 +110,30 @@ to resolve it: both full paths and how many lines differ. **Merging is not the s
 A line tool would have to guess which version holds; the session wrote both versions and
 understands the content, so it consolidates them itself: read both, write the result into the
 target version, delete the profile version, run again. The script only refuses to guess and
+
+**The more dangerous half is the files that exist on one side only.** They raise no conflict,
+because there is no counterpart for anything to show up against — they are simply copied in.
+Two sessions consolidating a second machine's memory on the same day found three genuine
+contradictions with the target exactly there (a path that five target files asserted and the
+machine denied, a stale artifact, an obsolete diagnosis), while the *one* reported conflict
+file carried five idle words. So the tool names them **before** the abort:
+
+```
+[move] 3 file(s) exist only in the profile and come into the target: a.md b.md c.md
+       The script compares nothing for these; the target holds no version.
+       Read them before linking: one of them may contradict what the target
+       already says (there it never shows -- both statements simply stand).
+```
+
+That line used to sit **after** the abort's `exit`, so it never appeared while a session was
+planning its consolidation work — only in the run that went through anyway. With an empty
+target the three explaining lines are omitted: there is nothing there to contradict, and the
+warning would be false.
+
+The same blind spot applies to *measuring* such a situation: a per-file comparison sees the
+intersection and nothing else. Measure in two stages — per file for the intersection, and each
+one-side-only file against the **whole** target corpus.
+
 keeps both sides intact until then. A second run reports "already linked", and
 every run cross-checks by listing the repo **through** the link. Removing the junction again: `rm <path>` in Git
 Bash (msys treats it as a link; `rmdir` says "Not a directory"). Checked: `rm` and `rm -rf`

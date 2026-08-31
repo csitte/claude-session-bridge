@@ -280,6 +280,23 @@ if [[ $kind == dir || $relinking == 1 ]]; then
     # what it needs: both **full paths**, the size of the difference (so it is visible
     # whether this is one line or a whole file) and the procedure. Listing bare filenames --
     # which is what this printed before -- is too little to start without searching.
+    # Files that exist only in the profile are copied into the target without any
+    # comparison at all: there is no counterpart they could disagree with visibly.
+    # That is the more dangerous half, not the harmless one -- reported from the field
+    # by two sessions on the same day, who found three genuine contradictions with the
+    # target there, while the single reported conflict file carried five idle words.
+    # This line used to sit AFTER the abort, so it never appeared while a session was
+    # planning its consolidation work -- only in the run that went through anyway.
+    if (( ${#moves[@]} )); then
+      echo "[move] ${#moves[@]} file(s) exist only in the profile and come into the target: ${moves[*]}"
+      # With an empty target there is nothing for them to contradict -- the warning
+      # would be false. Say only what holds here.
+      if compgen -G "$target/*.md" >/dev/null 2>&1; then
+        echo "       The script compares nothing for these; the target holds no version."
+        echo "       Read them before linking: one of them may contradict what the target"
+        echo "       already says (there it never shows -- both statements simply stand)."
+      fi
+    fi
     if (( ${#conflicts[@]} )); then
       echo "[abort] ${#conflicts[@]} file(s) exist on both sides with different content -- nothing touched." >&2
       echo "        This session knows both versions and consolidates them itself:" >&2
@@ -296,7 +313,6 @@ if [[ $kind == dir || $relinking == 1 ]]; then
       echo "        conflict or goes through. Nothing is overwritten while conflicts remain." >&2
       exit 1
     fi
-    echo "[move] ${#moves[@]} file(s) into the target${moves[*]:+: ${moves[*]}}"
     if (( ${index_merge:-0} )); then
       n_new=$(grep -vxFf "$target/MEMORY.md" "$mem/MEMORY.md" | grep -c . || true)
       echo "[index] MEMORY.md differs on both sides -- $n_new line(s) will be appended to the target index."
