@@ -392,9 +392,29 @@ evening — and nothing showed anywhere, because the form was right.
 ```
 Stamp check: 1 file(s) in threads/*/msgs/ whose name lies more than 5 min after the write time (mtime) -- typed, or local time with a 'Z'. They still decide the fold of their thread (last file, last sets-status or sets-owner) and win against everything written up to their stamp:
             threads/174-orders/msgs/2026-08-29T170000Z__mail__c1a8.md  (+3.2 h, written 2026-08-29T134521Z)
+            threads/091-listings/msgs/2026-08-29T160000Z__mail__e5d2.md  (+3.1 h, written 2026-08-29T125215Z, DONE -- archive-ripe from 09-05.)
             Repair by the author: mv to the name derived from the write time (content unchanged). Running watchers deliver the renamed file once.
             The line disappears once a younger message with sets-* supersedes the file -- it then decides nothing any more.
 ```
+
+**Two addenda, both from handing the standing findings out to their owners.**
+
+*Annotating archive-ripeness.* We had advised an owner to close the thread — then the line
+would go away. That was **wrong**, and measuring took thirty seconds: the thread had been at
+DONE for two days and the line was still there. The block reports by **effect**, not by status;
+what ends the line is the move to the archive (DONE **and** last message ≥ 7 days old). So do
+not filter — print the date. A reader then sees at once whether a line needs a person or merely
+needs time. **Deliberately still unfiltered:** a DONE carrying a future stamp is the dangerous
+case, and a status filter would have swallowed exactly the case that prompted the change.
+
+*Repair only the file the block names.* Older siblings with the same stamp defect are left
+alone. One thread held a second such message whose correction would have moved it **ahead of
+the message it replies to** — an ordering defect created in a file that previously only had a
+crooked stamp and bothered nobody. A future stamp does damage while it wins; once a younger
+message has superseded it, it is a harmless leftover. This is the same selection the block
+already makes — the recipe ("mv to the name from the write time") had gone out to five owners
+without the restriction, because the **action** was copied from the tool's own text while the
+**selection** it makes beforehand was not.
 
 Three choices, two of them against the first proposal:
 
@@ -508,6 +528,22 @@ The flag is only needed to convert a file for the first time (`-s -u`).
 is empty and `watch-bridge.sh` answers with its `usage` — **a loud failure instead of a quiet
 wrong id.** The paragraph says so explicitly: do not fall back to another id, do not guess,
 ask.
+
+**Addendum: inside the bridge the check keeps quiet.** Called from a `threads/<n>/msgs/`
+folder, the check measured the current working directory, failed to find it in any participant
+row, and concluded the **registry was incomplete** — pointing the reader at the coordinator to
+have the path registered. The case arises precisely during stamp repairs, because that is the
+work you do inside `msgs/`, and the message therefore created work for a third party who could
+not resolve it: there is no registry entry for a `msgs` folder. When the working directory sits
+under the bridge, the tool now prints a **quiet note with no keyword and no registry pointer**;
+SUSPECT stays reserved for the case that earns it. Verified in three positions: inside the
+bridge quiet, in its own project silent, in a foreign project SUSPECT as before.
+
+That makes three findings of one class in a single day, and the coordinator's phrasing beats
+ours: **the check measures something other than what it makes a statement about.** Status
+instead of archive-ripeness, working directory instead of registry, sync lag instead of a stale
+index. All three tools do something useful; they only name the **reason** wrongly — and the
+reason is what the reader acts on.
 
 ## Handing out a thread number: `--new-thread`
 
