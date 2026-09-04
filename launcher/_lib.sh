@@ -91,7 +91,13 @@ cc_has_transcript() { # $1 = directory (msys path) -> 0 = resumable
   # `--continue` and lose its history. No test case covers that; it is carried here because
   # it is the same class as the cases next to it.
   d="$(cd "$1" 2>/dev/null && pwd -P)" || d="$1"
-  win="$(cygpath -w "$d" 2>/dev/null)" || return 1
+  # Without cygpath (not msys) keep the path as it is. No drive-letter rewrite is needed
+  # here, unlike in cc_session_running: that one compares against the registry, which
+  # carries real Windows paths, while this slug is built and looked up by us alone — and
+  # every non-alphanumeric character collapses to '-' anyway, so '\' and '/' encode
+  # identically. Returning 1 here instead would make the function answer "not resumable"
+  # on every non-Windows host, which is a silent wrong answer rather than a missing one.
+  win="$(cygpath -w "$d" 2>/dev/null || printf '%s' "$d")"
   [[ -n "$win" ]] || return 1
   enc="$(printf '%s' "$win" | sed 's/[^A-Za-z0-9]/-/g')"
   compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$enc/*.jsonl" >/dev/null 2>&1
