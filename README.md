@@ -119,6 +119,7 @@ bridge/             the watcher and its installer
 launcher/           fleet start/stop scripts and the session manager (Windows)
 example-bridge/     a synthetic thread showing the on-disk shape
 tests/run.sh        test suite (see Tests below)
+CHANGELOG.md        what changed and when — no releases, `main` is the supported state
 CONTRIBUTING.md     ground rules, and what a port to another platform would touch
 .github/workflows/  CI: shellcheck + suite on Linux, suite + analyzer on Windows
 ```

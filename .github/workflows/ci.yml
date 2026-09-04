@@ -43,8 +43,31 @@ jobs:
         shell: bash
         run: bash tests/run.sh
 
-      - name: PowerShell parser
+      - name: PowerShell parser (7)
         shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem launcher/*.ps1 | ForEach-Object {
+            $e = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$e)
+            if ($e.Count) { $bad += $e.Count; Write-Host "$($_.Name): $($e.Count) parse error(s)" }
+            else { Write-Host "$($_.Name): ok" }
+          }
+          if ($bad) { exit 1 }
+
+      # The same check under WINDOWS POWERSHELL 5.1 (`shell: powershell`), and it is not
+      # redundant: 5.1 reads a BOM-less UTF-8 file as ANSI, so a non-ASCII character inside
+      # a DOUBLE-quoted string breaks the file — an em dash decodes to three CP1252
+      # characters whose third one (0x94) is a closing quotation mark, which PowerShell
+      # accepts as a string delimiter. The string ends early and the rest of the line
+      # becomes code.
+      #
+      # Measured, both directions: a double-quoted em dash gives 2 parse errors under 5.1
+      # and 0 under 7 — so the job above cannot see this class at all. In a SINGLE-quoted
+      # string 5.1 gives 0 errors too and merely mangles the text, which is the quieter
+      # half of the same problem and the reason the rule looks arbitrary in the source.
+      - name: PowerShell parser (Windows PowerShell 5.1, catches the ANSI trap)
+        shell: powershell
         run: |
           $bad = 0
           Get-ChildItem launcher/*.ps1 | ForEach-Object {

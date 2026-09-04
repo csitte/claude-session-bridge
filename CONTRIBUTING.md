@@ -51,6 +51,10 @@ Two more, softer but meant seriously:
 ## Practical
 
 - Run `bash tests/run.sh` before opening a PR; CI runs it on Linux and Windows.
+- Add a line to `CHANGELOG.md` under `## Unreleased` when the change is visible to someone
+  running the scripts — a new flag, changed behaviour, a fixed defect. Write what changed
+  for them, not what you edited; the reasoning belongs in the commit message. Purely
+  internal work (a refactor, a test, a typo) needs no entry.
 - `shellcheck --severity=error` must pass. Warnings are printed but do not block; where
   word splitting is deliberate, use a targeted `# shellcheck disable=` **with a reason**.
 - Keep the scripts dependency-free. `node` is used for one optional step (writing JSON

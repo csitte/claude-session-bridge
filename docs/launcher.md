@@ -294,8 +294,16 @@ The window dies from its terminal going away, which the watcher does not notice.
 
 `session-manager.ps1` is a small GUI over the same config: see which sessions are up, start
 individual ones (`start-one.sh`), stop them. Convenience, not part of the mechanism. Its RUN
-marker in this repository still reads mintty window titles — the registry-based marker with
-the live-pid check described above lives in our field version and has not been ported yet.
+marker reads the same registry as the launcher, with the same live-pid check, and compares
+name and `cwd` whole rather than as a prefix — the logic exists twice on purpose, because
+calling bash once per timer tick (every 3 s) would block the UI. Both copies say so.
+
+It deliberately contains no non-ASCII character in code or UI strings. That is not style:
+the file is UTF-8 without a BOM, Windows PowerShell 5.1 reads it as ANSI, and a non-ASCII
+character inside a **double-quoted** string ends that string early — the rest of the line
+becomes code and the file stops parsing. Inside single quotes the same byte sequence parses
+fine and only mangles the text, which is the quieter and more shippable half of the problem.
+PowerShell 7 sees none of it, so the CI runs the 5.1 parser too.
 
 ## Testing note, learned the hard way
 

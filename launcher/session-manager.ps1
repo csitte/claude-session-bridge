@@ -3,7 +3,9 @@
 # Shows every project from projects.<host>.conf as a checkbox list:
 #   checked   = active entry  ->  started by "Start all active"
 #   unchecked = #off line in the config  ->  kept, but not started
-#   "RUN" marker before the name = session is running right now (open mintty window).
+#   "RUN" marker before the name = a Claude session really is running for it
+#     (source: ~/.claude/sessions/ with a LIVE pid, not the window title -- see
+#     Get-RunningSessions).
 # "Save" rewrites ONLY the #off prefixes — order, comments and formatting of the
 # config stay byte-identical.
 # Plus: "Start all active" (= start-cc.cmd) and "Start selected"
@@ -14,8 +16,23 @@
 #   space / "Toggle autostart" = flip the autostart checkbox of the selected row
 #
 # Launch: double click session-manager.cmd or a desktop shortcut.
-# Deliberately ASCII-only in code and UI text: this also runs under Windows
-# PowerShell 5.1, which otherwise misdecodes UTF-8 without BOM.
+#
+# Deliberately ASCII-only in code and UI TEXT -- and here is why, because the rule is
+# easy to dismiss without it: this file is UTF-8 WITHOUT a BOM, and Windows PowerShell
+# 5.1 then reads it as ANSI. An em dash (E2 80 94) decodes into three CP1252 characters,
+# and the third one (0x94) is a closing quotation mark, which PowerShell accepts as a
+# string delimiter.
+#
+# Measured, and the detail matters:
+#   "double quotes"  -> the string ENDS at that byte, the rest of the line becomes code,
+#                       and the file no longer parses. 2 parse errors under 5.1, 0 under 7.
+#   'single quotes'  -> parses fine and merely MANGLES the text at runtime. Quieter, and
+#                       therefore easier to ship.
+#   # comments       -> harmless. That is why comments here may contain such characters
+#                       while strings must not, and why the rule looks arbitrary.
+#
+# Note that PowerShell 7 reads the file as UTF-8 and sees none of this, so checking the
+# parser with pwsh proves nothing about this class; ci.yml runs the 5.1 parser as well.
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms
@@ -129,26 +146,69 @@ function Format-Item($e, $running) {
     return ('{0}{1,-16} {2}{3}' -f $mark, $e.Name, $e.Dir, $extraMark)
 }
 
-# Detecting running sessions: every session runs in a mintty window whose title is
-# pinned to the session name via --Title (Claude cannot overwrite it). So the titles
-# of the open mintty windows are the names of the running sessions.
-function Get-RunningNames {
+# Detecting running sessions: read the registry of running sessions, not the window
+# titles. The title belongs to the WINDOW, not to the session, and `exec bash` keeps the
+# window open after claude has exited -- measured once at 16 windows against 15 sessions,
+# so the marker claimed a session that was gone.
+#
+# An entry only counts with a LIVE pid: the registry file disappears only on a clean
+# exit, so after a crash or a forced reboot the entries of the aborted sessions are still
+# there. The process name must be 'claude', otherwise a reused pid counts. An EMPTY
+# process list means "nothing is running" -- after a reboot that is the truth, not a
+# broken check. One Get-Process per timer tick costs milliseconds.
+#
+# Duplicated on purpose: cc_session_running in _lib.sh answers the same question for the
+# launcher. Calling bash once per timer tick (every 3 s) would block the UI, so the logic
+# exists twice -- named at both ends so a change to one is not made in isolation.
+function Get-RunningSessions {
+    $dir = Join-Path $(if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR }
+                       else { Join-Path $HOME '.claude' }) 'sessions'
+    if (-not (Test-Path $dir)) { return @() }
+    $live = @{}
+    foreach ($p in @(Get-Process -Name claude -ErrorAction SilentlyContinue)) { $live[[int]$p.Id] = $true }
     try {
-        # mintty pads the window title with spaces -> trim before comparing.
-        return @(Get-Process mintty -ErrorAction SilentlyContinue |
-                 ForEach-Object { $_.MainWindowTitle.Trim() } |
-                 Where-Object { $_ })
+        return @(Get-ChildItem -Path $dir -Filter '*.json' -ErrorAction SilentlyContinue |
+                 ForEach-Object {
+                     try { Get-Content $_.FullName -Raw | ConvertFrom-Json } catch { }
+                 } |
+                 Where-Object { $_ -and $_.pid -and $live.ContainsKey([int]$_.pid) } |
+                 ForEach-Object {
+                     [pscustomobject]@{
+                         Name = ('' + $_.name).ToLower()
+                         Cwd  = ('' + $_.cwd).Replace('\', '/').TrimEnd('/').ToLower()
+                     }
+                 })
     } catch { return @() }
+}
+
+# Is a session running for this config entry? See the duplication note above.
+#
+# The config carries msys paths (/d/work/x), the registry Windows paths (D:\work\x).
+# Without the rewrite the cwd branch would be dead and only the name would ever match --
+# and a comparison that never matches looks like one that finds nothing. In _lib.sh that
+# conversion is done by cygpath -m.
+#
+# Compared whole, never as a prefix: otherwise 'app' counts as running as soon as
+# 'app-product' does.
+function Test-EntryRunning($e, $sessions) {
+    $n = ('' + $e.Name).ToLower()
+    $d = ('' + $e.Dir).Replace('\', '/').TrimEnd('/').ToLower()
+    $d = $d -replace '^/([a-z])/', '$1:/'
+    foreach ($s in $sessions) {
+        if ($d -and $s.Cwd -eq $d) { return $true }
+        if ($n -and $s.Name -eq $n) { return $true }
+    }
+    return $false
 }
 
 # Updates ONLY the RUN markers (item texts) — checkboxes and selection stay untouched.
 # Rewrites an item only if its text really changes (avoids flicker).
 function Refresh-Running {
     if (-not $script:Conf) { return }
-    $running = Get-RunningNames
+    $running = Get-RunningSessions
     for ($i = 0; $i -lt $list.Items.Count; $i++) {
         $e = $script:Conf.Entries[$i]
-        $isRun = @($running | Where-Object { $_ -ieq $e.Name }).Count -gt 0
+        $isRun = Test-EntryRunning $e $running
         $newText = Format-Item $e $isRun
         if ($list.Items[$i] -ne $newText) {
             $wasChecked = $list.GetItemChecked($i)
@@ -175,10 +235,10 @@ function Update-Status {
 
 function Load-List {
     $script:Conf = Read-Conf
-    $running = Get-RunningNames
+    $running = Get-RunningSessions
     $list.Items.Clear()
     foreach ($e in $script:Conf.Entries) {
-        $isRun = @($running | Where-Object { $_ -ieq $e.Name }).Count -gt 0
+        $isRun = Test-EntryRunning $e $running
         $list.Items.Add((Format-Item $e $isRun), $e.Enabled) | Out-Null
     }
     Update-Status
