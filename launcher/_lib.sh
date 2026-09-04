@@ -68,6 +68,35 @@ cc_resolve_config() {
 #
 # Test hook: CC_LIVE_PIDS (set, even if empty) replaces the process list.
 
+# cc_has_transcript — is there anything to resume for this directory?
+#
+# `claude --continue` aborts interactively when the current directory holds no transcript
+# yet ("No conversation found"): the window then sits there empty and the session never
+# starts at all. In print mode (`-p`) this does NOT happen — there claude silently falls
+# back to a new conversation, so anyone reproducing the behaviour with `-p` never sees it.
+#
+# Transcripts live under ~/.claude/projects/<encoded>/*.jsonl. Encoded = the WINDOWS path
+# with every non-alphanumeric character replaced by '-' (colon, backslash, dot and space
+# alike). Verified against a plain path and one containing spaces. Case does not matter:
+# both spellings occur in the wild, and NTFS does not distinguish them.
+#
+# If the detection fails we deliberately start WITHOUT --continue and SAY so. A silently
+# lost --continue would be the worse failure: the session would then run without its
+# history and nobody would notice.
+cc_has_transcript() { # $1 = directory (msys path) -> 0 = resumable
+  local win enc d
+  # Canonicalise as in cc_session_running and cc_memory_state: two spellings of one
+  # directory (8.3 short name against the long one) give two different slugs, and this
+  # function would then not find the existing transcript — the session would start without
+  # `--continue` and lose its history. No test case covers that; it is carried here because
+  # it is the same class as the cases next to it.
+  d="$(cd "$1" 2>/dev/null && pwd -P)" || d="$1"
+  win="$(cygpath -w "$d" 2>/dev/null)" || return 1
+  [[ -n "$win" ]] || return 1
+  enc="$(printf '%s' "$win" | sed 's/[^A-Za-z0-9]/-/g')"
+  compgen -G "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$enc/*.jsonl" >/dev/null 2>&1
+}
+
 # cc_live_claude_pids — Windows pids of all running claude processes, one per line.
 # `ps -W` (msys) shows the Windows pid in column 4 and the command path last; the
 # registry carries the same Windows pid. Without `ps -W` (not msys) the list is empty.
@@ -314,12 +343,52 @@ cc_launch() {
     echo "[note] $name: session-startprompt.txt missing — the session will not arm itself." >&2
   fi
 
+  # --continue only when there is something to resume (see cc_has_transcript).
+  #
+  # CC_FRESH=1 suppresses --continue for this run (the --fresh switch of the calling
+  # scripts). It is needed to have the REMOTE session created anew: --continue attaches to
+  # the existing one ("Reattaching to session cse_...", instead of "Created session"), and
+  # that one keeps its name — including an old, hostname-generated one. The price is the
+  # same as for /clear: an empty context. See the naming block below.
+  local contarg="--continue"
+  if [[ "${CC_FRESH:-0}" == "1" ]]; then
+    contarg=""
+    echo "[fresh] $name: --fresh set — starting without --continue (empty context, new remote session)." >&2
+  elif ! cc_has_transcript "$dir"; then
+    contarg=""
+    echo "[new] $name: nothing to resume in '$dir' — starting fresh." >&2
+  fi
+
   echo "[start] $name  ->  $dir"
   # --Title (capital T): pins the window title — Claude Code cannot overwrite it at
   #   runtime (lower-case -t/--title can be overwritten).
   # -o ConfirmExit=no: no "processes are running" dialog when closing.
   # 'exec bash': keeps the window open after claude exits (so errors stay readable).
+  #
+  # TWO NAMES IN TWO PLACES — they have nothing to do with each other:
+  #
+  # (1) LOCAL (prompt box, /resume picker, ~/.claude/sessions/<pid>.json): --name.
+  #   Without it Claude DERIVES the name from the folder ("nameSource":"derived":
+  #   app-af instead of Notes, acme-39 instead of mail) — and it does so afresh on every
+  #   start, which is why it only became obvious after a reboot. --name also takes effect
+  #   when resuming (measured: every session started with --continue carried its config
+  #   name). This matters beyond cosmetics: cc_session_running above compares the registry
+  #   `name` field, and without --name that comparison can never match — only the cwd
+  #   branch would carry the guard.
+  #
+  # (2) REMOTE (claude.ai, phone): the name of the remote-control session. It is assigned
+  #   when the session is CREATED — with --continue Claude attaches to the existing one
+  #   ("Reattaching to session cse_...", visible with --debug-file) and inherits its old
+  #   name. That is why sessions can keep showing a hostname-style name on the phone even
+  #   though both flags below are on the command line: their remote sessions predate them,
+  #   and a reboot changes nothing (the launcher passes --continue again afterwards). The
+  #   only cure is a start without --continue -> CC_FRESH=1 / --fresh, see above.
+  #   On creation, --name also names the remote session (measured: --name PROBE-A next to
+  #   prefix PROBEA showed up as "PROBE-A", without the random suffix the prefix adds).
+  #   --remote-control-session-name-prefix only steers AUTO-generated names (default: the
+  #   hostname) and is therefore the fallback if no --name takes hold; --remote-control
+  #   switches RC on even without the `remoteControlAtStartup` settings line. Both stay.
   mintty -o ConfirmExit=no --Title "$name" -e bash -lc \
-    "cd '$dir' && claude --continue $promptarg --remote-control \"$name\" $extra; exec bash" &
+    "cd '$dir' && claude $contarg $promptarg --name \"$name\" --remote-control \"$name\" --remote-control-session-name-prefix \"$name\" $extra; exec bash" &
   return 0
 }

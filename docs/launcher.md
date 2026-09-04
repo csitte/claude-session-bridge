@@ -248,6 +248,38 @@ bash side greps and tolerated it, PowerShell's `ConvertFrom-Json` failed silentl
 fixtures with a JSON library, compact form (the registry has no spaces after the colons, and
 the grep relies on that).
 
+## Resuming: `--continue` only when there is something to resume
+
+The launcher passes `--continue` so a restart does not throw away yesterday's context. That
+flag has one sharp edge: **in a directory with no transcript yet, `claude --continue` aborts
+interactively** ("No conversation found"). The window then sits there empty and the session
+never starts at all — the one case where the convenience flag costs you the whole session.
+
+`cc_has_transcript` therefore looks for `~/.claude/projects/<encoded>/*.jsonl` first, where
+`<encoded>` is the Windows path with every non-alphanumeric character replaced by `-`. No
+transcript, no `--continue` — and the launcher **says** which projects start fresh. A silently
+dropped `--continue` would be the worse failure: the session would run without its history and
+nobody would notice.
+
+Two things about reproducing this. In print mode (`-p`) the abort does **not** happen — claude
+falls back to a new conversation there, so anyone testing with `-p` never sees the bug. And the
+path must be canonicalised before it is encoded: two spellings of one directory (an 8.3 short
+name against the long one) give two different slugs, and the existing transcript would not be
+found.
+
+`--fresh` suppresses `--continue` deliberately, for every session in the run. Its purpose is
+not the empty context but the **remote** session: with `--continue` claude re-attaches to the
+existing remote session and inherits its old, usually hostname-generated name. Only a start
+without `--continue` creates a new one that takes the name from the config. Meant as a one-off
+— the price is the running context of every session.
+
+That is the second of two names that have nothing to do with each other: `--name` sets the
+**local** one (prompt box, `/resume` picker, and the `name` field in the session registry),
+and it applies when resuming too. It is not cosmetic — `cc_session_running` compares that
+registry field, so without `--name` that half of the duplicate-start guard can never match and
+only the `cwd` branch carries it. Without `--name`, claude derives a name from the folder
+afresh on every start.
+
 ## Closing a fleet
 
 `close-cc-sessions.ps1` kills the session windows and then collects leftover watcher

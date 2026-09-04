@@ -5,11 +5,19 @@
 # Mechanics: _lib.sh (identical on every machine)
 # Data:      projects.<host>.conf  (example: projects.example.conf)
 #
-# From Git Bash:   ./start-cc-sessions.sh [--force] [--no-pull]
+# From Git Bash:   ./start-cc-sessions.sh [--fresh] [--force] [--no-pull]
 # By double click: start-cc.cmd (finds this script relative to itself).
 #
-# Resuming: the launch passes '--continue'. If --remote-control falls back to a NEW
-# session, type '/resume' in that window and pick the right conversation.
+# Resuming: the launch passes '--continue' when the directory has a transcript to resume
+# (see cc_has_transcript in _lib.sh) — otherwise it starts fresh and says so. If
+# --remote-control falls back to a NEW session, type '/resume' in that window and pick the
+# right conversation.
+#
+# --fresh: start WITHOUT '--continue' — every session begins with an empty context (as
+# after /clear) and creates a NEW remote session in the process. Only then does claude.ai
+# / the phone take the name from the config; a resumed start attaches to the old remote
+# session and inherits its name (reasoning in the naming block of _lib.sh). Meant as a
+# one-off, not for daily use: the running context of every session is lost.
 #
 # A project whose session is already running is not started again (registry
 # ~/.claude/sessions/, live pid only — see cc_session_running). --force starts anyway.
@@ -25,16 +33,19 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$DIR/_lib.sh"
 
+fresh=0
 force=0
 nopull=0
 for arg in "$@"; do
   case "$arg" in
+    --fresh) fresh=1 ;;
     --force) force=1 ;;
     --no-pull) nopull=1 ;;
-    -h|--help) echo "usage: $(basename "$0") [--force] [--no-pull]"; exit 0 ;;
-    *) echo "[error] unknown argument '$arg' (allowed: --force, --no-pull)." >&2; exit 2 ;;
+    -h|--help) echo "usage: $(basename "$0") [--fresh] [--force] [--no-pull]"; exit 0 ;;
+    *) echo "[error] unknown argument '$arg' (allowed: --fresh, --force, --no-pull)." >&2; exit 2 ;;
   esac
 done
+export CC_FRESH="$fresh"
 export CC_FORCE="$force"
 export CC_NO_PULL="$nopull"
 

@@ -2,11 +2,13 @@
 #
 # start-one.sh — starts exactly ONE session from the host config.
 #
-# Usage:  ./start-one.sh [--force] [--no-pull] "<project name>"
+# Usage:  ./start-one.sh [--fresh] [--force] [--no-pull] "<project name>"
 #
 # Finds the entry in projects.<host>.conf — including ones disabled with #off
 # (starting something once does not make it an autostart). Used by the session
 # manager (session-manager.ps1), but works directly from Git Bash too.
+# --fresh: start without '--continue' — an empty context, but a NEW remote session that
+# carries the name from the config (see the naming block in _lib.sh).
 # --no-pull: do not pull the project repo before the start (see
 # cc_pull_before_start in _lib.sh) — e.g. offline.
 
@@ -16,17 +18,20 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "$DIR/_lib.sh"
 
+fresh=0
 force=0
 nopull=0
 name=""
 for arg in "$@"; do
   case "$arg" in
+    --fresh) fresh=1 ;;
     --force) force=1 ;;
     --no-pull) nopull=1 ;;
     *) name="$arg" ;;
   esac
 done
-[[ -n "$name" ]] || { echo "usage: start-one.sh [--force] [--no-pull] <project name>" >&2; exit 2; }
+[[ -n "$name" ]] || { echo "usage: start-one.sh [--fresh] [--force] [--no-pull] <project name>" >&2; exit 2; }
+export CC_FRESH="$fresh"
 export CC_FORCE="$force"
 export CC_NO_PULL="${CC_NO_PULL:-$nopull}"
 

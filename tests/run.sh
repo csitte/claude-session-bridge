@@ -1055,6 +1055,59 @@ test_launcher() {
 }
 
 # --------------------------------------------------------------------------
+# launcher: resume only when there is something to resume
+# --------------------------------------------------------------------------
+
+test_resume() {
+  head_ "launcher: --continue only with a transcript, --fresh, and the session name"
+  local cfg="$TMPROOT/rscfg.$RANDOM" bin="$TMPROOT/rsbin.$RANDOM"
+  local withtx="$TMPROOT/rswith.$RANDOM" without="$TMPROOT/rswithout.$RANDOM"
+  mkdir -p "$cfg/sessions" "$bin" "$withtx" "$without"
+  mkdir -p "$cfg/projects/$(slug_of "$withtx")"
+  : > "$cfg/projects/$(slug_of "$withtx")/session.jsonl"
+
+  has() { # $1 = directory -> yes/no
+    ( export CLAUDE_CONFIG_DIR="$cfg"
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      cc_has_transcript "$1" && echo yes || echo no )
+  }
+  assert_eq "a directory holding a .jsonl is resumable"     "yes" "$(has "$withtx")"
+  assert_eq "a directory without one is not"                "no"  "$(has "$without")"
+  assert_eq "a directory that does not exist is not"        "no"  "$(has "$TMPROOT/rsgone.$RANDOM")"
+
+  # What cc_launch really puts on the command line. mintty is replaced by a stub on PATH;
+  # `wait` inside the subshell makes the background start deterministic -- without it this
+  # would be a race and the test would pass or fail by timing.
+  cat > "$bin/mintty" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$MINTTY_LOG"
+STUB
+  chmod +x "$bin/mintty"
+
+  launch() { # $1 = directory [$2 = CC_FRESH] -> the command line mintty was called with
+    local log="$TMPROOT/rslog.$RANDOM"
+    ( export CLAUDE_CONFIG_DIR="$cfg" PATH="$bin:$PATH" MINTTY_LOG="$log"
+      export CC_LIVE_PIDS='' CC_NO_PULL=1 CC_FRESH="${2:-0}" CC_FORCE=0
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      cc_launch "proj|$1" >/dev/null 2>&1
+      wait )
+    cat "$log" 2>/dev/null
+  }
+  # `--` before the pattern: it starts with a dash, and grep would read it as an option.
+  assert_eq "a resumable directory is started with --continue" "1" "$(launch "$withtx"   | grep -c -- '--continue')"
+  assert_eq "no transcript -> --continue is left out"          "0" "$(launch "$without"  | grep -c -- '--continue')"
+  assert_eq "--fresh drops it even with a transcript"          "0" "$(launch "$withtx" 1 | grep -c -- '--continue')"
+  # Not cosmetic: cc_session_running compares the registry `name` field, and without
+  # --name that comparison can never match -- only the cwd branch would carry the guard.
+  assert_eq "the session is always given its config name"      "1" "$(launch "$without"  | grep -c -- '--name "proj"')"
+  # The check must be able to go red, or it guards nothing: a stub that records nothing
+  # must not look like a pass.
+  assert_eq "an empty recording is not mistaken for a match"   "0" "$(printf '' | grep -c -- '--continue')"
+}
+
+# --------------------------------------------------------------------------
 # launcher: pull before the start
 # --------------------------------------------------------------------------
 
@@ -1878,6 +1931,7 @@ test_canonicalise() {
   # (B) the functions that COMPARE paths, by name -- each must canonicalise
   local fn file body missing=""
   for fn in "cc_session_running:$ROOT/launcher/_lib.sh" \
+            "cc_has_transcript:$ROOT/launcher/_lib.sh" \
             "cc_memory_state:$ROOT/launcher/_lib.sh" \
             "norm:$ROOT/launcher/link-memory.sh" \
             "id_from_table:$ROOT/launcher/link-memory.sh"; do
@@ -1920,10 +1974,11 @@ case "${1:-all}" in
   coverage) test_coverage ;;
   checkout) test_checkout ;;
   launcher) test_launcher ;;
+  resume) test_resume ;;
   pull) test_pull ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"
