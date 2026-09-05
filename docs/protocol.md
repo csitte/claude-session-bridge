@@ -12,7 +12,7 @@ something broke without it.
                                   table of participant ids (see below)
   threads/
     <slug>/                       one directory per topic; the slug IS the id
-      thread.md                   immutable header (title, participants, why)
+      thread.md                   immutable header, written by --new-thread (title, created)
       msgs/
         <UTC>__<from>__<rand>.md  one write-once file per message
   _archiv/                        closed threads, moved verbatim; outside the scan glob
@@ -159,13 +159,19 @@ survive a session change. They are not substitutes.
    tool timeout, and worse, it silently misses threads the sync client has not fetched yet.
    The command warns when the folder is still filling up — then repeat it a few minutes
    later — and its last line tells you if no watcher is delivering for your id.
-2. **New topic:** `watch-bridge.sh --new-thread <slug>` creates `threads/<nnn>-<slug>/msgs`
-   and prints the folder name; then write `thread.md` and post message 1 into it. The number
-   is **the highest currently in use plus one, taken over `threads/` *and* `_archiv/`** — a
-   number stays taken after its thread is archived — and it is read at the moment you write,
-   never from something you remember from earlier in the session. For a deliberate fan-out
-   (one number, one thread per recipient) pass the number as a second argument; the command
-   says so rather than doing it silently.
+2. **New topic:** `watch-bridge.sh --new-thread <slug> --title "<one line: what this is
+   about>"` creates `threads/<nnn>-<slug>/msgs`, **writes `thread.md` itself** (`title:` and
+   `created:`, the immutable header) and prints the folder name; then post message 1 into it.
+   The title is mandatory — without `--title` nothing is created and the command prints the
+   form to use. It used to be a prose step after the command ("then write `thread.md`"), and
+   in a live bridge 64 of 102 threads ended up without one: a rule you have to carry out by
+   hand after the tool has run loses against the shortcut, for everyone alike. The command
+   does not write `participants:` — it knows no session id, message 1 does not exist yet, and
+   nothing reads that field. The number is **the highest currently in use plus one, taken over
+   `threads/` *and* `_archiv/`** — a number stays taken after its thread is archived — and it
+   is read at the moment you write, never from something you remember from earlier in the
+   session. For a deliberate fan-out (one number, one thread per recipient) add the number as
+   a further argument; the command says so rather than doing it silently.
    Doing it by hand works too, but reproduce both properties, and count with `10#$n`: a
    leading zero otherwise makes `069` an invalid octal number and the arithmetic aborts.
 3. **Respond / hand off:** new message file with `in-reply-to` and the `sets-*` fields.

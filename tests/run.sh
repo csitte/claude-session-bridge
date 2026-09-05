@@ -715,36 +715,92 @@ test_new_thread() {
   # hands out a number that is already taken -- that is how most collisions in the
   # live bridge happened, not by two sessions racing.
   assert_eq "next free number counts the archive too" "152-demo" \
-    "$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread demo)"
+    "$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread demo --title "A demo thread")"
   assert_eq "the thread folder is created with msgs/" "yes" \
     "$([[ -d "$b/threads/152-demo/msgs" ]] && echo yes || echo no)"
 
-  # A deliberate series (a fan-out to several recipients under one number) has to stay
-  # possible, and 069 must not be read as octal.
-  assert_eq "a forced number creates a second thread under it" "069-fanout-b" \
-    "$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread fanout-b 69 2>/dev/null)"
+  # --- the cover sheet -------------------------------------------------------
+  # 64 of 102 threads in a live bridge had none, because writing it was a prose step
+  # after the command. Now the command writes it: only what it knows (title, created),
+  # deliberately no participants: field.
+  assert_eq "the cover sheet is written with the title" "title: A demo thread" \
+    "$(grep '^title:' "$b/threads/152-demo/thread.md")"
+  assert_eq "the cover sheet carries created: as a UTC date" "yes" \
+    "$(grep -Eq '^created: [0-9]{4}-[0-9]{2}-[0-9]{2}$' "$b/threads/152-demo/thread.md" && echo yes || echo no)"
+  assert_eq "the cover sheet is a closed front-matter block" "---" \
+    "$(tail -n 1 "$b/threads/152-demo/thread.md")"
+  if grep -q 'participants' "$b/threads/152-demo/thread.md"; then
+    bad "no participants: field -- the command cannot know them" "$(cat "$b/threads/152-demo/thread.md")"
+  else ok "no participants: field -- the command cannot know them"; fi
 
-  WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread 007-wrong >/dev/null 2>&1
+  # A deliberate series (a fan-out to several recipients under one number) has to stay
+  # possible, and 069 must not be read as octal. The number stays positional; the
+  # title may come as --title=… as well, and in any order.
+  assert_eq "a forced number creates a second thread under it" "069-fanout-b" \
+    "$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread fanout-b --title="Fan-out, part b" 69 2>/dev/null)"
+  assert_eq "--title may precede the slug" "153-title-first" \
+    "$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread --title "Title first" title-first 2>/dev/null)"
+  assert_eq "surrounding whitespace and CR are stripped from the title" "title: Trimmed" \
+    "$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread trimmed --title $'  Trimmed \r' >/dev/null 2>&1; grep '^title:' "$b/threads/154-trimmed/thread.md")"
+
+  WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread 007-wrong --title "x" >/dev/null 2>&1
   assert_eq "a slug that already carries a number is refused" "2" "$?"
 
   bash "$WATCHER" --new-thread >/dev/null 2>&1
   assert_eq "--new-thread without a slug -> usage, exit 64" "64" "$?"
+  bash "$WATCHER" --new-thread --title "no slug" >/dev/null 2>&1
+  assert_eq "--new-thread with a title but no slug -> usage, exit 64" "64" "$?"
+
+  # --- the title is mandatory, and the failure is loud --------------------------
+  # The signature was chosen for the STALE READER: somebody who still follows an old
+  # document and types the fan-out form `--new-thread <slug> 069`. With the title as
+  # a second positional argument, 069 would silently become the title and the fan-out
+  # would be broken exactly where the number is the whole point. With --title the
+  # command refuses, creates nothing, and prints the new form with the caller's own
+  # arguments -- one step instead of three documents.
+  local before; before="$(ls -d "$b"/threads/*/ | wc -l | tr -d ' ')"
+  out="$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread watcher-arm 069 2>&1)"; rc=$?
+  assert_eq "the old fan-out form without a title -> usage, exit 64" "64" "$rc"
+  if printf '%s\n' "$out" | grep -qF -- '--new-thread watcher-arm --title "<title>" 069'; then
+    ok "the message shows the new form with the caller's slug and number"
+  else bad "the message shows the new form with the caller's slug and number" "$out"; fi
+  assert_eq "nothing is created when the title is missing" "no" \
+    "$(ls -d "$b"/threads/*watcher-arm* >/dev/null 2>&1 && echo yes || echo no)"
+
+  # The positional form `<slug> "<title>"` from an old proposal: the title is there,
+  # in the wrong place. Hand it back in the right place.
+  out="$(WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread positional "My title" 2>&1)"; rc=$?
+  assert_eq "a positional title -> usage, exit 64" "64" "$rc"
+  if printf '%s\n' "$out" | grep -qF -- '--new-thread positional --title "My title"'; then
+    ok "the message moves the positional title behind --title"
+  else bad "the message moves the positional title behind --title" "$out"; fi
+
+  WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread blank --title "   " >/dev/null 2>&1
+  assert_eq "a whitespace-only title is refused (exit 64)" "64" "$?"
+  WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread twolines --title $'two\nlines' >/dev/null 2>&1
+  assert_eq "a multi-line title is refused (exit 2)" "2" "$?"
+  WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread unknown --nr 5 --title "x" >/dev/null 2>&1
+  assert_eq "an unknown option -> usage, exit 64" "64" "$?"
+  WATCH_BRIDGE_SETTLE=0 bash "$WATCHER" --new-thread nan --title "x" 12a >/dev/null 2>&1
+  assert_eq "a non-numeric number with a title present is refused (exit 2)" "2" "$?"
+  assert_eq "none of the refused calls created a folder" "$before" \
+    "$(ls -d "$b"/threads/*/ | wc -l | tr -d ' ')"
   # --- the fan-out note, and the order it is printed in ---------------------
   b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
   export WATCH_BRIDGE_SETTLE=0
   mkdir -p "$b/threads/007-first/msgs"
 
-  out="$(bash "$WATCHER" --new-thread second 007 2>&1)"
+  out="$(bash "$WATCHER" --new-thread second --title "second" 007 2>&1)"
   if printf '%s\n' "$out" | grep -q 'NOTE: series 007 now spans 2 threads'; then
     ok "a series prints the sibling-threads note with the right count"
   else bad "a series prints the sibling-threads note with the right count" "$out"; fi
 
-  out="$(bash "$WATCHER" --new-thread third 007 2>&1)"
+  out="$(bash "$WATCHER" --new-thread third --title "third" 007 2>&1)"
   if printf '%s\n' "$out" | grep -q 'spans 3 threads'; then
     ok "the count grows with the series"
   else bad "the count grows with the series" "$out"; fi
 
-  out="$(bash "$WATCHER" --new-thread solo 2>&1)"
+  out="$(bash "$WATCHER" --new-thread solo --title "solo" 2>&1)"
   if printf '%s\n' "$out" | grep -q 'NOTE: series'; then
     bad "an ordinary thread gets no series note" "$out"
   else ok "an ordinary thread gets no series note"; fi
@@ -759,6 +815,11 @@ test_new_thread() {
           END {exit !(m && n && m < n)}' "$WATCHER"; then
     ok "the mkdir comes before the series note (creating precedes reporting)"
   else bad "the mkdir comes before the series note (creating precedes reporting)"; fi
+  # The cover sheet belongs to creating, not to reporting: mkdir, thread.md, then talk.
+  if awk '/^  mkdir -p "\$dir\/msgs"/ {m=NR} /> "\$dir\/thread.md"/ {t=NR} /NOTE: series/ {n=NR}
+          END {exit !(m && t && n && m < t && t < n)}' "$WATCHER"; then
+    ok "the cover sheet is written after the mkdir and before the series note"
+  else bad "the cover sheet is written after the mkdir and before the series note"; fi
 
   unset WATCH_BRIDGE_SETTLE
   unset SESSION_BRIDGE_DIR

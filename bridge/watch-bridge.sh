@@ -6,9 +6,12 @@
 # watch-bridge.sh --fold <session-id>         — start scan: open threads owned by <id>;
 #                                               warns at the end if no watcher delivers.
 # watch-bridge.sh --numbers                   — thread numbers used more than once (diagnosis).
-# watch-bridge.sh --new-thread <slug> [nr]    — creates threads/<NNN>-<slug>/msgs and prints
+# watch-bridge.sh --new-thread <slug> --title "<title>" [nr]
+#                                             — creates threads/<NNN>-<slug>/msgs, writes the
+#                                               cover sheet thread.md (title, created) and prints
 #                                               the folder name; [nr] forces a number (a
-#                                               deliberate series, e.g. a fan-out).
+#                                               deliberate series, e.g. a fan-out). The title is
+#                                               mandatory: without it nothing is created.
 # watch-bridge.sh --reap [--dry-run] [--all]  — reaps orphaned ConPTY consoles that keep
 #                                               spinning after a session ended (--all takes
 #                                               the idle leftovers too). Independent of any
@@ -51,7 +54,7 @@ usage: watch-bridge.sh <session-id> [poll-seconds]
        watch-bridge.sh --status [session-id]
        watch-bridge.sh --fold <session-id>
        watch-bridge.sh --numbers
-       watch-bridge.sh --new-thread <slug> [number]
+       watch-bridge.sh --new-thread <slug> --title "<title>" [number]
        watch-bridge.sh --reap [--dry-run] [--all]
 EOF
   exit 64
@@ -1144,17 +1147,84 @@ reap_spinners() { # $@ = --dry-run | --all
 # moved to `_archiv/` by then), or the sync client had not caught up. Hence: read
 # both folders, and settle first, exactly as --fold does. The lock covers the two
 # real races; it lives LOCALLY, not in the bridge, so no helper files appear there.
-new_thread() { # $1=slug [$2=number, for a deliberate series]
-  local slug="${1:-}" want="${2:-}" settle="${WATCH_BRIDGE_SETTLE:-5}"
+#
+# The command writes the cover sheet ITSELF. Measured in a live bridge: 64 of 102
+# threads had no thread.md, and the index -- the one column that says what a thread
+# is about -- stayed empty for them. Not carelessness of individual sessions: the duty
+# stood as prose AFTER the tool call ("then write thread.md"), and a rule you still
+# have to carry out by hand once the command has run loses against the shortcut --
+# for everyone alike, which is why the ratio was what it was.
+#
+# Why the title is a NAMED option and not a second positional argument: there is no
+# programmatic caller (measured across every repository and the global commands);
+# the callers are people with a document in front of them -- and documents cannot
+# be switched over synchronously. So the question is not "does it break callers?"
+# but "how does someone fail who still reads the old instructions?". That reader
+# types the documented fan-out form `--new-thread watcher-arm 069`. With the title
+# as a second positional argument `069` would BECOME the title, the number would be
+# handed out automatically, and the fan-out would be silently broken -- precisely
+# where the number is the whole point. With `--title` the title is missing, the
+# command refuses out loud and prints the new form. A loud failure instead of a
+# silent wrong creation, as with install-watcher.sh -s.
+#
+# `participants:` is deliberately NOT written: the command knows slug, number and
+# date, but no session id, and message 1 does not exist yet at creation time. An
+# empty field would be the same defect as an empty title, one line further down.
+# Nothing reads that field, and many existing cover sheets never had it.
+new_thread() { # <slug> --title "<title>" [number, for a deliberate series]
+  local slug="" want="" title="" have_title=0 settle="${WATCH_BRIDGE_SETTLE:-5}"
+  local a
+  while [[ $# -gt 0 ]]; do
+    a="$1"; shift
+    case "$a" in
+      --title)   have_title=1; title="${1:-}"; [[ $# -gt 0 ]] && shift ;;
+      --title=*) have_title=1; title="${a#--title=}" ;;
+      --*)       echo "watch-bridge: unknown argument '$a'." >&2; usage ;;
+      *)
+        if   [[ -z "$slug" ]]; then slug="$a"
+        elif [[ -z "$want" ]]; then want="$a"
+        else echo "watch-bridge: too many arguments ('$a') -- the title goes after --title." >&2; usage
+        fi ;;
+    esac
+  done
+  [[ -n "$slug" ]] || usage
   resolve_bridge
 
   case "$slug" in
-    "" | */*)
-      echo "watch-bridge: slug missing or contains '/'." >&2; exit 2 ;;
+    */*)
+      echo "watch-bridge: slug contains '/'." >&2; exit 2 ;;
     [0-9][0-9][0-9]-*)
-      echo "watch-bridge: the number is handed out, not passed in -- for a deliberate series give it as the second argument." >&2
+      echo "watch-bridge: the number is handed out, not passed in -- for a deliberate series give it as a further argument." >&2
       exit 2 ;;
   esac
+
+  # Title: mandatory, one line, no surrounding whitespace. An empty title would be no
+  # gain -- we would trade "no cover sheet" for "title not filled in".
+  title="${title//$'\r'/}"
+  title="${title#"${title%%[![:space:]]*}"}"
+  title="${title%"${title##*[![:space:]]}"}"
+  if [[ -z "$title" ]]; then
+    if [[ $have_title -eq 1 ]]; then
+      echo "watch-bridge: the title is empty." >&2
+    elif [[ -n "$want" && "$want" == *[!0-9]* ]]; then
+      # The positional form `<slug> "<title>"` from an old instruction: the title is
+      # there, just in the wrong place. Hand back the finished line -- one step.
+      echo "watch-bridge: title missing -- it goes after --title, not as the second argument:" >&2
+      echo "              watch-bridge.sh --new-thread $slug --title \"$want\"" >&2
+    else
+      echo "watch-bridge: title missing -- --new-thread writes the cover sheet (thread.md) itself and needs it:" >&2
+      echo "              watch-bridge.sh --new-thread $slug --title \"<title>\"${want:+ $want}" >&2
+    fi
+    usage
+  fi
+  case "$title" in
+    *$'\n'*) echo "watch-bridge: the title must be a single line." >&2; exit 2 ;;
+  esac
+  if [[ -n "$want" ]]; then
+    case "$want" in
+      *[!0-9]*) echo "watch-bridge: '$want' is not a number -- the title goes after --title." >&2; exit 2 ;;
+    esac
+  fi
 
   count_all() { ls -d "$bridge"/threads/*/ "$bridge"/_archiv/*/ 2>/dev/null | wc -l | tr -d ' '; }
   max_num()   { ls -d "$bridge"/threads/*/ "$bridge"/_archiv/*/ 2>/dev/null \
@@ -1191,9 +1261,6 @@ new_thread() { # $1=slug [$2=number, for a deliberate series]
 
   local num
   if [[ -n "$want" ]]; then
-    case "$want" in
-      *[!0-9]* | "") echo "watch-bridge: '$want' is not a number." >&2; exit 2 ;;
-    esac
     num="$(printf '%03d' "$((10#$want))")"
   else
     num="$(printf '%03d' "$(( $(max_num) + 1 ))")"
@@ -1215,6 +1282,17 @@ new_thread() { # $1=slug [$2=number, for a deliberate series]
   fi
 
   mkdir -p "$dir/msgs" || exit 1
+
+  # The cover sheet is part of creating, not of reporting: first the folder, then
+  # thread.md, then talk (see below). Only what the command KNOWS -- title and created;
+  # no empty participants field (reasoning at the head of this function). Immutable,
+  # as the protocol demands for thread.md; whoever has more to say says it in msg 1.
+  {
+    printf -- '---\n'
+    printf 'title: %s\n' "$title"
+    printf 'created: %s\n' "$(date -u +%F)"
+    printf -- '---\n'
+  } > "$dir/thread.md" || { echo "watch-bridge: could not write '$dir/thread.md'." >&2; exit 1; }
 
   # Create first, talk afterwards. The series message used to be printed before the
   # mkdir; three lines on stderr are enough for a caller's `| head -2` to close the
@@ -1247,7 +1325,7 @@ case "${1:-}" in
   --status|-s) status_report "${2:-}"; exit 0 ;;
   --fold|--scan) [[ -n "${2:-}" ]] || usage; fold_report "$2"; exit 0 ;;
   --numbers) numbers_report; exit 0 ;;
-  --new-thread) [[ -n "${2:-}" ]] || usage; new_thread "$2" "${3:-}"; exit 0 ;;
+  --new-thread) shift; new_thread "$@"; exit 0 ;;
   --reap) shift; reap_spinners "$@"; exit 0 ;;
   ""|-h|--help) usage ;;
 esac

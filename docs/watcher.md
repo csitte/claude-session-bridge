@@ -643,12 +643,65 @@ instead of archive-ripeness, working directory instead of registry, sync lag ins
 index. All three tools do something useful; they only name the **reason** wrongly — and the
 reason is what the reader acts on.
 
-## Handing out a thread number: `--new-thread`
+## Creating a thread: `--new-thread <slug> --title "<title>" [nr]`
 
-Creates `threads/<NNN>-<slug>/msgs` and prints the folder name on stdout (messages go to
-stderr, so `slug=$(... --new-thread foo)` works). A second argument **forces** a number — that
-is the deliberate fan-out (one number, one thread per recipient); the command says out loud
-that it is creating a series rather than doing it silently.
+Creates `threads/<NNN>-<slug>/msgs`, writes the cover sheet `thread.md` and prints the folder
+name on stdout (messages go to stderr, so `slug=$(... --new-thread foo --title "…")` works). A
+number given as a further argument is **forced** — that is the deliberate fan-out (one number,
+one thread per recipient); the command says out loud that it is creating a series rather than
+doing it silently.
+
+```bash
+bash watch-bridge.sh --new-thread cover-sheet-test --title "What this is about, one line"
+# fan-out:            --new-thread watcher-arm-foo --title "…" 069
+```
+
+**The command writes the cover sheet itself, and the title is mandatory.** Measured in a live
+bridge: **64 of 102** threads had no `thread.md`, and the index listed 87 rows without a
+subject — the one column that says what a thread is about. Not carelessness of individual
+sessions: the duty stood as **prose after the tool call** ("then write `thread.md`"), and a rule
+you still have to carry out by hand once the command has run loses against the shortcut — for
+everyone alike, which is why the ratio was what it was (the same class as the number recipe
+that was replaced by the command in the first place). Only what the command **knows** is
+written:
+
+```
+---
+title: What this is about, one line
+created: 2026-09-05
+---
+```
+
+**No `participants:`** — the command knows no session id, and message 1 does not exist yet
+when the folder is created; an empty field would be the same defect as an empty title, one line
+further down. Nothing reads that field, and a fifth of the existing cover sheets never had it.
+Whoever has more to say says it in message 1; the cover sheet stays immutable, as the protocol
+demands.
+
+**Why the title is a named option and not a second positional argument.** There is **no
+programmatic caller** — measured across every repository in the fleet and the global slash
+commands. The callers are people with a document in front of them, and documents cannot be
+switched over synchronously (see "Why arm first and fold second": a session that was left out
+of a rollout runs the old order to this day). So the question is not *does it break callers?*
+but **how does someone fail who still reads the old instructions?** That reader types the
+documented fan-out form `--new-thread watcher-arm 069`:
+
+| signature | what happens to the stale reader |
+|---|---|
+| `<slug> "<title>" [nr]` (positional) | `069` **becomes the title**, the number is handed out automatically — the thread exists, the output looks right, **the fan-out is silently broken** |
+| `<slug> --title "<title>" [nr]` (built) | "title missing", nothing created, and the message shows the **new form with the caller's own arguments** |
+
+The silent case hits precisely the fan-out, the one situation where the number is the whole
+point. *A loud failure instead of a silent wrong creation* — the same decision as in
+`install-watcher.sh -s` (no `.session-id`, the script answers with `usage`). Rejected: the
+positional form with a guard against purely numeric titles — a permanent guard for a form
+nobody calls programmatically. Whoever types the positional form with a title
+(`--new-thread foo "My title"`) gets the finished line back with their title after `--title`,
+one step.
+
+**Not done: back-filling the old threads.** Most of them were closed; a cover sheet for a
+closed thread is busywork. The open ones get theirs when their owner next touches them — no
+separate task, no deadline.
 
 **The leverage is looking properly, not locking.** Measured across every duplicated number in
 a live bridge: only two pairs were less than five minutes apart, the rest hours to days. Those
@@ -665,7 +718,7 @@ If `max+1` turns out to be taken, the command **aborts** instead of creating the
 scan saw too little, and the right response is to wait rather than to work around it.
 
 
-**The fan-out note (since thread `168`).** When `--new-thread <slug> <nr>` adds another thread
+**The fan-out note (since thread `168`).** When `--new-thread <slug> --title "…" <nr>` adds another thread
 under a number already in use, the command does not only say "deliberate series" — it says what
 to watch out for:
 

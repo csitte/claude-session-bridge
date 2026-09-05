@@ -14,6 +14,17 @@ commit it names will say why.
 
 ## Unreleased
 
+### Changed
+- **`--new-thread` now requires `--title "<title>"` and writes the cover sheet `thread.md`
+  itself** (`title:` and `created:`). Without a title nothing is created and the command
+  prints the form to use, with the caller's own arguments filled in. The forced number for a
+  fan-out is still a positional argument (`--new-thread <slug> --title "…" 069`). Reason: in a
+  live bridge 64 of 102 threads had no cover sheet, because writing it was a prose step after
+  the command. The title is a named option rather than a second positional argument so that
+  the old documented fan-out form fails out loud instead of silently turning `069` into a
+  title. No `participants:` is written — the command cannot know them, and nothing reads the
+  field.
+
 ### Added
 - `watch-bridge.sh --reap [--dry-run] [--all]`: kills orphaned `conhost.exe` consoles that
   keep spinning after a session ended. Eleven of them once held 3.7 of 4 cores for fourteen
