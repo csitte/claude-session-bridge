@@ -1377,7 +1377,10 @@ instructions_conflict() { # $1 = clone -> leaves proj/CLAUDE.md in a merge confl
   printf 'LOCAL\n' > "$c/proj/CLAUDE.md"; ( cd "$c" && $G commit -qam local )
   git -C "$c" checkout -q main
   printf 'OTHER\n' > "$c/proj/CLAUDE.md"; ( cd "$c" && $G commit -qam other )
-  git -C "$c" merge local >/dev/null 2>&1 || true
+  # `merge` wants a committer identity BEFORE it finds the conflict -- without one it dies
+  # with "Committer identity unknown" and leaves no conflict behind. A developer's global
+  # gitconfig hides that; CI has none, and 17 cases went red there.
+  ( cd "$c" && $G merge local >/dev/null 2>&1 ) || true
 }
 
 test_instructions() {
@@ -1492,7 +1495,7 @@ CONF
   printf 'A local\n' > "$r2/clone/alpha/CLAUDE.md"; ( cd "$r2/clone" && git -c user.name=t -c user.email=t@t commit -qam alocal )
   git -C "$r2/clone" checkout -q main
   printf 'A other\n' > "$r2/clone/alpha/CLAUDE.md"; ( cd "$r2/clone" && git -c user.name=t -c user.email=t@t commit -qam aother )
-  git -C "$r2/clone" merge alocal >/dev/null 2>&1 || true
+  ( cd "$r2/clone" && git -c user.name=t -c user.email=t@t merge alocal >/dev/null 2>&1 ) || true   # identity, see instructions_conflict
   [[ -n "$(git -C "$r2/clone" ls-files -u -- alpha/CLAUDE.md)" ]] && ok "fixture: alpha/CLAUDE.md is in conflict" || bad "fixture: alpha/CLAUDE.md is in conflict"
   fleet_start "$W" 2 "$W/m3" "CC_INSTRUCTIONS_DIR=$r2/clone"
   assert_eq "e2e: the session STARTS despite the conflict"  "alpha beta" "$(sort "$W/m3" | paste -sd' ' -)"
