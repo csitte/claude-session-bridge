@@ -222,6 +222,75 @@ harmless (nobody hears them) but they poll forever. Two independent defences: th
 script collects them after killing the windows, and the arming logic above reaps them. Both
 are needed; either alone has a hole.
 
+### A third line: orphaned consoles — `--reap`
+
+Both defences above see **only `bash.exe`**. Next to it there is a second kind of leftover
+that is far more expensive, and that they could not find by construction.
+
+**What happens.** msys opens a ConPTY for every `powershell.exe` call — a
+`cygwin-console-helper.exe` plus a headless `conhost.exe`. If the bash side dies *in the
+middle of the call*, and that is exactly what happens when a session ends, the `conhost`
+does not exit but goes into a **busy loop**. It hangs off no console and no live parent;
+`taskkill /T` reaches it as little as it reaches the watcher.
+
+**The incident.** Eleven such `conhost` processes were spinning at **33 % of a core each** —
+**3.7 of 4 cores**, for fourteen hours. The machine was close to unusable; they were found
+while hunting for the lost performance, not by the mechanism. The trigger was an arming
+rush: eleven sessions armed within twelve seconds, each with a full scan over ~290
+processes, and their sessions ended afterwards.
+
+**Why the arm did not catch it** — three reasons, all three fixed:
+
+| gap | why it carried | fix |
+|---|---|---|
+| it saw only `bash.exe` | the `conhost` is a **sibling** of the bash, not a child — `Stop-Process` on the bash pids leaves it standing | the inventory now reports `conhost.exe` too |
+| it filters on its **own id** | the eleven orphans carried a **bare** command line without `watch-bridge.sh` — invisible to the id regex | `--reap` is independent of any id |
+| it runs only **at arm time** | for fourteen hours nobody armed that id | `--reap` runs without an arm; suitable as a scheduled task |
+
+**Detection — three criteria together, none carries alone:**
+
+1. **The parent process no longer exists.** A `conhost` under a live creator belongs to a
+   running window and is never touched.
+2. **Older than the grace period** (`WATCH_BRIDGE_SPIN_MINAGE`, default 120 s). The console
+   the checking call opens itself falls under it.
+3. **Sustained load over its whole lifetime** (`WATCH_BRIDGE_SPIN_MINPCT`, default 5 %). This
+   is the actual dividing line: measured, 27 healthy `conhost` sat below 0.3 %, the eleven sick
+   ones at 33 %.
+
+**The idle leftover is the more dangerous case.** A `conhost` without load whose parent is gone
+is, by (1)+(2), **not** distinguishable from a freshly opened Git Bash window: mintty starts
+through a launcher that exits at once. In the first dry run the **user's own open terminal**
+was on the kill list. Hence a separate, much harder age limit for `zombie`
+(`WATCH_BRIDGE_ZOMBIE_MINAGE`, default **24 h**), and it is only touched with `--all`. Spinners
+do not need the limit — sustained load is proof by itself.
+
+```bash
+watch-bridge.sh --reap --dry-run     # look, touch nothing
+watch-bridge.sh --reap               # kill the spinners
+watch-bridge.sh --reap --dry-run --all
+watch-bridge.sh --reap --all         # plus the idle leftovers (> 24 h)
+```
+
+`--status` reports findings on its own, **regardless of the id filter** (a spinner belongs to
+no session): `WARNING` for spinners, `note` for idle leftovers. The arm kills spinners on the
+way in, even when it steps aside.
+
+> **The leak cannot be prevented.** It arises in a race between process exit and ConPTY
+> teardown that we do not control — `--reap` is **defence, not avoidance**. The attack
+> surface got smaller in two places: the inventory is cached and carries the `claude.exe`
+> pids along (one PowerShell call per `--status` instead of two), and the arm runs under a
+> local `mkdir` lock that serialises an arming rush. An arm that does not get the lock
+> **carries on anyway**: the lock calms the rush, it is not a correctness criterion — an arm
+> that aborted would be a gap in delivery, and that is more expensive than a duplicate scan.
+
+**Diagnosis without the script** (one line; a healthy `conhost` never has noticeable CPU
+time):
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='conhost.exe'" |
+  Where-Object { ($_.KernelModeTime+$_.UserModeTime)/10000000 -gt 300 }
+```
+
 ## Three states, not two
 
 ```

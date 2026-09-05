@@ -1165,6 +1165,524 @@ test_pull() {
 }
 
 # --------------------------------------------------------------------------
+# launcher: the autostart selection is local
+# --------------------------------------------------------------------------
+
+# A copy of the launcher scripts in a scratch directory: _lib.sh derives CC_SCRIPT_DIR from
+# its own location, so the config, the selection file and the scripts have to sit together.
+# The mintty call is REPLACED IN THE COPY rather than stubbed on PATH -- `bash -lc` re-reads
+# the profile and resets PATH, so a PATH stub does not reach a child login shell; a test
+# relying on it once opened thirteen real windows. The copy is checked afterwards: if a
+# real `mintty` call survived the rewrite, the test refuses to run.
+launcher_copy() { # $1 = target dir -> writes _lib.sh + start-cc-sessions.sh + a mintty stub
+  local d="$1"
+  mkdir -p "$d/bin"
+  cp "$ROOT/launcher/_lib.sh" "$ROOT/launcher/start-cc-sessions.sh" "$d/"
+  sed -i 's|^  mintty -o ConfirmExit=no|  "$CC_TEST_MINTTY" -o ConfirmExit=no|' "$d/_lib.sh"
+  grep -q 'CC_TEST_MINTTY' "$d/_lib.sh" || { echo "REFUSING: mintty call not replaced in the copy" >&2; exit 2; }
+  grep -q '^  mintty ' "$d/_lib.sh" && { echo "REFUSING: a real mintty call is left in the copy" >&2; exit 2; }
+  # The stub records the project name (after --Title) and the WHOLE command line: only
+  # the latter can show whether a text reached the start prompt.
+  cat > "$d/bin/mintty-stub" <<'STUB'
+#!/usr/bin/env bash
+prev=""; for a in "$@"; do [[ "$prev" == "--Title" ]] && echo "$a" >> "$CC_TEST_MARKER"; prev="$a"; done
+printf '%s\n' "$*" >> "$CC_TEST_MARKER.args"
+exit 0
+STUB
+  chmod +x "$d/bin/mintty-stub"
+}
+
+# fleet_start — runs the copied start-cc-sessions.sh and waits for the stub to have
+# recorded $2 starts. cc_launch backgrounds the window and the starter disowns it, so
+# the stub outlives the script; waiting on the CONDITION rather than a clock keeps the
+# test deterministic.
+fleet_start() { # $1 = launcher copy dir, $2 = expected starts, $3 = marker, [$4 = extra env]
+  : > "$3"; : > "$3.args"
+  ( export CC_TEST_MINTTY="$1/bin/mintty-stub" CC_TEST_MARKER="$3" HOSTNAME=testhost
+    export CC_NO_PULL=1 CC_LIVE_PIDS='' CLAUDE_CONFIG_DIR="$1/profile"
+    [[ -n "${4:-}" ]] && export "$4"
+    cd "$1" && bash ./start-cc-sessions.sh >"$1/out.txt" 2>&1 </dev/null )
+  FLEET_RC=$?
+  local i=0
+  while [[ "$(wc -l < "$3")" -lt "$2" && $i -lt 100 ]]; do sleep 0.05; i=$((i+1)); done
+  return 0
+}
+
+test_autostart() {
+  head_ "launcher: the autostart selection is local, seeded once from the config"
+  local W="$TMPROOT/as.$RANDOM"; mkdir -p "$W/profile/sessions" "$W/p/alpha" "$W/p/beta" "$W/p/gamma" "$W/p/delta"
+  launcher_copy "$W"
+  cat > "$W/projects.testhost.conf" <<CONF
+# header comment
+projects=(
+  "alpha|$W/p/alpha|--add-dir \"/x y\""
+  #off "beta|$W/p/beta"
+  "gamma|$W/p/gamma||instructions=g"
+  #off "delta|$W/p/delta"
+)
+CONF
+  local cfg="$W/projects.testhost.conf" sel="$W/autostart.testhost.local"
+
+  lib() { # runs a snippet with the copied _lib.sh sourced
+    ( export HOSTNAME=testhost
+      # shellcheck source=/dev/null
+      source "$W/_lib.sh"; eval "$1" )
+  }
+  assert_eq "cc_resolve_autostart derives the local file from the config name" "$sel" "$(lib "cc_resolve_autostart '$cfg'")"
+
+  local all; all="$(lib "cc_all_entries '$cfg'")"
+  assert_eq "cc_all_entries sees active AND #off entries, in file order" \
+    "alpha beta gamma delta" "$(printf '%s\n' "$all" | cut -d'|' -f1 | paste -sd' ' -)"
+  assert_eq "... with the extra args intact"   "alpha|$W/p/alpha|--add-dir \"/x y\"" "$(printf '%s\n' "$all" | sed -n 1p)"
+  assert_eq "... and the fourth field intact"  "gamma|$W/p/gamma||instructions=g"    "$(printf '%s\n' "$all" | sed -n 3p)"
+
+  # Seeding: the first call creates the file from the ACTIVE lines -- exactly what would
+  # have started before -- and says so. Behaviour-preserving by construction.
+  [[ -f "$sel" ]] && bad "no selection file before the first run" || ok "no selection file before the first run"
+  local out; out="$(lib "cc_autostart_names '$cfg' 2>&1 >/dev/null")"
+  if printf '%s\n' "$out" | grep -q 'local selection created'; then ok "the first run seeds the file and says so"; else bad "the first run seeds the file and says so" "$out"; fi
+  [[ -f "$sel" ]] && ok "... the file now exists" || bad "... the file now exists"
+  assert_eq "... holding exactly the active entries" "alpha gamma" "$(lib "cc_autostart_names '$cfg' 2>/dev/null" | paste -sd' ' -)"
+  assert_eq "... which is what sourcing the array would have given" \
+    "$(lib "projects=(); source '$cfg'; printf '%s\n' \"\${projects[@]%%|*}\"" | paste -sd' ' -)" \
+    "$(lib "cc_autostart_names '$cfg' 2>/dev/null" | paste -sd' ' -)"
+  assert_eq "the second run seeds nothing and is silent" "" "$(lib "cc_autostart_names '$cfg' 2>&1 >/dev/null")"
+
+  # Editing the local file changes the selection without touching the config.
+  local before; before="$(md5sum < "$cfg")"
+  printf 'beta\r\n\n# just a comment\n   \ndelta\n' >> "$sel"
+  assert_eq "names added locally are selected (CRLF, blanks and comments tolerated)" \
+    "alpha gamma beta delta" "$(lib "cc_autostart_names '$cfg' 2>/dev/null" | paste -sd' ' -)"
+  assert_eq "... and the config is untouched" "$before" "$(md5sum < "$cfg")"
+  : > "$sel"
+  assert_eq "an empty selection is an empty list" "" "$(lib "cc_autostart_names '$cfg' 2>/dev/null")"
+  rm -f "$sel"
+
+  # End to end through the fleet start.
+  fleet_start "$W" 2 "$W/m1"
+  assert_eq "the fleet start starts exactly the seeded selection"  "alpha gamma" "$(sort "$W/m1" | paste -sd' ' -)"
+  if grep -q 'local selection created' "$W/out.txt"; then ok "... and reports the seeding"; else bad "... and reports the seeding" "$(cat "$W/out.txt")"; fi
+  [[ -f "$sel" ]] && ok "... the selection file lies next to the config" || bad "... the selection file lies next to the config"
+  if grep -q 'autostart' "$cfg"; then bad "... the config was not touched"; else ok "... the config was not touched"; fi
+  assert_eq "... and the summary names the selection" "1" "$(grep -c 'selection: 2 of 4' "$W/out.txt")"
+
+  printf 'beta\n' >> "$sel"
+  fleet_start "$W" 3 "$W/m2"
+  assert_eq "a name added to the selection starts too, in FILE order" "alpha beta gamma" "$(paste -sd' ' - < "$W/m2")"
+
+  : > "$sel"
+  fleet_start "$W" 0 "$W/m3"
+  [[ -s "$W/m3" ]] && bad "an empty selection starts nothing" "$(cat "$W/m3")" || ok "an empty selection starts nothing"
+  if grep -q 'no project is selected' "$W/out.txt"; then ok "... and says so loudly"; else bad "... and says so loudly" "$(cat "$W/out.txt")"; fi
+  [[ "$FLEET_RC" -ne 0 ]] && ok "... with a non-zero exit, so the starter console stays open" || bad "... with a non-zero exit" "rc=$FLEET_RC"
+
+  # The .gitignore keeps the selection out of the repository -- an ignore rule that
+  # silently does nothing looks exactly like one that works, so ask git.
+  if git -C "$ROOT" check-ignore -q launcher/autostart.testhost.local 2>/dev/null; then
+    ok "launcher/autostart.<host>.local is ignored by git"
+  else bad "launcher/autostart.<host>.local is ignored by git"; fi
+}
+
+# --------------------------------------------------------------------------
+# launcher: --add-dir repos are pulled too
+# --------------------------------------------------------------------------
+
+test_addedrepos() {
+  head_ "launcher: directories passed with --add-dir are pulled before the start"
+  local root="$TMPROOT/ar.$RANDOM"; mkdir -p "$root/plain" "$root/with space"
+  local G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
+  $G init -q --bare "$root/bare.git"
+  $G init -q "$root/author"
+  ( cd "$root/author" && echo v1 > f && $G add f && $G commit -qm v1 && git remote add origin "$root/bare.git" && git push -q origin HEAD:main )
+  git clone -q "$root/bare.git" "$root/sibling"
+  ( cd "$root/author" && echo v2 > f && $G commit -qam v2 && git push -q origin HEAD:main )
+
+  behind() { git -C "$1" fetch -q origin 2>/dev/null; git -C "$1" rev-list --count HEAD..origin/main 2>/dev/null; }
+  added() { # $1 = extra field [$2 = CC_NO_PULL] -> stderr + rc
+    ( export CC_NO_PULL="${2:-0}"
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      cc_pull_added_repos proj "$1" 2>&1; echo "rc=$?" )
+  }
+  assert_eq "fixture: the sibling repo is one commit behind" "1" "$(behind "$root/sibling")"
+
+  local out; out="$(added "--add-dir $root/sibling")"
+  assert_eq "--add-dir on a repo: it is pulled"           "0"  "$(behind "$root/sibling")"
+  assert_eq "... and the file is current"                 "v2" "$(cat "$root/sibling/f")"
+  if printf '%s\n' "$out" | grep -q 'proj:sibling.*caught up'; then ok "... reported under the project name and the repo"; else bad "... reported under the project name and the repo" "$out"; fi
+
+  assert_eq "--add-dir on a plain folder: silent, rc 0" "rc=0" "$(added "--add-dir $root/plain")"
+  assert_eq "a quoted path with a space is split correctly" "rc=0" "$(added "--add-dir \"$root/with space\"")"
+
+  git -C "$root/sibling" reset -q --hard HEAD~1
+  added "--add-dir \"$root/with space\" --add-dir $root/sibling --add-dir $root/plain" >/dev/null
+  assert_eq "several --add-dir, mixed: the repo among them is caught" "0" "$(behind "$root/sibling")"
+
+  git -C "$root/sibling" reset -q --hard HEAD~1
+  assert_eq "CC_NO_PULL=1: silent"        "rc=0" "$(added "--add-dir $root/sibling" 1)"
+  assert_eq "... and nothing pulled"       "1"    "$(behind "$root/sibling")"
+
+  assert_eq "no extra field: silent, rc 0" "rc=0" "$(added "")"
+  # A syntax error inside `eval` tears down the enclosing shell before `|| return 0` can
+  # act -- called directly the function returned 0, in a command substitution 1. The
+  # check therefore has to run in $( ), or it tests nothing.
+  assert_eq "a broken extra field (unbalanced quote): silent, rc 0" "rc=0" "$(added '--add-dir "unbalanced')"
+
+  git -C "$root/sibling" reset -q --hard HEAD~1 2>/dev/null || true
+  added "--add-dir=$root/sibling" >/dev/null
+  assert_eq "the --add-dir=<path> form is caught too" "0" "$(behind "$root/sibling")"
+
+  # Through cc_launch: the function is only worth anything if the launcher calls it. A
+  # mutation that drops the call leaves every direct test above green.
+  local W="$TMPROOT/are.$RANDOM"; mkdir -p "$W/profile/sessions" "$W/p/alpha"
+  launcher_copy "$W"
+  cat > "$W/projects.testhost.conf" <<CONF
+projects=(
+  "alpha|$W/p/alpha|--add-dir $root/sibling"
+)
+CONF
+  git -C "$root/sibling" reset -q --hard HEAD~1
+  assert_eq "fixture: behind again" "1" "$(behind "$root/sibling")"
+  ( export CC_TEST_MINTTY="$W/bin/mintty-stub" CC_TEST_MARKER="$W/m" HOSTNAME=testhost
+    export CC_LIVE_PIDS='' CLAUDE_CONFIG_DIR="$W/profile"
+    cd "$W" && bash ./start-cc-sessions.sh >"$W/out.txt" 2>&1 </dev/null )
+  assert_eq "cc_launch pulls the --add-dir repo before the start" "0" "$(behind "$root/sibling")"
+  if grep -q 'alpha:sibling.*caught up' "$W/out.txt"; then ok "... and the start log says so"; else bad "... and the start log says so" "$(cat "$W/out.txt")"; fi
+}
+
+# --------------------------------------------------------------------------
+# launcher: instructions kept outside the project repo
+# --------------------------------------------------------------------------
+
+# A real repo pair (bare + author + clone), because the whole point is the HISTORY: the
+# baseline asks whether the working-tree file matches any version the clone has ever seen.
+instructions_fixture() { # $1 = root -> author clone at $1/author, launcher clone at $1/clone
+  local r="$1" G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
+  mkdir -p "$r"
+  $G init -q --bare "$r/bare.git"
+  git clone -q "$r/bare.git" "$r/author" 2>/dev/null
+  mkdir -p "$r/author/proj"; printf 'INSTRUCTIONS v1\n' > "$r/author/proj/CLAUDE.md"
+  ( cd "$r/author" && $G add -A && $G commit -qm v1 && git push -q origin HEAD:main )
+  git clone -q "$r/bare.git" "$r/clone" 2>/dev/null
+}
+instructions_publish() { # $1 = root $2 = content -> new version in author, pushed, clone caught up
+  local r="$1" G="git -c user.name=t -c user.email=t@t"
+  printf '%s\n' "$2" > "$r/author/proj/CLAUDE.md"
+  ( cd "$r/author" && $G commit -qam next && git push -q origin HEAD:main )
+  git -C "$r/clone" pull -q --ff-only origin main
+}
+instructions_conflict() { # $1 = clone -> leaves proj/CLAUDE.md in a merge conflict
+  local c="$1" G="git -c user.name=t -c user.email=t@t"
+  git -C "$c" checkout -q -b local
+  printf 'LOCAL\n' > "$c/proj/CLAUDE.md"; ( cd "$c" && $G commit -qam local )
+  git -C "$c" checkout -q main
+  printf 'OTHER\n' > "$c/proj/CLAUDE.md"; ( cd "$c" && $G commit -qam other )
+  git -C "$c" merge local >/dev/null 2>&1 || true
+}
+
+test_instructions() {
+  head_ "launcher: instructions from a clone -- baseline from the history, conflict becomes a task"
+  local r="$TMPROOT/in.$RANDOM"; instructions_fixture "$r"; mkdir -p "$r/tree"
+  ins() { # $1 = key -> stderr + rc, against $r/tree
+    ( export CC_INSTRUCTIONS_DIR="$r/clone" CC_NO_PULL=1
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      cc_instructions_before_start proj "$r/tree" "$1" 2>&1; echo "rc=$?" )
+  }
+  local out
+  out="$(ins proj)"
+  if printf '%s\n' "$out" | grep -q 'copied in'; then ok "file missing in the tree -> copied in"; else bad "file missing in the tree -> copied in" "$out"; fi
+  assert_eq "... with the clone's content"  "INSTRUCTIONS v1" "$(cat "$r/tree/CLAUDE.md")"
+  assert_eq "there and equal -> silent, rc 0" "rc=0" "$(ins proj)"
+
+  # THE case: merely outdated is caught up, not reported as a conflict.
+  instructions_publish "$r" "INSTRUCTIONS v2"
+  out="$(ins proj)"
+  if printf '%s\n' "$out" | grep -q 'caught up'; then ok "merely outdated -> caught up"; else bad "merely outdated -> caught up" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'differ'; then bad "... and NOT reported as a conflict" "$out"; else ok "... and NOT reported as a conflict"; fi
+  assert_eq "... the tree is on v2" "INSTRUCTIONS v2" "$(cat "$r/tree/CLAUDE.md")"
+
+  # Real divergence: the tree holds something the history has never seen.
+  printf 'CHANGED LOCALLY, never committed\n' > "$r/tree/CLAUDE.md"
+  instructions_publish "$r" "INSTRUCTIONS v3"
+  out="$(ins proj)"
+  if printf '%s\n' "$out" | grep -q 'NO version of the history'; then ok "a local change the history does not know -> reported"; else bad "a local change the history does not know -> reported" "$out"; fi
+  assert_eq "... and the tree is left alone" "CHANGED LOCALLY, never committed" "$(cat "$r/tree/CLAUDE.md")"
+  if printf '%s\n' "$out" | grep -q '^rc=0$'; then ok "... rc 0: the start goes on"; else bad "... rc 0" "$out"; fi
+
+  # An OLD version still counts as known -- the history, not just HEAD~1.
+  printf 'INSTRUCTIONS v1\n' > "$r/tree/CLAUDE.md"
+  out="$(ins proj)"
+  if printf '%s\n' "$out" | grep -q 'caught up'; then ok "an older version from the history is caught up too"; else bad "an older version from the history is caught up too" "$out"; fi
+  assert_eq "... to the current one" "INSTRUCTIONS v3" "$(cat "$r/tree/CLAUDE.md")"
+
+  out="$(ins nosuchkey)"
+  if printf '%s\n' "$out" | grep -q 'is not in the clone'; then ok "an unknown key is reported, the start goes on"; else bad "an unknown key is reported, the start goes on" "$out"; fi
+  assert_eq "no key at all -> silent, rc 0" "rc=0" "$(ins "")"
+  assert_eq "CC_NO_INSTRUCTIONS=1 -> silent, rc 0" "rc=0" "$( ( export CC_INSTRUCTIONS_DIR="$r/clone" CC_NO_INSTRUCTIONS=1
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"; cc_instructions_before_start proj "$r/tree" proj 2>&1; echo "rc=$?" ) )"
+  out="$( ( export CC_INSTRUCTIONS_DIR="$r/nowhere"
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"; cc_instructions_before_start proj "$r/tree" proj 2>&1; echo "rc=$?" ) )"
+  if printf '%s\n' "$out" | grep -q 'no clone under'; then ok "no clone -> said, the start goes on"; else bad "no clone -> said" "$out"; fi
+
+  # Merge conflict in the clone: nothing copied, the start goes on, and the SESSION gets
+  # the task. NOT in $( ) -- that would be a subshell and CC_INSTRUCTIONS_NOTE would never
+  # reach the caller; cc_launch calls the function directly for the same reason.
+  instructions_conflict "$r/clone"
+  [[ -n "$(git -C "$r/clone" ls-files -u)" ]] && ok "fixture: the clone is in a merge conflict" || bad "fixture: the clone is in a merge conflict"
+  cp "$r/tree/CLAUDE.md" "$r/before.md"
+  local note rc
+  note="$( ( export CC_INSTRUCTIONS_DIR="$r/clone" CC_NO_PULL=1
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      CC_INSTRUCTIONS_NOTE=""
+      cc_instructions_before_start proj "$r/tree" proj 2>"$r/err.txt"; rc=$?
+      printf 'rc=%s\n%s' "$rc" "${CC_INSTRUCTIONS_NOTE:-}" ) )"
+  rc="$(printf '%s\n' "$note" | sed -n 1p)"; note="$(printf '%s\n' "$note" | sed 1d)"
+  assert_eq "conflict in the own key: rc 0, no abort" "rc=0" "$rc"
+  if grep -q 'MERGE CONFLICT' "$r/err.txt"; then ok "... named on stderr"; else bad "... named on stderr" "$(cat "$r/err.txt")"; fi
+  cmp -s "$r/tree/CLAUDE.md" "$r/before.md" && ok "... nothing copied in" || bad "... nothing copied in"
+  # A claim about an empty string passes always -- check it is set BEFORE checking its shape.
+  [[ -n "$note" ]] && ok "... the task for the session is set" || bad "... the task for the session is set"
+  if printf '%s' "$note" | grep -q -- "$r/clone"; then ok "... it names the clone"; else bad "... it names the clone" "$note"; fi
+  if printf '%s' "$note" | grep -q 'NEXT session start'; then ok "... and warns that the fix takes effect at the next start"; else bad "... and warns about the next start" "$note"; fi
+  if [[ -n "$note" ]] && ! printf '%s' "$note" | grep -q '[$`]'; then ok "... without backtick or dollar (it travels through bash -lc)"; else bad "... without backtick or dollar" "$note"; fi
+  note="$( ( export CC_INSTRUCTIONS_DIR="$r/clone" CC_NO_PULL=1
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      CC_INSTRUCTIONS_NOTE=""; cc_instructions_before_start proj "$r/tree" otherkey 2>/dev/null; printf '%s' "${CC_INSTRUCTIONS_NOTE:-}" ) )"
+  assert_eq "conflict in ANOTHER project's file: no task for this session" "" "$note"
+
+  # End to end: the entry's fourth field reaches the function, and the task reaches the
+  # START PROMPT -- the log is read by nobody inside the session.
+  local W="$TMPROOT/ine.$RANDOM"; mkdir -p "$W/profile/sessions" "$W/p/alpha" "$W/p/beta"
+  launcher_copy "$W"
+  printf 'ARM-RITUAL-PLACEHOLDER\n' > "$W/session-startprompt.txt"
+  local r2="$TMPROOT/in2.$RANDOM"; instructions_fixture "$r2"
+  mkdir -p "$r2/author/alpha"; printf 'A v1\n' > "$r2/author/alpha/CLAUDE.md"
+  ( cd "$r2/author" && git -c user.name=t -c user.email=t@t add -A && git -c user.name=t -c user.email=t@t commit -qm alpha && git push -q origin HEAD:main )
+  git -C "$r2/clone" pull -q --ff-only origin main
+  cat > "$W/projects.testhost.conf" <<CONF
+projects=(
+  "alpha|$W/p/alpha||instructions=alpha"
+  "beta|$W/p/beta|--add-dir \"/tmp\"|instructions=nosuch"
+)
+CONF
+  fleet_start "$W" 2 "$W/m1" "CC_INSTRUCTIONS_DIR=$r2/clone"
+  assert_eq "e2e: both entries start"                       "alpha beta" "$(sort "$W/m1" | paste -sd' ' -)"
+  assert_eq "e2e: the key from the fourth field is used"    "A v1" "$(cat "$W/p/alpha/CLAUDE.md" 2>/dev/null)"
+  if grep -q "'nosuch/CLAUDE.md' is not in the clone" "$W/out.txt"; then ok "e2e: a missing key is reported, the session starts anyway"; else bad "e2e: a missing key is reported" "$(cat "$W/out.txt")"; fi
+  # The old prefix cut would have handed `--add-dir "/tmp"|instructions=nosuch` to claude.
+  if grep -q -- '--add-dir "/tmp" --add-dir\|--add-dir "/tmp"|' "$W/m1.args" || grep -q 'instructions=' "$W/m1.args"; then
+    bad "e2e: the fourth field does not leak into the claude command line" "$(cat "$W/m1.args")"
+  else ok "e2e: the fourth field does not leak into the claude command line"; fi
+  if grep -q 'Merge conflict\|merge conflict' "$W/m1.args"; then bad "e2e: no task in the prompt while the clone is clean"; else ok "e2e: no task in the prompt while the clone is clean"; fi
+
+  instructions_conflict "$r2/clone"   # conflicts proj/, not alpha/ -- another project's file
+  fleet_start "$W" 2 "$W/m2" "CC_INSTRUCTIONS_DIR=$r2/clone"
+  assert_eq "e2e: a conflict in another project's file does not stop the start" "alpha beta" "$(sort "$W/m2" | paste -sd' ' -)"
+  if grep -q 'ANOTHER project' "$W/out.txt"; then ok "... and is attributed to its owner"; else bad "... and is attributed to its owner" "$(cat "$W/out.txt")"; fi
+
+  # Now alpha's own file in conflict: start on the local state, task in the prompt.
+  git -C "$r2/clone" merge --abort >/dev/null 2>&1 || git -C "$r2/clone" reset -q --hard
+  git -C "$r2/clone" checkout -q main 2>/dev/null
+  git -C "$r2/clone" checkout -q -b alocal
+  printf 'A local\n' > "$r2/clone/alpha/CLAUDE.md"; ( cd "$r2/clone" && git -c user.name=t -c user.email=t@t commit -qam alocal )
+  git -C "$r2/clone" checkout -q main
+  printf 'A other\n' > "$r2/clone/alpha/CLAUDE.md"; ( cd "$r2/clone" && git -c user.name=t -c user.email=t@t commit -qam aother )
+  git -C "$r2/clone" merge alocal >/dev/null 2>&1 || true
+  [[ -n "$(git -C "$r2/clone" ls-files -u -- alpha/CLAUDE.md)" ]] && ok "fixture: alpha/CLAUDE.md is in conflict" || bad "fixture: alpha/CLAUDE.md is in conflict"
+  fleet_start "$W" 2 "$W/m3" "CC_INSTRUCTIONS_DIR=$r2/clone"
+  assert_eq "e2e: the session STARTS despite the conflict"  "alpha beta" "$(sort "$W/m3" | paste -sd' ' -)"
+  assert_eq "e2e: nothing was copied in"                     "A v1" "$(cat "$W/p/alpha/CLAUDE.md")"
+  if grep -q 'merge conflict' "$W/m3.args"; then ok "e2e: the task is in the START PROMPT, not only in the log"; else bad "e2e: the task is in the start prompt" "$(cat "$W/m3.args")"; fi
+  if grep -q -- "$r2/clone" "$W/m3.args"; then ok "... naming the clone"; else bad "... naming the clone" "$(cat "$W/m3.args")"; fi
+  # The ritual is read by the window's shell (`$(cat …)`), so the recording holds the
+  # reference, not the text: both must be in the SAME argument for the prompt to carry both.
+  if tr '\n' ' ' < "$W/m3.args" | grep -q "session-startprompt.txt') *Note from the launcher"; then ok "... next to the arming ritual, which is kept (same argument)"; else bad "... next to the arming ritual" "$(cat "$W/m3.args")"; fi
+  assert_eq "... only the session whose key is in conflict gets it" "1" "$(grep -c 'merge conflict' "$W/m3.args")"
+
+  # Without a start prompt file the task still travels -- a missing file used to swallow it.
+  rm -f "$W/session-startprompt.txt"
+  fleet_start "$W" 2 "$W/m4" "CC_INSTRUCTIONS_DIR=$r2/clone"
+  if grep -q 'merge conflict' "$W/m4.args"; then ok "e2e: the task is passed even without a start prompt file"; else bad "e2e: the task is passed even without a start prompt file" "$(cat "$W/m4.args")"; fi
+
+  fleet_start "$W" 2 "$W/m5" "CC_NO_INSTRUCTIONS=1"
+  assert_eq "e2e: CC_NO_INSTRUCTIONS=1 starts everything and touches nothing" "alpha beta" "$(sort "$W/m5" | paste -sd' ' -)"
+  if grep -q '\[instructions\]' "$W/out.txt"; then bad "... silently" "$(cat "$W/out.txt")"; else ok "... silently"; fi
+}
+
+# --------------------------------------------------------------------------
+# launcher: instructions-sync.sh, the write path
+# --------------------------------------------------------------------------
+
+test_isync() {
+  head_ "launcher: instructions-sync.sh mirrors the working-tree CLAUDE.md into the clone"
+  local S="$ROOT/launcher/instructions-sync.sh" r="$TMPROOT/is.$RANDOM"
+  instructions_fixture "$r"
+  mkdir -p "$r/proj"; printf 'PROJECT INSTRUCTIONS v1\n' > "$r/proj/CLAUDE.md"
+  sync() { # $@ = args -> stdout+stderr + rc
+    ( export CC_INSTRUCTIONS_DIR="$r/clone" GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+      bash "$S" "$@" 2>&1; echo "rc=$?" )
+  }
+  local out
+  out="$(sync -n other "$r/proj")"
+  if printf '%s\n' "$out" | grep -q 'would mirror'; then ok "dry run says what it would do"; else bad "dry run says what it would do" "$out"; fi
+  [[ -e "$r/clone/other/CLAUDE.md" ]] && bad "... and changes nothing" || ok "... and changes nothing"
+
+  out="$(sync other "$r/proj")"
+  if printf '%s\n' "$out" | grep -q 'mirrored and pushed'; then ok "first sync: committed and pushed"; else bad "first sync: committed and pushed" "$out"; fi
+  assert_eq "... the clone holds the file"  "PROJECT INSTRUCTIONS v1" "$(cat "$r/clone/other/CLAUDE.md")"
+  git -C "$r/bare.git" cat-file -e main:other/CLAUDE.md 2>/dev/null && ok "... and so does the remote" || bad "... and so does the remote"
+
+  local before; before="$(git -C "$r/clone" rev-parse HEAD)"
+  out="$(sync other "$r/proj")"
+  if printf '%s\n' "$out" | grep -q 'unchanged'; then ok "second sync without a change: says unchanged"; else bad "second sync without a change: says unchanged" "$out"; fi
+  assert_eq "... and makes no commit" "$before" "$(git -C "$r/clone" rev-parse HEAD)"
+
+  printf 'PROJECT INSTRUCTIONS v2\n' > "$r/proj/CLAUDE.md"
+  sync other "$r/proj" >/dev/null
+  assert_eq "a change is mirrored to the remote" "PROJECT INSTRUCTIONS v2" "$(git -C "$r/bare.git" show main:other/CLAUDE.md)"
+
+  out="$(sync other "$r/nowhere")"
+  if printf '%s\n' "$out" | grep -q 'no readable CLAUDE.md' && printf '%s\n' "$out" | grep -q '^rc=1$'; then ok "missing CLAUDE.md -> error, named, rc 1"; else bad "missing CLAUDE.md -> error, named, rc 1" "$out"; fi
+  out="$(sync)"
+  if printf '%s\n' "$out" | grep -q '^usage:' && printf '%s\n' "$out" | grep -q '^rc=1$'; then ok "no key -> usage, rc 1"; else bad "no key -> usage, rc 1" "$out"; fi
+
+  instructions_conflict "$r/clone"
+  printf 'PROJECT INSTRUCTIONS v3\n' > "$r/proj/CLAUDE.md"
+  out="$(sync other "$r/proj")"
+  if printf '%s\n' "$out" | grep -q 'MERGE CONFLICT' && printf '%s\n' "$out" | grep -q '^rc=1$'; then ok "a clone in conflict is not written to"; else bad "a clone in conflict is not written to" "$out"; fi
+  assert_eq "... the file in the clone is left as it was" "PROJECT INSTRUCTIONS v2" "$(cat "$r/clone/other/CLAUDE.md")"
+}
+
+# --------------------------------------------------------------------------
+# watcher: orphaned consoles (--reap)
+# --------------------------------------------------------------------------
+
+# Two halves. The bash side -- what --status, --reap and the arm do with the inventory
+# lines -- is tested everywhere through a powershell.exe STUB on PATH that returns a fixed
+# inventory and records every Stop-Process instead of executing it. The PowerShell side --
+# which conhost is classified as spinner, zombie or neither -- is tested on Windows only,
+# by running the classification block from the script against a synthetic process table.
+test_reap() {
+  head_ "watcher: orphaned consoles -- --reap, and what --status and the arm make of them"
+  local W="$TMPROOT/reap.$RANDOM"; mkdir -p "$W/bin"
+  local log="$W/stop.log"; : > "$log"
+  # The stub answers the inventory call with a fixed table and logs Stop-Process calls.
+  cat > "$W/bin/powershell.exe" <<STUB
+#!/usr/bin/env bash
+if printf '%s' "\$*" | grep -q 'Stop-Process'; then
+  printf '%s\n' "\$*" | grep -oE -- '-Id [0-9,]+' >> '$log'
+  exit 0
+fi
+cat <<'INV'
+script|app|111|500|0|09-01 10:00
+wrapper|app|112|500|1|09-01 10:00
+spinner|-|900|7200|33|09-01 08:00
+zombie|-|901|90000|0|08-31 09:00
+claudepid|-|4242|0|0|
+INV
+STUB
+  chmod +x "$W/bin/powershell.exe"
+
+  # Safety rail before anything armed runs: the stub MUST be the powershell.exe that is
+  # found, or `--reap` below would kill real processes on the machine running the tests.
+  local found; found="$(PATH="$W/bin:$PATH" command -v powershell.exe)"
+  if [[ "$found" != "$W/bin/powershell.exe" ]]; then
+    bad "the powershell stub takes precedence on PATH" "found: $found"; return 0
+  fi
+  ok "the powershell stub takes precedence on PATH"
+  local B; B="$(new_bridge)"
+  wb() { ( export PATH="$W/bin:$PATH" WATCH_BRIDGE_INV_TTL=0 SESSION_BRIDGE_DIR="$B"; bash "$WATCHER" "$@" 2>&1; echo "rc=$?" ); }
+
+  local out
+  out="$(wb --status)"
+  assert_eq "--status: exactly one watcher row (the id), none for the orphans" "1" "$(printf '%s\n' "$out" | grep -c '^app ')"
+  if printf '%s\n' "$out" | grep -q '^-  *\|^- '; then bad "--status: no row with id '-'" "$out"; else ok "--status: no row with id '-'"; fi
+  if printf '%s\n' "$out" | grep -q 'claudepid'; then bad "--status: claudepid lines are consumed, not shown" "$out"; else ok "--status: claudepid lines are consumed, not shown"; fi
+  if printf '%s\n' "$out" | grep -q '^WARNING: 1 orphaned console' && printf '%s\n' "$out" | grep -q 'PID 900 '; then ok "--status: the spinner is reported as WARNING with its pid"; else bad "--status: the spinner is reported as WARNING with its pid" "$out"; fi
+  if printf '%s\n' "$out" | grep -q '^note: 1 orphaned console.*without load'; then ok "--status: the idle leftover is a note"; else bad "--status: the idle leftover is a note" "$out"; fi
+  out="$(wb --status app)"
+  if printf '%s\n' "$out" | grep -q '^WARNING: 1 orphaned console'; then ok "--status <id>: the spinner is reported regardless of the id filter"; else bad "--status <id>: the spinner is reported regardless of the id filter" "$out"; fi
+
+  out="$(wb --reap --dry-run)"
+  if printf '%s\n' "$out" | grep -q '^spinner  900 ' && ! printf '%s\n' "$out" | grep -q '^zombie'; then ok "--reap --dry-run lists the spinner and not the idle leftover"; else bad "--reap --dry-run lists the spinner and not the idle leftover" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'nothing killed'; then ok "... and says it killed nothing"; else bad "... and says it killed nothing" "$out"; fi
+  out="$(wb --reap --dry-run --all)"
+  if printf '%s\n' "$out" | grep -q '^zombie   901 '; then ok "--reap --dry-run --all lists the idle leftover too"; else bad "--reap --dry-run --all lists the idle leftover too" "$out"; fi
+  assert_eq "no dry run has issued a Stop-Process" "" "$(cat "$log")"
+
+  out="$(wb --reap)"
+  assert_eq "--reap kills the spinner only"        "-Id 900" "$(cat "$log")"
+  if printf '%s\n' "$out" | grep -q '1 orphaned console(s) killed (PID 900)'; then ok "... and reports it"; else bad "... and reports it" "$out"; fi
+  : > "$log"
+  wb --reap --all >/dev/null
+  assert_eq "--reap --all kills spinner and idle leftover" "-Id 900,901" "$(cat "$log")"
+  out="$(wb --reap --bogus)"
+  if printf '%s\n' "$out" | grep -q '^rc=64$'; then ok "an unknown --reap option is refused with 64"; else bad "an unknown --reap option is refused with 64" "$out"; fi
+
+  # The arm reaps spinners even when it steps aside, and never mistakes them for its kind.
+  : > "$log"
+  out="$( ( export PATH="$W/bin:$PATH" WATCH_BRIDGE_INV_TTL=0 SESSION_BRIDGE_DIR="$(new_bridge)"
+           unset WATCH_BRIDGE_NO_REAP; timeout 20 bash "$WATCHER" app 1 2>&1; echo "rc=$?" ) )"
+  if printf '%s\n' "$out" | grep -q 'already delivering'; then ok "arm: a delivering watcher for the id makes the new arm step aside"; else bad "arm: steps aside" "$out"; fi
+  assert_eq "arm: the spinner is killed anyway, the watcher pids are not" "-Id 900" "$(cat "$log")"
+  if printf '%s\n' "$out" | grep -q 'killed 1 orphaned console'; then ok "... and the arm says so"; else bad "... and the arm says so" "$out"; fi
+  # Same fixture minus the live wrapper: the script row is a silent remnant and is reaped,
+  # the spinner too, the zombie never (that needs --all, by hand).
+  sed -i '/^wrapper|/d' "$W/bin/powershell.exe"; : > "$log"
+  out="$( ( export PATH="$W/bin:$PATH" WATCH_BRIDGE_INV_TTL=0 SESSION_BRIDGE_DIR="$(new_bridge)"
+           unset WATCH_BRIDGE_NO_REAP; timeout 3 bash "$WATCHER" app 1 2>&1 ) )"
+  assert_eq "arm: silent remnant and spinner reaped, the idle leftover left alone" "-Id 900
+-Id 111" "$(cat "$log")"
+
+  # Every consumer of the inventory filters on script/wrapper explicitly -- a structural
+  # check, because a missing filter shows only when the new kinds actually occur.
+  local body missing=""
+  for fn in delivery_state status_report handle_existing; do
+    body="$(awk -v f="$fn" '$0 ~ "^"f"\\(\\)" {p=1} p {print} p && /^}/ {exit}' "$WATCHER")"
+    printf '%s' "$body" | grep -q 'script || .*wrapper\|spinner' || missing+="$fn "
+  done
+  assert_eq "every inventory consumer handles the new line kinds" "" "$missing"
+
+  # PowerShell half: the classification itself, against a synthetic process table.
+  if ! has_inventory; then
+    printf '  skip no PowerShell -- the conhost classification cannot be exercised here\n'
+    return 0
+  fi
+  local block
+  block="$(awk '/^# --- Orphaned ConPTY hosts/ {p=1} /^# --- Live claude.exe/ {p=0} p' "$WATCHER")"
+  if [[ -z "$block" ]]; then bad "the classification block is found in the script"; return 0; fi
+  ok "the classification block is found in the script"
+  printf '%s\n' "$block" > "$W/classify.ps1"
+  # The fixture: pid|parent|age-seconds|cpu-seconds|name. A live parent is any pid in the table.
+  out="$(powershell.exe -NoProfile -NonInteractive -Command "
+    \$now = Get-Date
+    \$all = @{}
+    function P(\$pid_, \$parent, \$age, \$cpu, \$name) {
+      \$all[[int]\$pid_] = [pscustomobject]@{ Name=\$name; ProcessId=\$pid_; ParentProcessId=\$parent;
+        CreationDate=\$now.AddSeconds(-\$age); KernelModeTime=[long](\$cpu*10000000); UserModeTime=0 }
+    }
+    P 10 1 100000 5 'bash.exe'
+    P 20 10 100000 3000 'conhost.exe'      # live parent, heavy load: a window, never touched
+    P 30 999 30    10   'conhost.exe'      # orphan, 30 s, 33 %: too young
+    P 31 999 180   60   'conhost.exe'      # orphan, 3 min, 33 %: spinner
+    P 32 999 3600  1    'conhost.exe'      # orphan, 1 h, idle: a fresh terminal -- not a zombie yet
+    P 33 999 90000 1    'conhost.exe'      # orphan, 25 h, idle: zombie
+    P 34 999 90000 30000 'conhost.exe'     # orphan, 25 h, 33 %: spinner
+    P 40 999 90000 0    'claude.exe'
+    . '$(cygpath -w "$W/classify.ps1" 2>/dev/null || printf '%s' "$W/classify.ps1")'
+  " 2>&1 | tr -d '\r' | sed 's/|[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]$//' | sort | paste -sd' ' -)"
+  # Expected: the 3-minute spinner, the day-old spinner, the day-old idle orphan -- and
+  # neither the window with a live parent, nor the 30-second one, nor the 1-hour idle one.
+  assert_eq "classification: only the two spinners and the day-old idle orphan" \
+    "spinner|-|31|180|33 spinner|-|34|90000|33 zombie|-|33|90000|0" "$out"
+}
+
+# --------------------------------------------------------------------------
 # link-memory: profile memory -> repo, linked
 # --------------------------------------------------------------------------
 
@@ -1976,9 +2494,14 @@ case "${1:-all}" in
   launcher) test_launcher ;;
   resume) test_resume ;;
   pull) test_pull ;;
+  autostart) test_autostart ;;
+  addedrepos) test_addedrepos ;;
+  instructions) test_instructions ;;
+  isync) test_isync ;;
+  reap) test_reap ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|autostart|addedrepos|instructions|isync|reap|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

@@ -9,7 +9,12 @@
 # watch-bridge.sh --new-thread <slug> [nr]    — creates threads/<NNN>-<slug>/msgs and prints
 #                                               the folder name; [nr] forces a number (a
 #                                               deliberate series, e.g. a fan-out).
-# Operational docs: docs/watcher.md (arming, busy behaviour, switching it off, start scan).
+# watch-bridge.sh --reap [--dry-run] [--all]  — reaps orphaned ConPTY consoles that keep
+#                                               spinning after a session ended (--all takes
+#                                               the idle leftovers too). Independent of any
+#                                               id; suitable as a scheduled task.
+# Operational docs: docs/watcher.md (arming, busy behaviour, switching it off, start scan,
+# orphaned consoles).
 #
 # Polls <bridge>/threads/*/msgs/ for new .md files and prints ONE line on stdout per
 # message addressed `to: <session-id>` (thread slug + sender + file). Intended as the
@@ -47,6 +52,7 @@ usage: watch-bridge.sh <session-id> [poll-seconds]
        watch-bridge.sh --fold <session-id>
        watch-bridge.sh --numbers
        watch-bridge.sh --new-thread <slug> [number]
+       watch-bridge.sh --reap [--dry-run] [--all]
 EOF
   exit 64
 }
@@ -516,8 +522,41 @@ numbers_report() {
 #   delivery is happening. The script process is NOT usable as proof of liveness — by
 #   construction it has an already-dead parent (msys fork emulation) and would always
 #   look orphaned.
+#
+# The same inventory yields three more kinds of line (background at `reap_spinners`).
+# For these `id` is always `-`; whoever wants watchers only filters on `script`/`wrapper`
+# -- do NOT let the three new kinds through silently, or they would have been counted as
+# watchers in `status_report`:
+#   spinner   orphaned conhost.exe WITH sustained load     -> field `under-claude` = percent
+#   zombie    orphaned conhost.exe WITHOUT load            -> field `under-claude` = percent
+#   claudepid a live claude.exe                            -> fields 4-6 unused
+#
+# Cached, because the inventory is a full scan over every process (a few hundred on a
+# laptop, seconds on a slow one). `--status` used to fetch it TWICE -- once for the
+# watchers, once for `live_claude_pids` -- and every call opens a console of its own;
+# that console is exactly the leak `reap_spinners` exists for. One run of the script
+# sees one process tree, so fetch it once. The cache file carries the pid (parallel runs
+# do not disturb each other) and expires by its TTL; there is DELIBERATELY no EXIT trap
+# to remove it -- `--fold` and `--new-thread` set their own EXIT traps, and bash keeps
+# only one. Instead every run sweeps up the leftovers of the previous ones.
 watcher_inventory() {
   command -v powershell.exe >/dev/null 2>&1 || return 0
+  local cache="${TMPDIR:-/tmp}/watch-bridge-inv.$$"
+  local ttl="${WATCH_BRIDGE_INV_TTL:-15}"
+  local spin_minage="${WATCH_BRIDGE_SPIN_MINAGE:-120}"
+  local spin_minpct="${WATCH_BRIDGE_SPIN_MINPCT:-5}"
+  local zombie_minage="${WATCH_BRIDGE_ZOMBIE_MINAGE:-86400}"
+
+  if [[ -s "$cache" ]]; then
+    local now_s age_s mtime
+    now_s=$(date +%s 2>/dev/null || echo 0)
+    mtime=$(stat -c %Y "$cache" 2>/dev/null || echo 0)
+    age_s=$(( now_s - mtime ))
+    [[ "$age_s" -ge 0 && "$age_s" -lt "$ttl" ]] && { cat "$cache"; return 0; }
+  fi
+  # Leftovers of aborted runs (their pid is long gone) after an hour.
+  find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'watch-bridge-inv.*' -mmin +60 -delete 2>/dev/null || true
+
   local code
   code=$(cat <<'PS_INV'
 $all = @{}
@@ -554,10 +593,61 @@ foreach ($p in $all.Values) {
   $age = [int]($now - $p.CreationDate).TotalSeconds
   '{0}|{1}|{2}|{3}|{4}|{5}' -f $kind, $id, $p.ProcessId, $age, $under, $p.CreationDate.ToString('MM-dd HH:mm')
 }
+
+# --- Orphaned ConPTY hosts ---------------------------------------------------
+# Three criteria TOGETHER; none carries on its own:
+#   (1) the parent process no longer exists -- a conhost under a live creator belongs
+#       to a running window and is never touched.
+#   (2) older than the grace period -- a young conhost may still be starting up; the
+#       console THIS call is opening right now falls under it.
+#   (3) sustained load over its whole lifetime -- the actual dividing line. A healthy
+#       conhost consumes practically nothing (measured: 27 of them below 0.3 %), a
+#       spinning one sat at 33 % of a core.
+# Without (3) the list would be full of harmless leftovers, without (1) it would hit
+# windows.
+#
+# The IDLE leftover (`zombie`) needs a much harder age limit, for a reason found while
+# building this: a freshly opened Git Bash window has a conhost whose creator exits at
+# once (mintty starts through a launcher that says goodbye) -- parent dead, load zero,
+# so by (1)+(2) it is indistinguishable from a real corpse. In the first dry run the
+# user's own open terminal was on the kill list. A conhost that has been orphaned and
+# idle for a DAY, on the other hand, belongs to no window any more. Spinners do not need
+# that limit: sustained load is proof by itself.
+$minAge = 120;   if ($env:WATCH_BRIDGE_SPIN_MINAGE)   { $minAge = [int]$env:WATCH_BRIDGE_SPIN_MINAGE }
+$minPct = 5;     if ($env:WATCH_BRIDGE_SPIN_MINPCT)   { $minPct = [double]$env:WATCH_BRIDGE_SPIN_MINPCT }
+$zomAge = 86400; if ($env:WATCH_BRIDGE_ZOMBIE_MINAGE) { $zomAge = [int]$env:WATCH_BRIDGE_ZOMBIE_MINAGE }
+foreach ($p in $all.Values) {
+  if ($p.Name -ne 'conhost.exe') { continue }
+  if ($all.ContainsKey([int]$p.ParentProcessId)) { continue }
+  $sec = ($now - $p.CreationDate).TotalSeconds
+  if ($sec -lt $minAge) { continue }
+  $cpu = ($p.KernelModeTime + $p.UserModeTime) / 10000000
+  $pct = 0
+  if ($sec -gt 0) { $pct = 100 * $cpu / $sec }
+  $kind = 'zombie'
+  if ($pct -ge $minPct)  { $kind = 'spinner' }
+  elseif ($sec -lt $zomAge) { continue }
+  '{0}|-|{1}|{2}|{3}|{4}' -f $kind, $p.ProcessId, [int]$sec, [int]$pct, $p.CreationDate.ToString('MM-dd HH:mm')
+}
+
+# --- Live claude.exe ---------------------------------------------------------
+# Used to be a SEPARATE powershell.exe call (`live_claude_pids`). Every console msys
+# opens for it is a possible ConPTY leak -- and the process tree is already here.
+# One call less per `--status`.
+foreach ($p in $all.Values) {
+  if ($p.Name -eq 'claude.exe') { 'claudepid|-|{0}|0|0|' -f $p.ProcessId }
+}
 PS_INV
 )
   # PowerShell emits CRLF — the \r has to go or it sticks to the last field.
-  powershell.exe -NoProfile -NonInteractive -Command "$code" 2>/dev/null | tr -d '\r'
+  # Into a temp file first, then rename: an aborted call would otherwise leave half a
+  # cache behind that the next reader takes for complete.
+  WATCH_BRIDGE_SPIN_MINAGE="$spin_minage" WATCH_BRIDGE_SPIN_MINPCT="$spin_minpct" \
+  WATCH_BRIDGE_ZOMBIE_MINAGE="$zombie_minage" \
+    powershell.exe -NoProfile -NonInteractive -Command "$code" 2>/dev/null \
+    | tr -d '\r' > "$cache.tmp" 2>/dev/null
+  mv -f "$cache.tmp" "$cache" 2>/dev/null || true
+  cat "$cache" 2>/dev/null || true
 }
 
 # --- Delivery state of a single id --------------------------------------------
@@ -570,6 +660,7 @@ delivery_state() { # $1 = id
   local want="$1" kind id pid age under started
   local seen_script=0 delivering=0
   while IFS='|' read -r kind id pid age under started; do
+    [[ "$kind" == script || "$kind" == wrapper ]] || continue
     [[ "${id:-}" == "$want" ]] || continue
     [[ "$kind" == script ]] && seen_script=1
     [[ "$kind" == wrapper && "$under" == 1 ]] && delivering=1
@@ -636,10 +727,16 @@ readme_pathmap() { # $1 = README.md
   }' "$1" | tr -d '\r' | tr -s '/' | sed 's|/$||'
 }
 
+# No separate powershell.exe call any more: the pids fall out of `watcher_inventory`,
+# which is cached. That halves the number of consoles a `--status` opens -- and every
+# one of them can stay behind as a spinner.
 live_claude_pids() {
   command -v powershell.exe >/dev/null 2>&1 || return 0
-  powershell.exe -NoProfile -NonInteractive -Command \
-    '(Get-Process -Name claude -ErrorAction SilentlyContinue).Id' 2>/dev/null | tr -d '\r'
+  local kind id pid rest
+  while IFS='|' read -r kind id pid rest; do
+    [[ "$kind" == claudepid ]] || continue
+    [[ -n "${pid:-}" ]] && echo "$pid"
+  done < <(watcher_inventory)
 }
 
 # -> lines "participant-id|window-name|pid|status" for every running session that
@@ -854,9 +951,18 @@ status_report() {
   local filter="${1:-}" grace="${WATCH_BRIDGE_START_GRACE:-90}"
   local kind id pid age under started st r
   local -A live=() count=() young=()
-  local -a rows=()
+  local -a rows=() spinners=() zombies=()
   while IFS='|' read -r kind id pid age under started; do
-    [[ -n "${kind:-}" && -n "${id:-}" ]] || continue
+    [[ -n "${kind:-}" ]] || continue
+    # Orphaned consoles belong to no id and are reported separately. They have to go
+    # BEFORE the id filter: with `id` = `-` they would pass an empty filter and stand in
+    # the table as a watcher row.
+    case "$kind" in
+      spinner)   spinners+=("$pid|${age:-0}|${under:-0}|$started"); continue ;;
+      zombie)    zombies+=("$pid|${age:-0}|${under:-0}|$started");  continue ;;
+      claudepid) continue ;;
+    esac
+    [[ -n "${id:-}" ]] || continue
     [[ -z "$filter" || "$id" == "$filter" ]] || continue
     if [[ "$kind" == wrapper ]]; then
       [[ "$under" == 1 ]] && live["$id"]=1
@@ -902,11 +1008,109 @@ status_report() {
     done
   fi
 
+  # Orphaned consoles: their own block with their own signal word, and DELIBERATELY
+  # independent of the id filter -- a spinner belongs to no session, and whoever calls
+  # `--status <id>` should still learn that the machine is losing CPU time. WARNING,
+  # because there is an action; note for the idle leftovers, which only cost memory.
+  if [[ ${#spinners[@]} -gt 0 ]]; then
+    echo "WARNING: ${#spinners[@]} orphaned console(s) with sustained load — they eat CPU until they are killed:"
+    for r in "${spinners[@]}"; do
+      IFS='|' read -r pid age under started <<<"$r"
+      printf '         PID %-8s ~%s%% of a core, since %s (%sh)\n' \
+             "$pid" "${under:-?}" "$started" "$(( ${age:-0} / 3600 ))"
+    done
+    echo "         Reap: watch-bridge.sh --reap   (look first: --reap --dry-run)"
+  fi
+  if [[ ${#zombies[@]} -gt 0 ]]; then
+    echo "note: ${#zombies[@]} orphaned console(s) without load — they only cost memory (~8 MB each)."
+    echo "      Reap: watch-bridge.sh --reap --all"
+  fi
+
   # An id counts as covered when a watcher delivers OR one is coming up right now.
   local covered=""
   [[ ${#live[@]}  -gt 0 ]] && for id in "${!live[@]}";  do covered+=" $id"; done
   [[ ${#young[@]} -gt 0 ]] && for id in "${!young[@]}"; do covered+=" $id"; done
   coverage_hint "$filter" "$covered" "$sess"
+  return 0
+}
+
+# --- Reaping orphaned consoles: --reap ----------------------------------------
+# Incident on a laptop, found while hunting for lost performance rather than by the
+# mechanism: eleven `conhost.exe --headless` spinning at 33 % of a core each -- 3.7 of
+# 4 cores, for fourteen hours. They hung off eleven bash chains that had armed within
+# twelve seconds of each other and whose sessions ended afterwards.
+#
+# The cause is a race we do NOT control: msys opens a ConPTY for every `powershell.exe`
+# call (`cygwin-console-helper.exe` plus a headless `conhost.exe`). If the bash side dies
+# in the middle of the call -- which is exactly what happens when a session ends -- the
+# conhost does not exit but goes into a busy loop. It cannot be prevented reliably; this
+# is therefore defence, not avoidance. What shrinks the attack surface is described at
+# `watcher_inventory` (one call instead of two, cached) and at `handle_existing` (arms
+# serialised).
+#
+# Why `handle_existing` did not catch it -- three reasons, all three fixed here:
+#   (1) It only looked at `bash.exe`. The conhost is a SIBLING of the bash, not a child;
+#       `Stop-Process` on the bash pids leaves it standing.
+#   (2) It filters on its own id. The eleven orphans carried a BARE command line without
+#       `watch-bridge.sh` -- invisible to the id regex.
+#   (3) It runs only at arm time. For fourteen hours nobody armed that id.
+# Hence `--reap` is independent of id and arm, and needs no bridge.
+reap_spinners() { # $@ = --dry-run | --all
+  local dry=0 all=0 a
+  for a in "$@"; do
+    case "$a" in
+      --dry-run|-n) dry=1 ;;
+      --all|-a)     all=1 ;;
+      "") ;;
+      *) echo "watch-bridge: --reap does not know '$a' (allowed: --dry-run, --all)." >&2; exit 64 ;;
+    esac
+  done
+  command -v powershell.exe >/dev/null 2>&1 || {
+    echo "watch-bridge: --reap needs PowerShell (Windows only)." >&2; return 0; }
+
+  # Always measure afresh, never from the cache: between the measurement and the
+  # `Stop-Process` Windows must not have reused a pid.
+  rm -f "${TMPDIR:-/tmp}/watch-bridge-inv.$$" 2>/dev/null || true
+
+  local kind id pid age under started r
+  local -a hits=()
+  while IFS='|' read -r kind id pid age under started; do
+    case "$kind" in
+      spinner) ;;
+      zombie)  [[ $all -eq 1 ]] || continue ;;
+      *)       continue ;;
+    esac
+    [[ -n "${pid:-}" ]] && hits+=("$kind|$pid|${age:-0}|${under:-0}|$started")
+  done < <(watcher_inventory)
+
+  if [[ ${#hits[@]} -eq 0 ]]; then
+    if [[ $all -eq 1 ]]; then
+      echo "no orphaned consoles."
+    else
+      echo "no orphaned consoles with sustained load. (--reap --all shows the idle leftovers.)"
+    fi
+    return 0
+  fi
+
+  local list="" n=0
+  printf '%-8s %-8s %6s %-14s %s\n' "KIND" "PID" "LOAD" "SINCE" "AGE"
+  for r in "${hits[@]}"; do
+    IFS='|' read -r kind pid age under started <<<"$r"
+    printf '%-8s %-8s %5s%% %-14s %sh\n' \
+           "$kind" "$pid" "${under:-?}" "$started" "$(( ${age:-0} / 3600 ))"
+    list+="${list:+,}$pid"
+    n=$((n+1))
+  done
+
+  if [[ $dry -eq 1 ]]; then
+    echo "--dry-run: nothing killed. Without the flag $n process(es) would be killed."
+    return 0
+  fi
+  powershell.exe -NoProfile -NonInteractive \
+    -Command "Stop-Process -Id $list -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1
+  # After reaping, any cached inventory is wrong.
+  rm -f "${TMPDIR:-/tmp}/watch-bridge-inv.$$" 2>/dev/null || true
+  echo "watch-bridge: $n orphaned console(s) killed (PID $list)."
   return 0
 }
 
@@ -1022,6 +1226,7 @@ case "${1:-}" in
   --fold|--scan) [[ -n "${2:-}" ]] || usage; fold_report "$2"; exit 0 ;;
   --numbers) numbers_report; exit 0 ;;
   --new-thread) [[ -n "${2:-}" ]] || usage; new_thread "$2" "${3:-}"; exit 0 ;;
+  --reap) shift; reap_spinners "$@"; exit 0 ;;
   ""|-h|--help) usage ;;
 esac
 
@@ -1042,10 +1247,36 @@ poll="${2:-5}"
 # and must not be counted.
 handle_existing() {
   [[ -z "${WATCH_BRIDGE_NO_REAP:-}" ]] || return 0
+
+  # Serialised: eleven arms within twelve seconds (the incident at `reap_spinners`) mean
+  # eleven simultaneous full scans over a few hundred processes on four cores -- and
+  # eleven consoles opened at once, each of which can stay behind as a spinner. The
+  # same local mkdir lock as in `--new-thread`, and for the same reason in $TMPDIR
+  # rather than in the bridge.
+  #
+  # Whoever does not get it carries on ANYWAY: the lock calms the rush, it is not a
+  # correctness criterion. An arm that aborted here would be a gap in delivery -- and
+  # that is more expensive than a duplicate scan.
+  local lock="${TMPDIR:-/tmp}/watch-bridge-arm.lock" i=0 locked=0
+  # Leftover of a crashed arm: cleared after two minutes.
+  [[ -d "$lock" ]] && [[ -n "$(find "$lock" -maxdepth 0 -mmin +2 2>/dev/null)" ]] && rmdir "$lock" 2>/dev/null
+  while [[ $i -lt 60 ]]; do
+    if mkdir "$lock" 2>/dev/null; then locked=1; break; fi
+    i=$((i+1)); sleep 0.5
+  done
+
   local kind id pid age under started
   local delivering=0 script_pid=""
-  local -a stale=()
+  local -a stale=() spin=()
   while IFS='|' read -r kind id pid age under started; do
+    # Orphaned consoles with sustained load belong to NO id -- collect them separately,
+    # before any id filter. Exactly this blindness is why the incident ran for fourteen
+    # hours although a reaper existed.
+    if [[ "$kind" == spinner ]]; then
+      [[ -n "${pid:-}" ]] && spin+=("$pid")
+      continue
+    fi
+    [[ "$kind" == script || "$kind" == wrapper ]] || continue
     [[ "${id:-}" == "$me" ]] || continue
     [[ "${age:-0}" -gt 30 ]] || continue
     [[ "$kind" == wrapper && "$under" == 1 ]] && delivering=1
@@ -1053,7 +1284,17 @@ handle_existing() {
     stale+=("$pid")
   done < <(watcher_inventory)
 
+  # ALWAYS reap spinners -- even if this arm is about to step aside. They have nothing
+  # to do with delivery, and every second costs CPU time.
+  if [[ ${#spin[@]} -gt 0 ]]; then
+    local slist; slist=$(IFS=,; echo "${spin[*]}")
+    powershell.exe -NoProfile -NonInteractive \
+      -Command "Stop-Process -Id $slist -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1
+    echo "watch-bridge: killed ${#spin[@]} orphaned console(s) with sustained load (PID $slist)" >&2
+  fi
+
   if [[ $delivering -eq 1 ]]; then
+    [[ $locked -eq 1 ]] && rmdir "$lock" 2>/dev/null
     # Deliberately stdout: this is the only notification this arm produces, and it
     # explains to the fresh context why its monitor ends immediately.
     echo "watch-bridge: a watcher for '$me' is already delivering (PID ${script_pid:-?}) —" \
@@ -1061,11 +1302,15 @@ handle_existing() {
     exit 0
   fi
 
-  [[ ${#stale[@]} -gt 0 ]] || return 0
-  local list; list=$(IFS=,; echo "${stale[*]}")
-  powershell.exe -NoProfile -NonInteractive \
-    -Command "Stop-Process -Id $list -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1
-  echo "watch-bridge: removed silent remnant of '$me' (PID $list)" >&2
+  if [[ ${#stale[@]} -gt 0 ]]; then
+    local list; list=$(IFS=,; echo "${stale[*]}")
+    powershell.exe -NoProfile -NonInteractive \
+      -Command "Stop-Process -Id $list -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1
+    echo "watch-bridge: removed silent remnant of '$me' (PID $list)" >&2
+  fi
+
+  [[ $locked -eq 1 ]] && rmdir "$lock" 2>/dev/null
+  return 0
 }
 handle_existing
 

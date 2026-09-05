@@ -35,6 +35,107 @@ cc_resolve_config() {
   printf '%s\n' "$cfg"
 }
 
+# --- Autostart selection: local, not in the repo ---
+#
+# The autostart checkboxes are toggled all the time -- they are a convenience for the
+# fleet start, and which sessions are active depends on what is being worked on. That
+# state is NOT a signal; kept in the shared config it produced a commit on every toggle,
+# which arrived on the other machine as a change and was read there as intent.
+#
+# What is volatile is exactly ONE thing: the `#off ` prefix per line. The list itself
+# stays in the repo: name, path, third field (passed to claude as-is) and the fourth
+# (`instructions=`). That is lasting knowledge and has to travel.
+#
+# STEP 1 OF TWO, and it is behaviour-preserving by construction: the selection moves to
+# `autostart.<host>.local` (ignored by git). If the file is missing it is seeded ONCE
+# from the current `#off` state of the config -- on both machines exactly the previous
+# selection comes out, nobody clicks anything anew. The `#off` lines stay for now, but
+# only as seed; the config header says so.
+# STEP 2 (later, once both machines have run once): `#off` leaves the config, and a
+# missing local file becomes a state of its own -- the fleet start starts nothing and
+# says why, loudly. As long as `#off` is still there that would be the wrong fallback:
+# a frozen state that the next session takes for current is exactly the trap this
+# removes.
+#
+# TRADE-OFF, known: local means unsaved. If the machine is lost, the selection is gone.
+# Acceptable for a convenience.
+
+# cc_resolve_autostart — path of the local selection, derived from the config path.
+#
+# The config path is PASSED IN, not resolved again. Two reasons: there is then only one
+# host-detection path (no second one that can drift), and it saves a process start per
+# run -- `cc_resolve_config` falls back to the `hostname` command when $HOSTNAME is unset.
+cc_resolve_autostart() { # $1 = config path (from cc_resolve_config)
+  local cfg="${1:-}" base
+  [[ -n "$cfg" ]] || { echo "[autostart] cc_resolve_autostart called without a config path." >&2; return 1; }
+  base="${cfg##*/}"; base="${base#projects.}"; base="${base%.conf}"
+  printf '%s\n' "$CC_SCRIPT_DIR/autostart.$base.local"
+}
+
+# cc_all_entries — every entry of the config, active and `#off` alike, in FILE ORDER.
+#
+# Needed since the selection is no longer array membership: `#off` lines are comments
+# to bash and never land in `projects=(…)`, so a fleet start could not even see a
+# deselected entry. File order, so that a newly selected entry starts in its place and
+# is not appended at the end.
+#
+# Same grammar as `Read-Conf` in session-manager.ps1 (RxOn/RxOff) and the `#off` loop in
+# start-one.sh -- three readers, one form. The test holds the output against the sourced
+# `projects` array so this parser cannot drift away unnoticed.
+cc_all_entries() { # $1 = config path
+  local cfg="$1" line quoted entry
+  [[ -r "$cfg" ]] || return 1
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"      # trim left
+    case "$line" in
+      '#off '*) quoted="${line#\#off }" ;;
+      '"'*)     quoted="$line" ;;
+      *)        continue ;;
+    esac
+    eval "entry=$quoted" 2>/dev/null || continue
+    [[ -n "$entry" ]] && printf '%s\n' "$entry"
+  done < "$cfg"
+  return 0
+}
+
+# cc_autostart_names — the selected project names, one per line.
+# If the local file is missing it is seeded from the `#off` state of the config, and that
+# is SAID: a silent side effect at this point would be exactly the mistake this removes.
+cc_autostart_names() { # $1 = config path
+  local cfg="$1" sel name
+  sel="$(cc_resolve_autostart "$cfg")" || return 1
+
+  if [[ ! -f "$sel" ]]; then
+    {
+      echo "# Local autostart selection for the fleet start -- NOT in the repo."
+      echo "# One project name per line; '#' starts a comment. Toggle through the"
+      echo "# session manager. Starting a single project (start-one.sh) always works,"
+      echo "# also for projects that are not selected."
+      echo "# Created $(date -u +%Y-%m-%dT%H:%M:%SZ) from the state of"
+      echo "# $(basename "$cfg") at that time."
+      # Seeded from the ACTIVE lines, i.e. from what would have been started so far.
+      ( projects=(); source "$cfg"
+        (( ${#projects[@]} )) && printf '%s\n' "${projects[@]}" ) | while IFS= read -r e; do
+          [[ -n "$e" ]] && printf '%s\n' "${e%%|*}"
+      done
+    } > "$sel" 2>/dev/null || { echo "[autostart] selection file not writable: $sel" >&2; return 1; }
+    echo "[autostart] local selection created from the previous state: $sel" >&2
+    echo "            From now on the session manager changes only this file, not the config." >&2
+  fi
+
+  # Trimming uses the character class [:space:], and that is deliberate: it also
+  # swallows a carriage return. The session manager writes this file on Windows, and a
+  # single Add-Content is enough for CRLF; such a character in a name would make every
+  # comparison in the fleet start miss silently. Cross-checked: a selection written by
+  # PowerShell with CRLF is read correctly here.
+  while IFS= read -r name; do
+    name="${name%%#*}"
+    name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
+    [[ -n "$name" ]] && printf '%s\n' "$name"
+  done < "$sel"
+  return 0
+}
+
 # cc_session_running — is a Claude session already running for this entry?
 #
 # Neither the launcher nor the session manager ever checked this; cc_launch knew
@@ -246,6 +347,213 @@ cc_pull_before_start() { # $1 = name, $2 = directory (msys path)
   return 0
 }
 
+# cc_pull_added_repos — also pulls the directories passed with `--add-dir`, as far as
+# they are git working trees themselves.
+#
+# MOTIVATION, measured rather than assumed: `cc_pull_before_start` pulls the project repo
+# -- a repo reached through `--add-dir` never. In our fleet the shared tooling repo sat 53
+# commits behind on one machine while a session was changing launcher scripts in exactly
+# that directory; what caught it was the rejected push, i.e. AFTER the work. The failure
+# is silent: an old working tree looks like a current one.
+#
+# WHY IT CARRIES DESPITE A SINGLE INCIDENT -- and why it stays small: of all `--add-dir`
+# targets in both of our configs exactly ONE is a repo itself; the rest are parent
+# folders and sync folders. The step therefore costs one extra pull in the whole config
+# and covers the only case that can occur at all.
+#
+# HONEST LIMIT: the pull happens at START. Whoever touches a foreign repo inside a
+# RUNNING session has that repo's state from the start of the session. The window gets
+# shorter, it does not close.
+#
+# No repo test of its own: `cc_pull_before_start` is silent for anything that is not a
+# git working tree (and for paths that do not exist) -- a second test would be duplicate
+# maintenance, and that drifts. The `-d` below is therefore explicitly NOT a repo test,
+# only a fast path that starts no git process for the sync folders; removing it leaves
+# the behaviour unchanged (mutation-tested: the probe stayed green, and that IS the
+# statement).
+cc_pull_added_repos() { # $1 = name, $2 = extra arguments of the config entry
+  local name="$1" extra="${2:-}" args=() i p
+  [[ -n "$extra" ]] || return 0
+  [[ "${CC_NO_PULL:-0}" == "1" ]] && return 0
+
+  # The extra arguments come from our own config and are put into the launch line
+  # anyway -- `eval` here is no new trust assumption, it is the same one.
+  #
+  # Split in a subshell of ITS OWN, not via `eval "args=( … )" || return 0`: a syntax
+  # error (unbalanced quotes in the config) tears down the enclosing shell BEFORE the
+  # `||` takes effect -- the function then returned 1 although it promises 0. Called
+  # directly that went unnoticed, only in a command substitution; the test found it.
+  # Here the error is contained and `|| true` makes the promise true again.
+  local parsed
+  parsed="$(eval "printf '%s
+' $extra" 2>/dev/null || true)"
+  [[ -n "$parsed" ]] || return 0
+  mapfile -t args <<< "$parsed"
+
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case "${args[i]}" in
+      --add-dir)    p="${args[i+1]:-}" ;;
+      --add-dir=*)  p="${args[i]#--add-dir=}" ;;
+      *)            continue ;;
+    esac
+    [[ -n "$p" && -d "$p" ]] || continue
+    cc_pull_before_start "$name:${p##*/}" "$p"
+  done
+  return 0
+}
+
+# cc_instructions_root — root of the instructions source: a clone of your instructions
+# repository.
+#
+# CC_INSTRUCTIONS_DIR wins (set it in your starter). Without it the clone is expected as a
+# sibling of this repository, named `_instructions` -- a derivation instead of a second
+# list of machine paths that can go stale. Whatever remote you keep it on is your choice;
+# the launcher only needs a clone with a history.
+cc_instructions_root() {
+  if [[ -n "${CC_INSTRUCTIONS_DIR:-}" ]]; then printf '%s\n' "${CC_INSTRUCTIONS_DIR%/}"; return 0; fi
+  local base
+  base="$(cd "$CC_SCRIPT_DIR/.." && pwd)"   # …/<this repository>
+  base="${base%/*}"                          # …/<its parent>
+  printf '%s\n' "$base/_instructions"
+}
+
+# cc_instructions_before_start — puts a project's CLAUDE.md that is kept OUTSIDE its own
+# git repository into the working tree before the session starts.
+#
+# Why a project would do that: its repository is public or shared, and the instructions
+# for the session that works on it are not part of the product -- they are Claude's
+# working notes about the product. So the file is untracked in the project and kept in a
+# separate, private instructions repository, one folder per project key.
+#
+# THE SOURCE IS A GIT CLONE, not a sync folder. The reason is not the storage location but
+# the BASELINE: a first version compared source against working tree only, and thereby
+# conflated two situations -- "merely outdated" (nothing touched here, changed over there;
+# taking it over is lossless) and "changed on both sides" (touch nothing). When sessions
+# alternate between two machines the first is the normal case, but it was reported as a
+# conflict: the step helped exactly once, at the first start on a machine, and after that
+# it never spoke again when it mattered.
+#
+# A clone KNOWS what it last delivered. If the file in the working tree matches any
+# version in the clone's history, it was not touched locally -> catch up safely. If it
+# matches none, it is a real conflict -> touch nothing, say so loudly. No new state that
+# anybody has to maintain, and explicitly NOT via the mtime: a `cp` or a pull stamps the
+# file anew (own lesson from cc_check_commands).
+#
+# An UNRESOLVED CLONE does not abort the start. The reason is one line further down: on a
+# conflict nothing is copied, so the working tree keeps its old, INTACT version. A file
+# with conflict markers cannot reach the session from here -- an abort would protect
+# nothing, it would only force the repair. Better: start on the local state and let the
+# session resolve the conflict; it can read and judge both versions, a start script can
+# only apply one rule. The task reaches the session through the START PROMPT
+# (CC_INSTRUCTIONS_NOTE, picked up in cc_launch): messages on stderr are read by nobody
+# inside the session -- it reads CLAUDE.md and the prompt.
+#
+# Only the session whose OWN key is in conflict gets the task. Otherwise, on a fleet
+# start, every session would see the same conflict and work on it at once: a race,
+# duplicate commits, in the worst case three different resolutions. And it is the only
+# one that can judge the content.
+#
+# Returns 0 always (a missing source is reported, the start proceeds without
+# instructions). CC_NO_INSTRUCTIONS=1 skips everything.
+cc_instructions_before_start() { # $1 = name, $2 = directory, $3 = key
+  local name="$1" dir="$2" key="$3" root src dst tmp h
+
+  [[ -n "$key" ]] || return 0
+  [[ "${CC_NO_INSTRUCTIONS:-0}" == "1" ]] && return 0
+  root="$(cc_instructions_root)"
+
+  if [[ ! -d "$root/.git" ]]; then
+    echo "[instructions] $name: no clone under $root" >&2
+    echo "               The session starts WITHOUT project instructions. Clone your" >&2
+    echo "               instructions repository there, or set CC_INSTRUCTIONS_DIR." >&2
+    return 0
+  fi
+
+  # Pull once per process, not once per project: on a fleet start that would otherwise
+  # be a network call per entry. cc_pull_before_start reports a failure itself, loudly.
+  if [[ "${CC_INSTRUCTIONS_PULLED:-0}" != "1" ]]; then
+    CC_INSTRUCTIONS_PULLED=1
+    cc_pull_before_start "instructions" "$root"
+  fi
+
+  # A STATE check, not a failure check: `cc_pull_before_start` runs `--ff-only` and can
+  # never leave markers behind (it fails cleanly and leaves an old, intact state);
+  # markers only appear when somebody merged by hand. That is what is measured.
+  if [[ -n "$(git -C "$root" ls-files -u 2>/dev/null)" ]]; then
+    if [[ -n "$(git -C "$root" ls-files -u -- "$key/CLAUDE.md" 2>/dev/null)" ]]; then
+      echo "[instructions] $name: '$key/CLAUDE.md' is in a MERGE CONFLICT in the clone." >&2
+      echo "               NOTHING is copied -- the session starts on the intact state in the" >&2
+      echo "               working tree and is given the task of resolving it." >&2
+      # No backtick, no dollar sign: the text travels into a double-quoted `bash -lc`
+      # line, and both would be expanded there (the heredoc trap, at another place).
+      CC_INSTRUCTIONS_NOTE="Note from the launcher: in the instructions clone $root the file $key/CLAUDE.md is in a merge conflict. Your CLAUDE.md in the working tree is intact but possibly outdated - nothing was copied in. Please look at the conflict there and resolve it (read both sides, do not guess), then commit and push. Important for your report: the resolved version takes effect at the NEXT session start; this session keeps running on the old state."
+    else
+      echo "[instructions] $name: the clone has a merge conflict in ANOTHER project's file --" >&2
+      echo "               nothing copied, the start proceeds. The session owning that file" >&2
+      echo "               is responsible; see: git -C '$root' status" >&2
+    fi
+    return 0
+  fi
+
+  src="$root/$key/CLAUDE.md"
+  dst="$dir/CLAUDE.md"
+
+  if [[ ! -r "$src" ]]; then
+    echo "[instructions] $name: '$key/CLAUDE.md' is not in the clone ($root)" >&2
+    echo "               The session starts WITHOUT project instructions -- wrong key, or" >&2
+    echo "               the file has not been committed yet." >&2
+    return 0
+  fi
+
+  if [[ -e "$dst" ]]; then
+    cmp -s "$src" "$dst" && return 0                     # normal case: there and equal.
+
+    # Baseline: has the clone's history seen this content before?
+    h="$(git -C "$root" hash-object -- "$dst" 2>/dev/null || true)"
+    if [[ -n "$h" ]] && cc_instructions_known "$root" "$key/CLAUDE.md" "$h"; then
+      tmp="$dir/.CLAUDE.md.$$.tmp"
+      if cp -- "$src" "$tmp" 2>/dev/null && mv -- "$tmp" "$dst" 2>/dev/null; then
+        echo "[instructions] $name: CLAUDE.md caught up (the working tree held an older version from the history)." >&2
+      else
+        rm -f -- "$tmp"
+        echo "[instructions] $name: catching up failed ($src -> $dst) -- old state stays." >&2
+      fi
+      return 0
+    fi
+
+    echo "[instructions] $name: working tree and repo differ, and the working-tree version" >&2
+    echo "               is in NO version of the history -- it was changed locally." >&2
+    echo "               NOTHING touched; the session starts with the state on disk." >&2
+    echo "               repo:         $src" >&2
+    echo "               working tree: $dst" >&2
+    return 0
+  fi
+
+  tmp="$dir/.CLAUDE.md.$$.tmp"
+  if cp -- "$src" "$tmp" 2>/dev/null && mv -- "$tmp" "$dst" 2>/dev/null; then
+    echo "[instructions] $name: CLAUDE.md copied in from the repo ($src)." >&2
+  else
+    rm -f -- "$tmp"
+    echo "[instructions] $name: could not be copied in ($src -> $dst)" >&2
+    echo "               The session starts WITHOUT project instructions." >&2
+  fi
+  return 0
+}
+
+# cc_instructions_known — has this blob hash ever occurred as <path> in the clone?
+# That is the baseline: it answers "was the file in the working tree touched locally?"
+# without a stamp being maintained anywhere. Checked across ALL refs, so a clone on a
+# different branch does not wrongly report "unknown".
+cc_instructions_known() { # $1 = clone, $2 = path in the repo, $3 = blob hash
+  local root="$1" path="$2" want="$3" c have
+  while IFS= read -r c; do
+    [[ -n "$c" ]] || continue
+    have="$(git -C "$root" rev-parse --quiet --verify "$c:$path" 2>/dev/null || true)"
+    [[ "$have" == "$want" ]] && return 0
+  done < <(git -C "$root" log --all --format=%H -- "$path" 2>/dev/null)
+  return 1
+}
+
 # cc_memory_state — reports the state of the project memory BEFORE the start. Source is
 # `<memory>/.last-wrap`, written by the wrap-up ritual via `link-memory.sh --stamp`:
 # `<host> <UTC> <file count>`.
@@ -300,15 +608,23 @@ cc_memory_state() { # $1 = name, $2 = directory (msys path)
 }
 
 # cc_launch — starts ONE entry in its own mintty window.
-# Format:  "name|path"  or  "name|path|extra-args"  (3rd field passed to claude as-is).
+# Format:  "name|path"  or  "name|path|extra-args"  (3rd field passed to claude as-is)
+#          or "name|path|extra-args|instructions=<key>" (4th field, see
+#          cc_instructions_before_start).
 # Returns: 0 = started, 1 = skipped (directory missing),
 #          2 = already running (not an error, see cc_session_running).
 cc_launch() {
-  local entry="$1" name rest dir extra=""
-  name="${entry%%|*}"
-  rest="${entry#*|}"
-  dir="${rest%%|*}"
-  [[ "$rest" == *"|"* ]] && extra="${rest#*|}"
+  local entry="$1" name dir extra="" instr="" _f=()
+  # Split by field instead of cutting off a prefix: there is a FOURTH field now
+  # (`instructions=<key>`), and `extra="${rest#*|}"` would have taken it along and passed
+  # it to `claude` as-is. For three-field entries the result is unchanged.
+  { local IFS='|'; read -r -a _f <<< "$entry"; }
+  name="${_f[0]}"; dir="${_f[1]:-}"; extra="${_f[2]:-}"
+  case "${_f[3]:-}" in
+    "")               instr="" ;;
+    instructions=*)   instr="${_f[3]#instructions=}" ;;
+    *) echo "[config] $name: fourth field not understood ('${_f[3]}') — ignored." >&2 ;;
+  esac
 
   if [[ ! -d "$dir" ]]; then
     echo "[skipped] $name: directory '$dir' does not exist." >&2
@@ -327,6 +643,16 @@ cc_launch() {
   # Pull first, then start — otherwise the session runs on the other machine's state
   # from yesterday (see cc_pull_before_start).
   cc_pull_before_start "$name" "$dir"
+  # And the repos passed with --add-dir along with it: those NEVER got a pull before,
+  # although work happens in them (see cc_pull_added_repos).
+  cc_pull_added_repos "$name" "$extra"
+  # AFTER the pull: if the project tracks its own CLAUDE.md, the pull's result is what the
+  # instructions source is compared against. Before `claude`, because the file is read at
+  # start. Sets CC_INSTRUCTIONS_NOTE when the project's own instructions file is in
+  # conflict in the clone -- the text goes into the start prompt below, so that the task
+  # actually REACHES the session. Messages on stderr are read by nobody inside it.
+  CC_INSTRUCTIONS_NOTE=""
+  cc_instructions_before_start "$name" "$dir" "$instr"
   # And say how old the memory is, or that it has not fully arrived yet.
   cc_memory_state "$name" "$dir"
 
@@ -342,11 +668,26 @@ cc_launch() {
   # Passed as a file + $(cat) rather than inline, because the backticks in the wording
   # would otherwise become command substitutions inside this doubly nested quoting. If
   # the file is missing, the session starts as it did before — unarmed, but it starts.
-  local promptarg=""
+  #
+  # The start prompt carries two things: the arming ritual (from the file) and -- if set
+  # -- the task from cc_instructions_before_start. The two are independent: if the file is
+  # missing, the task is passed on ANYWAY. A test found exactly that -- before, a missing
+  # start prompt would have swallowed the task silently, and "swallowed silently" is the
+  # failure mode this whole step is built against.
+  local promptarg="" prompt_have=0
   if [[ -r "$CC_SCRIPT_DIR/session-startprompt.txt" ]]; then
-    promptarg="\"\$(cat '$CC_SCRIPT_DIR/session-startprompt.txt')\""
+    prompt_have=1
   else
     echo "[note] $name: session-startprompt.txt missing — the session will not arm itself." >&2
+  fi
+  if (( prompt_have )) && [[ -n "${CC_INSTRUCTIONS_NOTE:-}" ]]; then
+    promptarg="\"\$(cat '$CC_SCRIPT_DIR/session-startprompt.txt')
+
+$CC_INSTRUCTIONS_NOTE\""
+  elif (( prompt_have )); then
+    promptarg="\"\$(cat '$CC_SCRIPT_DIR/session-startprompt.txt')\""
+  elif [[ -n "${CC_INSTRUCTIONS_NOTE:-}" ]]; then
+    promptarg="\"$CC_INSTRUCTIONS_NOTE\""
   fi
 
   # --continue only when there is something to resume (see cc_has_transcript).

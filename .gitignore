@@ -1,0 +1,5 @@
+# The autostart selection is per machine and deliberately NOT versioned: it is a
+# convenience for the fleet start, toggled all the time, and in a shared repo every
+# toggle produced a commit that arrived on the other machine as intent.
+# See docs/launcher.md, "The autostart selection is local".
+launcher/autostart.*.local

@@ -9,6 +9,7 @@ solves will appear in any setup where a capability is armed by the session itsel
 ```
 _lib.sh                     the ONLY copy of the launch mechanics
 projects.<host>.conf        data only: which projects, which directories, which extra dirs
+autostart.<host>.local      which of them start on a fleet start — local, not in git
 ```
 
 One config per machine, mechanics shared. This split existed for operational reasons — the
@@ -20,9 +21,75 @@ See `projects.example.conf` for the format:
 ```bash
 projects=(
   "app|/c/code/app|--add-dir \"$HOME/session-bridge\""
-  "#off notes|/c/notes|"          # known project, not in autostart
+  "notes|/c/notes||instructions=notes"     # 4th field: CLAUDE.md kept outside the repo
+  #off "scratch|/c/code/scratch|"          # known project, not in the initial selection
 )
 ```
+
+The `#off` prefix stands **before** the quotes — bash then reads the line as a comment, and
+the three readers (the fleet start, `start-one.sh`, the session manager) all parse that one
+form. Directories passed with `--add-dir` are pulled before the start too, if they are git
+working trees: a repo reached only that way never got a pull before, and one of ours sat 53
+commits behind while a session was editing scripts in it — caught by the rejected push, i.e.
+after the work.
+
+## The autostart selection is local
+
+Which projects a fleet start brings up used to be the `#off` prefix in the config — a
+versioned file. But the checkboxes are a convenience, toggled all the time depending on what
+is being worked on; their state is no signal. In a shared repo every toggle produced a
+commit that arrived on the other machine as a change and was read there as intent.
+
+So the selection lives in `autostart.<host>.local` next to the config, ignored by git and
+written by the session manager. If the file is missing it is **seeded once** from the
+config's active lines — exactly what would have started before, on both machines, nobody
+clicks anything anew — and the launcher says so. From then on the config is the *list*
+(name, path, extra args, `instructions=`) and the local file the *selection*. An empty
+selection starts nothing and says so loudly; the starter console stays open. The `#off`
+prefixes in the config are seed only, and the config header should say that; they are meant
+to disappear once both machines have run once.
+
+## Instructions kept outside the project repository
+
+Some projects live in a public or shared repository, and the `CLAUDE.md` for the session that
+works on them is not part of the product — it is Claude's working notes *about* the product.
+So the file is untracked in the project and kept in a separate, private **instructions
+repository**, one folder per project key. The 4th config field, `instructions=<key>`,
+declares that; before the start the launcher copies `<clone>/<key>/CLAUDE.md` into the
+working tree. Without the field nothing happens — only the declaration makes a *missing* file
+reportable.
+
+The clone is expected as a sibling of this repository named `_instructions`, or wherever
+`CC_INSTRUCTIONS_DIR` points. Which remote you keep it on is your business; the launcher only
+needs a clone with a history — and the history is the point:
+
+**Why a git clone and not a sync folder: the baseline.** A first version compared source
+against working tree only, and thereby conflated two situations — *merely outdated* (nothing
+touched here, changed over there; taking it over is lossless) and *changed on both sides*
+(touch nothing). When sessions alternate between two machines the first is the normal case,
+but it was reported as a conflict; the step helped exactly once per machine and then never
+spoke again when it mattered. A clone knows what it last delivered: if the working-tree file
+matches **any version in the clone's history**, it was not touched locally and is caught up;
+if it matches none, it was changed locally, and the launcher leaves it alone and says so. No
+stamp to maintain, and explicitly not the mtime — a `cp` or a pull stamps a file anew.
+
+**A merge conflict in the clone does not stop the start.** On a conflict nothing is copied,
+so the working tree keeps its old, intact version — a file with conflict markers cannot reach
+the session from here; an abort would protect nothing, it would only force the repair. Instead
+the session starts on the local state and is **given the task** of resolving the conflict: it
+can read and judge both versions, a start script can only apply one rule. The task travels in
+the **start prompt**, appended to the arming ritual — messages on stderr are read by nobody
+inside the session — and only the session whose *own* key is in conflict gets it; on a fleet
+start all the others would otherwise race for the same fix. The note warns that the resolved
+version takes effect at the *next* start.
+
+**The write path is `instructions-sync.sh <key> [dir]`**, meant for the wrap-up ritual: it
+copies the working-tree `CLAUDE.md` into the clone, commits and pushes, and refuses to write
+into a clone that is in conflict (it would commit the markers). The baseline only holds while
+somebody also writes: a clone that stands still while the file is maintained in the tree makes
+the launcher copy an old version in and report the new one as a local change.
+
+`CC_NO_INSTRUCTIONS=1` skips the step for a run.
 
 ## The cold-start gap (the interesting part)
 
@@ -293,7 +360,8 @@ The window dies from its terminal going away, which the watcher does not notice.
 ## Session manager
 
 `session-manager.ps1` is a small GUI over the same config: see which sessions are up, start
-individual ones (`start-one.sh`), stop them. Convenience, not part of the mechanism. Its RUN
+individual ones (`start-one.sh`), stop them, and toggle the autostart selection — its "Save"
+writes `autostart.<host>.local`, never the config. Convenience, not part of the mechanism. Its RUN
 marker reads the same registry as the launcher, with the same live-pid check, and compares
 name and `cwd` whole rather than as a prefix — the logic exists twice on purpose, because
 calling bash once per timer tick (every 3 s) would block the UI. Both copies say so.

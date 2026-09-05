@@ -14,7 +14,33 @@ commit it names will say why.
 
 ## Unreleased
 
-Nothing yet.
+### Added
+- `watch-bridge.sh --reap [--dry-run] [--all]`: kills orphaned `conhost.exe` consoles that
+  keep spinning after a session ended. Eleven of them once held 3.7 of 4 cores for fourteen
+  hours. `--status` reports them as well, and the arm reaps spinners on the way in.
+- The launcher can copy a project's `CLAUDE.md` in from a clone of a separate instructions
+  repository before the start (`instructions=<key>` as the 4th config field). "Merely
+  outdated" is caught up because the clone's history serves as the baseline; a local change
+  the history has never seen is left alone and reported; a merge conflict in the clone does
+  not stop the start but hands the session the task of resolving it, through the start
+  prompt. `instructions-sync.sh` is the write path from the wrap-up ritual.
+- The launcher pulls repositories passed with `--add-dir` before the start, not only the
+  project repository.
+- The autostart selection lives in `autostart.<host>.local` (ignored by git), written by
+  the session manager and seeded once from the config's `#off` lines. Toggling a checkbox
+  no longer changes a versioned file.
+
+### Changed
+- The process inventory behind `--status` is fetched once per run and cached for a few
+  seconds, and it carries the live `claude` pids, so a `--status` opens one PowerShell
+  console instead of two. Simultaneous arms are serialised through a local lock.
+- The fleet start refuses to run with an empty selection and says so, instead of
+  silently starting nothing.
+
+### Fixed
+- `projects.example.conf` showed the `#off` prefix inside the quotes, where bash would have
+  read it as an active entry named `#off scratch`. The prefix stands before the quotes,
+  which is what `start-one.sh` and the session manager have always parsed.
 
 ## 2026-09-04
 

@@ -1,13 +1,17 @@
 # session-manager.ps1 — UI for managing the autostart list of Claude sessions.
 #
 # Shows every project from projects.<host>.conf as a checkbox list:
-#   checked   = active entry  ->  started by "Start all active"
-#   unchecked = #off line in the config  ->  kept, but not started
+#   checked   = selected  ->  started by "Start all active"
+#   unchecked = not selected  ->  stays in the list, starts only on its own
 #   "RUN" marker before the name = a Claude session really is running for it
 #     (source: ~/.claude/sessions/ with a LIVE pid, not the window title -- see
 #     Get-RunningSessions).
-# "Save" rewrites ONLY the #off prefixes — order, comments and formatting of the
-# config stay byte-identical.
+# "Save" writes ONLY the local file autostart.<host>.local - the config is not touched
+# any more. Reason: the checkboxes are a convenience for the fleet start and change all
+# the time; their state is no signal, and in the shared repo every toggle produced a
+# commit that arrived on the other machine as intent. The LIST (name, path, extra args,
+# instructions=) stays versioned. If the local file is missing, the #off state of the
+# config counts as a one-time seed.
 # Plus: "Start all active" (= start-cc.cmd) and "Start selected"
 # (= start-one.sh, works for disabled entries too).
 #
@@ -42,6 +46,9 @@ $ScriptDir = $PSScriptRoot
 $GitBash   = 'C:\Program Files\Git\bin\bash.exe'
 $HostName  = ($env:COMPUTERNAME).ToLower()
 $ConfPath  = Join-Path $ScriptDir "projects.$HostName.conf"
+# Autostart selection: local, not in the repo. The list stays in the config, only the
+# checkmarks live here. If the file is missing, the #off state of the config is the seed.
+$AutostartPath = Join-Path $ScriptDir "autostart.$HostName.local"
 
 if (-not (Test-Path $ConfPath)) {
     [System.Windows.Forms.MessageBox]::Show(
@@ -52,9 +59,24 @@ if (-not (Test-Path $ConfPath)) {
 
 # --- Reading/writing the config --------------------------------------------
 
-# One entry = line  <indent>"name|path[|extra]"  or  <indent>#off "..."
+# One entry = line  <indent>"name|path[|extra[|instructions=key]]"  or  <indent>#off "..."
 $script:RxOn  = '^(\s*)"(.*)"\s*$'
 $script:RxOff = '^(\s*)#off\s+"(.*)"\s*$'
+
+function Read-AutostartNames {
+    # Returns $null when there is no local selection yet - that is NOT the same as
+    # "nothing selected" and has to stay distinguishable.
+    if (-not (Test-Path $AutostartPath)) { return $null }
+    $names = New-Object System.Collections.Generic.List[string]
+    foreach ($line in [System.IO.File]::ReadAllLines($AutostartPath)) {
+        $t = $line
+        $h = $t.IndexOf('#')
+        if ($h -ge 0) { $t = $t.Substring(0, $h) }
+        $t = $t.Trim()
+        if ($t) { $names.Add($t) | Out-Null }
+    }
+    return $names
+}
 
 function Read-Conf {
     $raw   = [System.IO.File]::ReadAllText($ConfPath)
@@ -66,7 +88,7 @@ function Read-Conf {
         elseif ($lines[$i] -match $script:RxOn)  { $enabled = $true }
         else { continue }
         $indent = $Matches[1]; $inner = $Matches[2]
-        $parts = $inner.Split('|', 3)
+        $parts = $inner.Split('|', 4)
         $entries.Add([pscustomobject]@{
             LineIndex = $i
             Indent    = $indent
@@ -77,20 +99,32 @@ function Read-Conf {
             Enabled   = $enabled
         })
     }
+    # The checkmark comes from the LOCAL selection, no longer from the #off prefix. If the
+    # file is missing, the parsed #off state stands - that is the seed, and Save writes it
+    # down. So the bash side and the UI see the same thing the first time.
+    $sel = Read-AutostartNames
+    if ($null -ne $sel) {
+        foreach ($e in $entries) { $e.Enabled = ($sel -contains $e.Name) }
+    }
     return @{ Lines = $lines; Entries = $entries }
 }
 
-function Save-Conf($conf, $checkedNames) {
+function Save-Autostart($conf, $checkedNames) {
+    # Writes ONLY the local selection. The config is not touched any more: the checkbox
+    # state is a convenience, not a signal, and in the shared repo every toggle produced a
+    # commit that arrived on the other machine as intent.
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add('# Local autostart selection for the fleet start - NOT in the repo.') | Out-Null
+    $out.Add('# One project name per line; "#" starts a comment.') | Out-Null
+    $out.Add('# Starting a single project (start-one.sh) always works, also for projects not selected.') | Out-Null
+    $out.Add('# Last saved ' + [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ') + ' by the session manager.') | Out-Null
     foreach ($e in $conf.Entries) {
-        $on = $checkedNames -contains $e.Name
-        $quoted = '"' + $e.Inner + '"'
-        $conf.Lines[$e.LineIndex] = if ($on) { $e.Indent + $quoted }
-                                    else     { $e.Indent + '#off ' + $quoted }
+        $on = ($checkedNames -contains $e.Name)
         $e.Enabled = $on
+        if ($on) { $out.Add($e.Name) | Out-Null }
     }
-    # The config is LF (enforced via .gitattributes) — write it back exactly so, no BOM.
-    $text = ($conf.Lines -join "`n")
-    [System.IO.File]::WriteAllText($ConfPath, $text,
+    $text = ($out -join "`n") + "`n"
+    [System.IO.File]::WriteAllText($AutostartPath, $text,
         (New-Object System.Text.UTF8Encoding($false)))
 }
 
@@ -252,13 +286,13 @@ function Test-Dirty {
 }
 
 $btnSave.Add_Click({
-    Save-Conf $script:Conf (Get-CheckedNames)
+    Save-Autostart $script:Conf (Get-CheckedNames)
     Update-Status
-    $status.Text = "  Saved: $ConfPath"
+    $status.Text = "  Saved: $AutostartPath"
 })
 
 $btnStart.Add_Click({
-    if (Test-Dirty) { Save-Conf $script:Conf (Get-CheckedNames) }
+    if (Test-Dirty) { Save-Autostart $script:Conf (Get-CheckedNames) }
     Start-Process -FilePath (Join-Path $ScriptDir 'start-cc.cmd') -WorkingDirectory $ScriptDir
 })
 
@@ -306,7 +340,7 @@ $form.Add_FormClosing({
         $r = [System.Windows.Forms.MessageBox]::Show(
             'Save unsaved changes to the autostart list?',
             'Session Manager', 'YesNoCancel', 'Question')
-        if ($r -eq 'Yes')    { Save-Conf $script:Conf (Get-CheckedNames) }
+        if ($r -eq 'Yes')    { Save-Autostart $script:Conf (Get-CheckedNames) }
         if ($r -eq 'Cancel') { $e.Cancel = $true }
     }
 })

@@ -3,7 +3,10 @@
 # start-cc-sessions.sh — starts ALL autostart sessions of this machine.
 #
 # Mechanics: _lib.sh (identical on every machine)
-# Data:      projects.<host>.conf  (example: projects.example.conf)
+# Data:      projects.<host>.conf  (example: projects.example.conf) -- the LIST
+#            autostart.<host>.local (local, not in git)             -- the SELECTION;
+#            seeded from the config's #off state on the first run, then owned by the
+#            session manager (see cc_autostart_names in _lib.sh).
 #
 # From Git Bash:   ./start-cc-sessions.sh [--fresh] [--force] [--no-pull]
 # By double click: start-cc.cmd (finds this script relative to itself).
@@ -50,8 +53,23 @@ export CC_FORCE="$force"
 export CC_NO_PULL="$nopull"
 
 cfg="$(cc_resolve_config)" || { read -n 1 -s -r -p "Press any key to close ..."; echo; exit 1; }
-# shellcheck source=/dev/null
-source "$cfg"   # defines projects=(...)
+
+# The LIST lives in the config (repo), the SELECTION in autostart.<host>.local (local, not
+# in the repo). So the `projects` array is no longer sourced here: `#off` lines are
+# comments to bash and never land in it, a deselected entry would be invisible.
+# cc_all_entries yields every entry in file order, cc_autostart_names the selection (and
+# creates it from the previous state on the first run).
+mapfile -t cc_entries < <(cc_all_entries "$cfg")
+mapfile -t cc_selected < <(cc_autostart_names "$cfg")
+
+if [[ "${#cc_selected[@]}" -eq 0 ]]; then
+  echo
+  echo "WARNING: no project is selected in $(basename "$(cc_resolve_autostart "$cfg")") -"
+  echo "         nothing is started. Set the selection in the session manager"
+  echo "         (session-manager.cmd), or start one project: ./start-one.sh \"<name>\""
+  read -n 1 -s -r -p "Press any key to close ..."; echo
+  exit 1
+fi
 
 # Machine state, ONCE per start run (not per project): if the global slash commands differ
 # from the repo copy, a travelled version is having no effect -- on a name collision
@@ -62,7 +80,15 @@ cc_check_commands
 skipped=0
 started=0
 running=0
-for entry in "${projects[@]}"; do
+for entry in "${cc_entries[@]}"; do
+  # Not selected = no autostart. The entry stays startable on its own (start-one.sh).
+  cc_name="${entry%%|*}"
+  cc_take=0
+  for cc_s in "${cc_selected[@]}"; do
+    [[ "$cc_s" == "$cc_name" ]] && { cc_take=1; break; }
+  done
+  (( cc_take )) || continue
+
   # 0 = started, 2 = already running (not an error), anything else = skipped.
   # `|| rc=$?` is mandatory: under `set -e` any non-zero return ends the whole
   # script, and that is exactly what every skipped entry returns.
@@ -78,7 +104,7 @@ done
 disown -a 2>/dev/null || true
 
 echo
-echo "Done: $started window(s) started, $running already running, $skipped skipped  (config: $(basename "$cfg"))."
+echo "Done: $started window(s) started, $running already running, $skipped skipped  (config: $(basename "$cfg"), selection: ${#cc_selected[@]} of ${#cc_entries[@]})."
 if [[ "$skipped" -ne 0 ]]; then
   echo
   echo "WARNING: at least one project was skipped - please check above."
