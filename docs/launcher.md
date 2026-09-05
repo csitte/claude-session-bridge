@@ -351,7 +351,9 @@ afresh on every start.
 
 `close-cc-sessions.ps1` kills the session windows and then collects leftover watcher
 processes — sparing any whose wrapper still hangs under a live session, so hand-started
-sessions are not disturbed.
+sessions are not disturbed. As a third step it measures the orphaned `conhost.exe` consoles
+over a three-second delta and kills the ones that spin: killing the windows is exactly the
+moment that leak is born (see [watcher.md](watcher.md#a-third-line-orphaned-consoles--reap)).
 
 This second step is necessary because killing the window does **not** kill the watcher: the
 process tree is already torn (see [watcher.md](watcher.md)), so a tree kill never reaches it.

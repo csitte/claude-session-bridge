@@ -253,9 +253,14 @@ processes, and their sessions ended afterwards.
    running window and is never touched.
 2. **Older than the grace period** (`WATCH_BRIDGE_SPIN_MINAGE`, default 120 s). The console
    the checking call opens itself falls under it.
-3. **Sustained load over its whole lifetime** (`WATCH_BRIDGE_SPIN_MINPCT`, default 5 %). This
-   is the actual dividing line: measured, 27 healthy `conhost` sat below 0.3 %, the eleven sick
-   ones at 33 %.
+3. **Sustained load** (`WATCH_BRIDGE_SPIN_MINPCT`, default 5 %). This is the actual dividing
+   line: measured, 27 healthy `conhost` sat below 0.3 %, the eleven sick ones at 33 %. Load is
+   taken twice — as the **lifetime average** from the process table, and as a **delta** over a
+   short sample (`WATCH_BRIDGE_SPIN_SAMPLE`, default 1.5 s, `0` switches it off); either one
+   over the threshold counts. The average alone would miss the case that matters most right
+   after a fleet close: a console idle for hours that starts spinning *now* averages near zero
+   and would stay under the threshold for hours. The sample runs only when orphaned consoles
+   exist at all, so the common case costs nothing.
 
 **The idle leftover is the more dangerous case.** A `conhost` without load whose parent is gone
 is, by (1)+(2), **not** distinguishable from a freshly opened Git Bash window: mintty starts

@@ -17,7 +17,10 @@ commit it names will say why.
 ### Added
 - `watch-bridge.sh --reap [--dry-run] [--all]`: kills orphaned `conhost.exe` consoles that
   keep spinning after a session ended. Eleven of them once held 3.7 of 4 cores for fourteen
-  hours. `--status` reports them as well, and the arm reaps spinners on the way in.
+  hours. `--status` reports them as well, and the arm reaps spinners on the way in. Load is
+  measured both as the lifetime average and as a short delta sample, so a console that starts
+  spinning right after a fleet close is caught within seconds rather than hours; the fleet-close
+  script applies the same delta check after killing the windows.
 - The launcher can copy a project's `CLAUDE.md` in from a clone of a separate instructions
   repository before the start (`instructions=<key>` as the 4th config field). "Merely
   outdated" is caught up because the clone's history serves as the baseline; a local change

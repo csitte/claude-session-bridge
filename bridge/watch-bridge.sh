@@ -616,14 +616,36 @@ foreach ($p in $all.Values) {
 $minAge = 120;   if ($env:WATCH_BRIDGE_SPIN_MINAGE)   { $minAge = [int]$env:WATCH_BRIDGE_SPIN_MINAGE }
 $minPct = 5;     if ($env:WATCH_BRIDGE_SPIN_MINPCT)   { $minPct = [double]$env:WATCH_BRIDGE_SPIN_MINPCT }
 $zomAge = 86400; if ($env:WATCH_BRIDGE_ZOMBIE_MINAGE) { $zomAge = [int]$env:WATCH_BRIDGE_ZOMBIE_MINAGE }
-foreach ($p in $all.Values) {
-  if ($p.Name -ne 'conhost.exe') { continue }
-  if ($all.ContainsKey([int]$p.ParentProcessId)) { continue }
+$sample = 1.5;   if ($env:WATCH_BRIDGE_SPIN_SAMPLE)   { $sample = [double]$env:WATCH_BRIDGE_SPIN_SAMPLE }
+
+# Load is measured TWICE: as the lifetime average (free, from the table already fetched)
+# and as a delta over a short sample. The average alone is blind to the case that matters
+# most right after a fleet close: a console that sat idle for hours and starts spinning
+# NOW has an average near zero and would stay under the threshold for hours. The delta
+# catches it within seconds; the average still catches an old spinner whose delta happens
+# to be quiet. Either one over the threshold makes a spinner. The sample looks only at
+# orphaned consoles, and only if there are any -- the common case costs nothing.
+# WATCH_BRIDGE_SPIN_SAMPLE=0 switches it off. A process that vanishes during the sample
+# (or a synthetic one in a test table) simply has no delta.
+$delta = @{}
+$cands = @($all.Values | Where-Object { $_.Name -eq 'conhost.exe' -and -not $all.ContainsKey([int]$_.ParentProcessId) })
+if ($sample -gt 0 -and $cands.Count -gt 0) {
+  Start-Sleep -Milliseconds ([int]($sample * 1000))
+  $el = ((Get-Date) - $now).TotalSeconds
+  foreach ($c in $cands) {
+    $gp = Get-Process -Id $c.ProcessId -ErrorAction SilentlyContinue
+    if (-not $gp -or $el -le 0) { continue }
+    $cpu0 = ($c.KernelModeTime + $c.UserModeTime) / 10000000
+    $delta[[int]$c.ProcessId] = 100 * ($gp.TotalProcessorTime.TotalSeconds - $cpu0) / $el
+  }
+}
+foreach ($p in $cands) {
   $sec = ($now - $p.CreationDate).TotalSeconds
   if ($sec -lt $minAge) { continue }
   $cpu = ($p.KernelModeTime + $p.UserModeTime) / 10000000
   $pct = 0
   if ($sec -gt 0) { $pct = 100 * $cpu / $sec }
+  if ($delta.ContainsKey([int]$p.ProcessId) -and $delta[[int]$p.ProcessId] -gt $pct) { $pct = $delta[[int]$p.ProcessId] }
   $kind = 'zombie'
   if ($pct -ge $minPct)  { $kind = 'spinner' }
   elseif ($sec -lt $zomAge) { continue }
