@@ -155,15 +155,61 @@ pointing there; once per machine:
 
 ```bash
 bash launcher/link-memory.sh /d/work/app            # repo mode:  <repo>/memory/
+bash launcher/link-memory.sh --git /d/work/app      # git mode:   <parent>/_session-memory/<id>/
 bash launcher/link-memory.sh --cloud /d/work/app    # cloud mode: <cloud>/_session-memory/<id>/
 ```
 
 **Which mode?** Repo mode only for infrastructure repos that exist for this purpose alone
 (the bridge tooling, a launcher config repo): the memory rides the push the wrap-up makes
 anyway, and every memory write shows up as a diff in `git status`. Everything with a public
-or private **product** repo takes cloud mode: the memory is Claude's working notes —
-customers, prices, failures — and belongs in neither a public nor a shared history, and every
-memory write would be a commit there. In cloud mode the sync client carries it without a
+or private **product** repo takes **git mode**: a repository of its own per project, cloned
+from `$SESSION_MEMORY_SSH_HOST:$SESSION_MEMORY_SSH_PATH/memory-<id>.git`. The memory is
+Claude's working notes — customers, prices, failures — so it belongs in neither a public nor
+a shared history, and it cannot go in the product repo either, where every memory write would
+be a commit.
+
+**One repository per project, not one for all.** A clone fetches the *whole* tree, and
+whatever enters the history then sits on every machine that ever clones it, undeletably. One
+shared repository would put every project's notes on every machine that opens *any* project —
+including the projects that machine never touches. Per project, a machine holds only what it
+uses: the separation is **built** rather than incidental. Worth checking before you assume
+the incidental version is good enough — on the machine that prompted this, every file of
+every project turned out to be materialised locally already, including the projects that had
+never been opened there.
+
+**What git mode does not do is carry writes for free.** A sync client did; git does not. That
+is what the wrap-up step is for:
+
+```bash
+bash launcher/link-memory.sh --push /d/work/app     # commit + push the memory clone
+```
+
+Put it in your wrap-up ritual next to `--stamp`, and let the launcher fetch it before the
+session starts (`cc_memory_pull`, wired into `cc_launch`). Skip either half and the move
+saves *less* than what it replaced — that is the one way to get this wrong. `--push` tells
+the three situations apart by property rather than by folder name (own `.git` → push;
+inside another worktree → repo mode, that repo's commit takes it along; neither → still the
+cloud folder). The name cannot decide it: the cloud folder and the clone root are both
+called `_session-memory`.
+
+**Retiring the old folder: `--retire`.** Migrating alone does not reach the goal — the old
+copy stays where it is, on every machine that syncs it. `--retire` verifies file by file *by
+content, through the link*, demands a marker from **every** machine that has a
+`projects.<host>.conf`, and only then moves the folder to `_retired/<id>/` — a `mv`, not an
+`rm`, so on the other machine it looks like a move rather than a loss. A machine that does
+not carry a project at all can never produce a migration marker, so it says so explicitly
+with `--mark-only --name <id>`; without that escape the condition would be unsatisfiable and
+`--retire` blocked forever.
+
+**A move moves, it does not rename.** If the memory is called something else at the new place
+than at the old one, `--relink` aborts and hands you the command with the old name. The case
+this catches is not hypothetical: a second checkout sharing another session's memory by link
+resolves *its own* id, and the migration would have given it a fresh empty memory beside the
+full old one — silently. Measured across every project on the machine where this was built:
+identical all but once, and that once was exactly this.
+
+In **cloud mode** (superseded, still available while a migration runs) the sync client carries
+it without a
 commit (with the cloud's own version history); the cloud root is machine-dependent (a short
 list in the script, or `SESSION_MEMORY_DIR`, which wins), `<id>` is resolved in this order, all lower-cased: `--name`, else line 1 of `.session-id` in
 the tree, else the **participant table of the bridge README** matched by working directory

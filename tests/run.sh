@@ -2525,6 +2525,191 @@ test_secondmachine() {
   else ok "empty target does not claim a second machine"; fi
 }
 
+test_gitmemory() {
+  head_ "link-memory --git: the memory moves into a repo of its own"
+  local LM="$ROOT/launcher/link-memory.sh"
+  local base="$TMPROOT/gm.$RANDOM"
+  local cfg="$base/cfg" cloudroot="$base/cloud" cloneroot="$base/clones"
+  local repo="$base/proj"
+  mkdir -p "$cfg" "$cloudroot" "$cloneroot" "$repo"
+  local slug mem out rc
+  slug="$(slug_of "$repo")"; mem="$cfg/projects/$slug/memory"
+
+  # --- argument handling, before anything can touch the network ---------------
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --git --cloud "$repo" 2>&1)" || rc=$?
+  assert_eq "--git with --cloud: exit 64" "64" "$rc"
+  if printf '%s\n' "$out" | grep -q 'which target is meant'; then
+    ok "--git with --cloud says why instead of picking one"
+  else bad "--git with --cloud says why instead of picking one" "$out"; fi
+
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --mark-only "$repo" 2>&1)" || rc=$?
+  assert_eq "--mark-only without --name: exit 64" "64" "$rc"
+
+  # --- the memory currently lives in the cloud folder (the state before a move) -
+  # The folder is deliberately called something OTHER than the id this project resolves to
+  # (its directory name, "proj"). That is the real shape of the trap: a project whose memory
+  # lives under another name because two checkouts share one memory on purpose.
+  mkdir -p "$mem"; echo idx > "$mem/MEMORY.md"; echo one > "$mem/a.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        bash "$LM" --cloud --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "fixture: cloud link created" "0" "$rc"
+  assert_eq "fixture: files are in the cloud folder" "MEMORY.md a.md" \
+    "$(ls -A "$cloudroot/shared" | LC_ALL=C sort | paste -sd' ' -)"
+
+  # --- no host configured -> abort, and nothing created ----------------------
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_MEMORY_REPO_DIR="$cloneroot" SESSION_MEMORY_SSH_HOST="" \
+        bash "$LM" --git --relink --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "--git without a host: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'SESSION_MEMORY_SSH_HOST'; then
+    ok "--git without a host names the variable"
+  else bad "--git without a host names the variable" "$out"; fi
+  assert_eq "--git without a host creates no clone" "" "$(ls -A "$cloneroot")"
+
+  # --- a move moves, it does not rename --------------------------------------
+  # Target id differs from the folder the memory uses today -> abort, and crucially BEFORE
+  # anything is created remotely: an abort must not leave an orphan repository behind.
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_MEMORY_REPO_DIR="$cloneroot" SESSION_MEMORY_SSH_HOST="example.invalid" \
+        bash "$LM" --git --relink "$repo" 2>&1)" || rc=$?
+  assert_eq "different name at the new place: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'should move, not rename'; then
+    ok "the abort says a move must not rename"
+  else bad "the abort says a move must not rename" "$out"; fi
+  if printf '%s\n' "$out" | grep -q -- '--name shared'; then
+    ok "the abort hands over the ready-made command with the old name"
+  else bad "the abort hands over the ready-made command with the old name" "$out"; fi
+  assert_eq "the rename abort creates no clone either" "" "$(ls -A "$cloneroot")"
+  assert_eq "the rename abort leaves the link where it was" "MEMORY.md a.md" \
+    "$(ls -A "$mem" | LC_ALL=C sort | paste -sd' ' -)"
+
+  # --- the real move, with the clone already present (no network needed) ------
+  # A clone that is already there proves the remote exists -- it was cloned from -- so this
+  # path needs neither ssh nor a host. That is what makes it checkable here.
+  local bare="$base/bare/memory-shared.git"
+  mkdir -p "$(dirname "$bare")"; git init --bare -q "$bare"
+  git clone -q "$bare" "$cloneroot/shared" 2>/dev/null
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_MEMORY_REPO_DIR="$cloneroot" \
+        bash "$LM" --git --relink --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "move with an existing clone: exit 0" "0" "$rc"
+  assert_eq "the files are in the clone" "MEMORY.md a.md" \
+    "$(ls -A "$cloneroot/shared" | grep -v '^\.git' | LC_ALL=C sort | paste -sd' ' -)"
+  assert_eq "ls through the link shows the clone" "MEMORY.md a.md" \
+    "$(ls -A "$mem" | grep -v '^\.git' | LC_ALL=C sort | paste -sd' ' -)"
+  if printf '%s\n' "$out" | grep -q '\[push\] committed'; then
+    ok "the move commits right away (the gap the sync client used to cover)"
+  else bad "the move commits right away (the gap the sync client used to cover)" "$out"; fi
+  assert_eq "the commit reached the remote" "a.md" \
+    "$(git --git-dir="$bare" ls-tree -r --name-only HEAD | grep -F 'a.md')"
+  # the per-machine stamp must not travel
+  if git --git-dir="$bare" ls-tree -r --name-only HEAD | grep -q '^\.last-wrap$'; then
+    bad "the per-machine stamp stays out of the history" "$(git --git-dir="$bare" ls-tree -r --name-only HEAD)"
+  else ok "the per-machine stamp stays out of the history"; fi
+  # and the marker is set in the old folder, for --retire
+  if [[ -e "$cloudroot/shared/.migrated-$(hostname | tr 'A-Z' 'a-z')" ]]; then
+    ok "the machine marker is written into the old folder"
+  else bad "the machine marker is written into the old folder" "$(ls -A "$cloudroot/shared")"; fi
+
+  # --- --push: three situations, told apart by property, not by name ---------
+  echo two > "$mem/b.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --push "$repo" 2>&1)" || rc=$?
+  assert_eq "--push on a memory clone: exit 0" "0" "$rc"
+  assert_eq "--push carried the new file to the remote" "b.md" \
+    "$(git --git-dir="$bare" ls-tree -r --name-only HEAD | grep -F 'b.md')"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --push "$repo" 2>&1)" || rc=$?
+  if printf '%s\n' "$out" | grep -q 'nothing changed'; then
+    ok "--push again: nothing changed"
+  else bad "--push again: nothing changed" "$out"; fi
+
+  # repo mode: the memory sits inside the project repo, whose own commit takes it along
+  local rrepo="$base/infra"; mkdir -p "$rrepo"; git init -q "$rrepo"
+  local rslug rmem; rslug="$(slug_of "$rrepo")"; rmem="$cfg/projects/$rslug/memory"
+  mkdir -p "$rmem"; echo x > "$rmem/m.md"
+  CLAUDE_CONFIG_DIR="$cfg" bash "$LM" "$rrepo" >/dev/null 2>&1
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --push "$rrepo" 2>&1)" || rc=$?
+  assert_eq "--push in repo mode: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -q 'repo mode'; then
+    ok "--push in repo mode names the reason (not 'still the cloud folder')"
+  else bad "--push in repo mode names the reason (not 'still the cloud folder')" "$out"; fi
+
+  # not migrated: still the cloud folder
+  local crepo="$base/other"; mkdir -p "$crepo"
+  local cslug cmem; cslug="$(slug_of "$crepo")"; cmem="$cfg/projects/$cslug/memory"
+  mkdir -p "$cmem"; echo y > "$cmem/m.md"
+  CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" bash "$LM" --cloud --name other "$crepo" >/dev/null 2>&1
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --push "$crepo" 2>&1)" || rc=$?
+  assert_eq "--push on a non-migrated memory: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -q 'still the cloud folder'; then
+    ok "--push on a non-migrated memory says so"
+  else bad "--push on a non-migrated memory says so" "$out"; fi
+
+  # --- --retire: verify, demand a marker per machine, then move aside --------
+  local confdir="$base/conf"; mkdir -p "$confdir"
+  : > "$confdir/projects.$(hostname | tr 'A-Z' 'a-z').conf"
+  : > "$confdir/projects.othermachine.conf"
+
+  # a file that exists only in the old folder must abort, by name
+  echo orphan > "$cloudroot/shared/only-here.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "--retire with an unmatched file: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'only-here.md'; then
+    ok "--retire names the file that exists only in the old folder"
+  else bad "--retire names the file that exists only in the old folder" "$out"; fi
+  assert_eq "--retire did not move anything" "1" "$([[ -d "$cloudroot/shared" ]] && echo 1 || echo 0)"
+  rm -f "$cloudroot/shared/only-here.md"
+
+  # a file whose content differs must abort too
+  echo changed > "$cloudroot/shared/a.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "--retire with differing content: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'different content'; then
+    ok "--retire separates 'missing' from 'differs'"
+  else bad "--retire separates 'missing' from 'differs'" "$out"; fi
+  echo one > "$cloudroot/shared/a.md"
+
+  # everything matches, but the second machine has no marker yet
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "--retire without the other machine's marker: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'othermachine'; then
+    ok "--retire names the machine that has not migrated"
+  else bad "--retire names the machine that has not migrated" "$out"; fi
+  if printf '%s\n' "$out" | grep -q -- '--mark-only'; then
+    ok "--retire offers the way out for a machine that does not carry the project"
+  else bad "--retire offers the way out for a machine that does not carry the project" "$out"; fi
+
+  # --mark-only closes exactly that gap
+  rc=0; out="$(SESSION_MEMORY_DIR="$cloudroot" bash "$LM" --mark-only --name shared 2>&1)" || rc=$?
+  assert_eq "--mark-only: exit 0" "0" "$rc"
+  # (it marks THIS machine; simulate the other one by hand -- there is no second machine here)
+  printf 'othermachine 2026-01-01T00:00:00Z not-carried\n' > "$cloudroot/shared/.migrated-othermachine"
+
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire -n --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "--retire -n with every marker present: exit 0" "0" "$rc"
+  assert_eq "--retire -n moves nothing" "1" "$([[ -d "$cloudroot/shared" ]] && echo 1 || echo 0)"
+
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "--retire: exit 0" "0" "$rc"
+  assert_eq "the old folder is gone from its place" "0" "$([[ -d "$cloudroot/shared" ]] && echo 1 || echo 0)"
+  assert_eq "it was moved aside, not deleted" "1" "$([[ -d "$cloudroot/_retired/shared" ]] && echo 1 || echo 0)"
+  assert_eq "the content is untouched" "one" "$(cat "$cloudroot/_retired/shared/a.md")"
+  assert_eq "the session keeps its memory through the link" "MEMORY.md a.md b.md" \
+    "$(ls -A "$mem" | grep -v '^\.git' | LC_ALL=C sort | paste -sd' ' -)"
+
+  # --retire while the link still points at the old folder must refuse
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire --name other "$crepo" 2>&1)" || rc=$?
+  assert_eq "--retire on a memory that has not moved: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'still points at the OLD folder'; then
+    ok "--retire refuses while the link still points at the old folder"
+  else bad "--retire refuses while the link still points at the old folder" "$out"; fi
+}
+
 test_canonicalise() {
   head_ "paths are canonicalised before becoming a slug or being compared"
   local f offenders=""
@@ -2536,23 +2721,26 @@ test_canonicalise() {
   assert_eq "no shipped script builds a slug without canonicalising first" "" "$offenders"
 
   # (B) the functions that COMPARE paths, by name -- each must canonicalise
-  local fn file body missing=""
-  for fn in "cc_session_running:$ROOT/launcher/_lib.sh" \
-            "cc_has_transcript:$ROOT/launcher/_lib.sh" \
-            "cc_memory_state:$ROOT/launcher/_lib.sh" \
-            "norm:$ROOT/launcher/link-memory.sh" \
-            "id_from_table:$ROOT/launcher/link-memory.sh"; do
-    file="${fn##*:}"; fn="${fn%%:*}"
+  # Each entry says what the function must CONTAIN, because canonicalising may be DELEGATED:
+  # one that hands the path to a function which canonicalises is covered -- but only if the
+  # delegation itself is named here. Otherwise the check decays into "somebody, somewhere
+  # does it" the moment a caller is extracted. That is not hypothetical: this case went red
+  # for exactly the right reason when cc_memory_path was split out of cc_memory_state.
+  # Separator is '|', not ':' -- a Windows-style path in $ROOT would split on a colon.
+  local spec fn file want body missing=""
+  for spec in "cc_session_running|$ROOT/launcher/_lib.sh|pwd -P" \
+              "cc_has_transcript|$ROOT/launcher/_lib.sh|pwd -P" \
+              "cc_memory_path|$ROOT/launcher/_lib.sh|pwd -P" \
+              "cc_memory_state|$ROOT/launcher/_lib.sh|cc_memory_path" \
+              "cc_memory_pull|$ROOT/launcher/_lib.sh|cc_memory_path" \
+              "norm|$ROOT/launcher/link-memory.sh|pwd -P" \
+              "id_from_table|$ROOT/launcher/link-memory.sh|norm "; do
+    fn="${spec%%|*}"; file="${spec#*|}"; want="${file#*|}"; file="${file%%|*}"
     # index() instead of a dynamic regex: escaping ( ) { inside an awk string is a trap of
     # its own (it cost two attempts here), and a plain-text match is what is meant anyway.
     body="$(awk -v n="$fn" 'index($0, n "() {")==1 {i=1} i {print} i && /^}/ {exit}' "$file")"
     [[ -n "$body" ]] || { missing+="$fn (not found) "; continue; }
-    # id_from_table compares via norm(), so it counts as covered by norm's own check
-    if [[ "$fn" == "id_from_table" ]]; then
-      printf '%s' "$body" | grep -q 'norm ' || missing+="$fn "
-    else
-      printf '%s' "$body" | grep -q 'pwd -P' || missing+="$fn "
-    fi
+    printf '%s' "$body" | grep -qF "$want" || missing+="$fn "
   done
   assert_eq "every path-comparing function canonicalises (or delegates to one that does)" "" "$missing"
 
@@ -2589,8 +2777,9 @@ case "${1:-all}" in
   isync) test_isync ;;
   reap) test_reap ;;
   linkmemory) test_linkmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_linkmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|autostart|addedrepos|instructions|isync|reap|linkmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
+  gitmemory) test_gitmemory ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_linkmemory; test_gitmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|autostart|addedrepos|instructions|isync|reap|linkmemory|gitmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

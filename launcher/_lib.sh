@@ -609,17 +609,50 @@ cc_instructions_known() { # $1 = clone, $2 = path in the repo, $3 = blob hash
 # MORE files than stamped is normal (written locally since the wrap), not a case. No stamp
 # (not migrated, never wrapped) or unreadable: silent. Always returns 0 — the display never
 # decides about the start.
-cc_memory_state() { # $1 = name, $2 = directory (msys path)
-  local name="$1" dir="$2" native slug mem shost sts scount actual ts_s now_s age=""
-  # Canonicalise first, then build the slug -- exactly as link-memory.sh does when it creates
-  # the folder. Without it the two tools compute different slugs as soon as Windows keeps an
-  # 8.3 short name for a long directory (`C--Users-RUNNER-1-…` against
-  # `C--Users-runneradmin-…`): the launcher would never see a stamp and would stay silent --
-  # precisely the shortfall warning this function exists for. Measured on CI (5 cases).
-  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 0
+# cc_memory_path — the profile path of a project's memory (the link).
+#
+# Canonicalise first, then build the slug -- exactly as link-memory.sh does when it creates
+# the folder. Without it the two tools compute different slugs as soon as Windows keeps an
+# 8.3 short name for a long directory (`C--Users-RUNNER-1-…` against
+# `C--Users-runneradmin-…`): the launcher would never see a stamp and would stay silent --
+# precisely the shortfall warning cc_memory_state exists for. Measured on CI (5 cases).
+# ONE place for the rule, because two functions need it now (report the state AND fetch the
+# memory clone) -- a second copy is the duplication that made this rule drift once already.
+cc_memory_path() { # $1 = directory (msys path) -> profile memory path
+  local dir="$1" native slug
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
   native="$(cygpath -w "$dir" 2>/dev/null || printf '%s' "$dir")"
   slug="$(printf '%s' "$native" | sed 's/[^A-Za-z0-9]/-/g')"
-  mem="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug/memory"
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug/memory"
+}
+
+# cc_memory_pull — fetch the memory clone BEFORE the session starts (git mode).
+#
+# A sync client carried the memory in BOTH directions for free; git does not. Without this
+# fetch the second machine starts on the state it last wrote itself -- and notices nothing.
+# That would make the move a step backwards from what it replaces.
+#
+# Fetched with cc_pull_before_start rather than fresh git code: implementing the same thing
+# twice means fixing it once. That function is already generic -- silent for anything that is
+# not a worktree, reports every failure, never blocks the start.
+#
+# Repo mode is skipped: there the memory sits INSIDE the project repo, which was fetched a
+# line earlier. Recognised by the property (same worktree), not by the folder name -- the
+# cloud folder and the clone root are both called `_session-memory`.
+cc_memory_pull() { # $1 = name, $2 = directory (msys path)
+  local name="$1" dir="$2" mem top proj
+  mem="$(cc_memory_path "$dir")" || return 0
+  [[ -d "$mem" ]] || return 0
+  top="$(git -C "$mem" rev-parse --show-toplevel 2>/dev/null)" || return 0
+  proj="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "$top" && "$top" != "$proj" ]] || return 0
+  cc_pull_before_start "$name:memory" "$top"
+  return 0
+}
+
+cc_memory_state() { # $1 = name, $2 = directory (msys path)
+  local name="$1" dir="$2" mem shost sts scount actual ts_s now_s age=""
+  mem="$(cc_memory_path "$dir")" || return 0
   [[ -d "$mem" && -r "$mem/.last-wrap" ]] || return 0
   read -r shost sts scount < "$mem/.last-wrap" 2>/dev/null || return 0
   [[ -n "$scount" && "$scount" != *[!0-9]* ]] || return 0
@@ -690,6 +723,8 @@ cc_launch() {
   # actually REACHES the session. Messages on stderr are read by nobody inside it.
   CC_INSTRUCTIONS_NOTE=""
   cc_instructions_before_start "$name" "$dir" "$instr"
+  # Fetch the memory clone -- BEFORE the state report, or that reports the state from before.
+  cc_memory_pull "$name" "$dir"
   # And say how old the memory is, or that it has not fully arrived yet.
   cc_memory_state "$name" "$dir"
 
