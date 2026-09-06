@@ -173,10 +173,13 @@ outside:
 A global rule in the user-level settings (`~/.claude/settings.json` — spell the file name
 out; a stray `.settings.json` with a leading dot in the same folder looks plausible and is
 never read, and an entry there is correctly formatted and does nothing) covers all present
-and future sessions at once and is the least painful option. Note that the rule contains an **absolute path**: if your
-sessions travel between machines with different paths, you need one rule per path — and the
-arming paragraph must name every path too, because a `CLAUDE.md` that travels is wrong for
-one machine otherwise.
+and future sessions at once and is the least painful option — **on that machine**. That
+file lives in the user profile, and every machine has its own, so the permission is granted
+**per machine**: a second machine starts from zero, and you find out only when the first arm
+there hangs on a permission prompt. Note that the rule also contains an **absolute path**:
+if your sessions travel between machines with different paths, you need one rule per path —
+and the arming paragraph must name every path too, because a `CLAUDE.md` that travels is
+wrong for one machine otherwise.
 
 ## Do not disarm — let it recognise itself
 

@@ -148,6 +148,26 @@ refused, correctly. The installer therefore writes both the instruction paragrap
 allow-rules into each target session's config. If you automate anything across sessions,
 treat permissions as part of the rollout artifact, not as a one-time manual step.
 
+## 10. The instruction paragraph is one block, and half of it goes missing silently
+
+The paragraph a session runs at startup is two commands, not one: arm the watcher, then run
+the start scan. The installer writes them as a single block for that reason. When somebody
+writes the paragraph by hand instead — founding a new session, adapting a template for a
+neighbour — the second half is what gets lost. In one session founded this way the arm line
+named the absolute script path for both machines correctly, while the fold line two lines
+below it named none: just `watch-bridge.sh --fold <id>`, for a script that is on no
+machine's `PATH`. That session's first start scan would have failed, or it would have
+guessed the path.
+
+The expensive part is that the defect is invisible while reading. The command name is right
+there, and the correct paragraph directly above covers for the broken one. Nor will a grep
+help: it matches what is present, never what is absent. The check that works is to ask where
+each command actually lives — `command -v watch-bridge.sh` finds nothing, so **every**
+invocation has to carry a path. So read both lines, not just the first. And where a session
+has adapted the paragraph for its own reasons, repair the single broken line by hand instead
+of running the installer's `-u`: that replaces the whole block, and the adaptation is
+precisely what it would overwrite.
+
 ---
 
 *The numbers in this chapter were measured on the authors' fleet (Windows 11, Git
