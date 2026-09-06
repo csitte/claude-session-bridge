@@ -46,16 +46,19 @@ cc_resolve_config() {
 # stays in the repo: name, path, third field (passed to claude as-is) and the fourth
 # (`instructions=`). That is lasting knowledge and has to travel.
 #
-# STEP 1 OF TWO, and it is behaviour-preserving by construction: the selection moves to
-# `autostart.<host>.local` (ignored by git). If the file is missing it is seeded ONCE
-# from the current `#off` state of the config -- on both machines exactly the previous
-# selection comes out, nobody clicks anything anew. The `#off` lines stay for now, but
-# only as seed; the config header says so.
-# STEP 2 (later, once both machines have run once): `#off` leaves the config, and a
-# missing local file becomes a state of its own -- the fleet start starts nothing and
-# says why, loudly. As long as `#off` is still there that would be the wrong fallback:
-# a frozen state that the next session takes for current is exactly the trap this
-# removes.
+# STEP 1 (behaviour-preserving): the selection moved to `autostart.<host>.local` (ignored
+# by git); if the file was missing it was seeded ONCE from the `#off` state of the config,
+# so on every machine exactly the previous selection came out and nobody clicked anew.
+#
+# STEP 2 (once every machine had been seeded): `#off` is GONE from the config -- every line
+# is an entry, the config is only the list. So there is nothing left to derive a selection
+# from, and a missing local file is a state of its own (fresh clone, new machine): the
+# fleet start starts NOTHING, says why, and OPENS THE SESSION MANAGER -- tick once, save,
+# start. Not "all on" (a window storm on the first run), not "all off" without a way out,
+# no default in the repo (that would be a shared opinion about checkboxes again). A `#off`
+# prefix that still stands in a stale config is a comment to bash and would hide the entry
+# SILENTLY -- which is why cc_stale_off_lines reports such lines out loud instead of
+# reading or swallowing them.
 #
 # TRADE-OFF, known: local means unsaved. If the machine is lost, the selection is gone.
 # Acceptable for a convenience.
@@ -72,55 +75,89 @@ cc_resolve_autostart() { # $1 = config path (from cc_resolve_config)
   printf '%s\n' "$CC_SCRIPT_DIR/autostart.$base.local"
 }
 
-# cc_all_entries — every entry of the config, active and `#off` alike, in FILE ORDER.
+# cc_stale_off_lines — names from stale `#off "…"` lines of the config, one per line.
 #
-# Needed since the selection is no longer array membership: `#off` lines are comments
-# to bash and never land in `projects=(…)`, so a fleet start could not even see a
-# deselected entry. File order, so that a newly selected entry starts in its place and
-# is not appended at the end.
-#
-# Same grammar as `Read-Conf` in session-manager.ps1 (RxOn/RxOff) and the `#off` loop in
-# start-one.sh -- three readers, one form. The test holds the output against the sourced
-# `projects` array so this parser cannot drift away unnoticed.
-cc_all_entries() { # $1 = config path
+# Since step 2 the prefix no longer exists. If it is still there (config not pulled,
+# written back by hand, an old instruction followed), the line is a comment to bash: the
+# entry silently drops out of the fleet start, the manager and the single start. The
+# silence is the defect -- so the line is neither read nor swallowed but REPORTED
+# (cc_all_entries and start-one.sh do that). Empty output = all is well.
+cc_stale_off_lines() { # $1 = config path
   local cfg="$1" line quoted entry
   [[ -r "$cfg" ]] || return 1
   while IFS= read -r line; do
-    line="${line#"${line%%[![:space:]]*}"}"      # trim left
-    case "$line" in
-      '#off '*) quoted="${line#\#off }" ;;
-      '"'*)     quoted="$line" ;;
-      *)        continue ;;
-    esac
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ "$line" == '#off '* ]] || continue
+    quoted="${line#\#off }"
     eval "entry=$quoted" 2>/dev/null || continue
+    [[ -n "$entry" ]] && printf '%s\n' "${entry%%|*}"
+  done < "$cfg"
+  return 0
+}
+
+# cc_warn_stale_off — the message for it on stderr; 0 = nothing to report.
+cc_warn_stale_off() { # $1 = config path
+  local names
+  names="$(cc_stale_off_lines "$1" | paste -sd', ' -)"
+  [[ -n "$names" ]] || return 0
+  echo "[conf] WARNING: stale '#off' line(s) in $(basename "$1"): $names" >&2
+  echo "       The prefix no longer exists -- to bash the line is a comment and the entry is" >&2
+  echo "       INVISIBLE. Remove the prefix (the line stays); the selection lives in the" >&2
+  echo "       session manager (autostart.<host>.local)." >&2
+  return 1
+}
+
+# cc_all_entries — every entry of the config, in FILE ORDER.
+#
+# Needed since the selection is not array membership but the local file: the fleet start
+# walks ALL entries and takes the selected ones, in file order, so that a newly selected
+# entry starts in its place. Same grammar as `Read-Conf` in session-manager.ps1 (RxOn) --
+# two readers, one form; the test holds the output against the sourced `projects` array
+# so this parser cannot drift away unnoticed. Stale `#off` lines are not read but
+# reported (cc_warn_stale_off).
+cc_all_entries() { # $1 = config path
+  local cfg="$1" line entry
+  [[ -r "$cfg" ]] || return 1
+  cc_warn_stale_off "$cfg" || true
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"      # trim left
+    [[ "$line" == '"'* ]] || continue
+    eval "entry=$line" 2>/dev/null || continue
     [[ -n "$entry" ]] && printf '%s\n' "$entry"
   done < "$cfg"
   return 0
 }
 
+# cc_open_manager — open the session manager (the fallback without a local selection).
+#
+# Through cmd `start` and the .cmd wrapper, not through a powershell.exe started straight
+# from bash: the fleet start exits right afterwards, and a PowerShell child whose bash side
+# dies mid-call leaves behind exactly the ConPTY spinners that watch-bridge.sh --reap
+# cleans up. `start` detaches; cmd is back within milliseconds.
+# Test hook: CC_TEST_MANAGER (a script) is called instead.
+cc_open_manager() {
+  if [[ -n "${CC_TEST_MANAGER:-}" ]]; then "$CC_TEST_MANAGER"; return $?; fi
+  local wrapper="$CC_SCRIPT_DIR/session-manager.cmd" win
+  [[ -f "$wrapper" ]] || { echo "[autostart] $wrapper is missing -- open the manager by hand." >&2; return 1; }
+  command -v cmd.exe >/dev/null 2>&1 || { echo "[autostart] no cmd.exe -- open the manager by hand: $wrapper" >&2; return 1; }
+  win="$(cygpath -w "$wrapper" 2>/dev/null || printf '%s' "$wrapper")"
+  cmd.exe //c start "" "$win" >/dev/null 2>&1
+}
+
 # cc_autostart_names — the selected project names, one per line.
-# If the local file is missing it is seeded from the `#off` state of the config, and that
-# is SAID: a silent side effect at this point would be exactly the mistake this removes.
-cc_autostart_names() { # $1 = config path
+#
+# If the local file is missing there is NO seeding any more since step 2 (there is no seed
+# left): return 3 and a message. The fleet start checks this itself beforehand (mapfile
+# swallows the return value) and opens the manager; the case stands here only so that no
+# other caller mistakes a missing file for an empty selection.
+cc_autostart_names() { # $1 = config path -> 3 = no local selection on this machine
   local cfg="$1" sel name
   sel="$(cc_resolve_autostart "$cfg")" || return 1
 
   if [[ ! -f "$sel" ]]; then
-    {
-      echo "# Local autostart selection for the fleet start -- NOT in the repo."
-      echo "# One project name per line; '#' starts a comment. Toggle through the"
-      echo "# session manager. Starting a single project (start-one.sh) always works,"
-      echo "# also for projects that are not selected."
-      echo "# Created $(date -u +%Y-%m-%dT%H:%M:%SZ) from the state of"
-      echo "# $(basename "$cfg") at that time."
-      # Seeded from the ACTIVE lines, i.e. from what would have been started so far.
-      ( projects=(); source "$cfg"
-        (( ${#projects[@]} )) && printf '%s\n' "${projects[@]}" ) | while IFS= read -r e; do
-          [[ -n "$e" ]] && printf '%s\n' "${e%%|*}"
-      done
-    } > "$sel" 2>/dev/null || { echo "[autostart] selection file not writable: $sel" >&2; return 1; }
-    echo "[autostart] local selection created from the previous state: $sel" >&2
-    echo "            From now on the session manager changes only this file, not the config." >&2
+    echo "[autostart] No local selection on this machine: $sel is missing." >&2
+    echo "            Open the session manager, tick, save." >&2
+    return 3
   fi
 
   # Trimming uses the character class [:space:], and that is deliberate: it also

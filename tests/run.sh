@@ -1235,10 +1235,10 @@ test_pull() {
 # the profile and resets PATH, so a PATH stub does not reach a child login shell; a test
 # relying on it once opened thirteen real windows. The copy is checked afterwards: if a
 # real `mintty` call survived the rewrite, the test refuses to run.
-launcher_copy() { # $1 = target dir -> writes _lib.sh + start-cc-sessions.sh + a mintty stub
+launcher_copy() { # $1 = target dir -> writes _lib.sh + start-cc-sessions.sh + start-one.sh + a mintty stub
   local d="$1"
   mkdir -p "$d/bin"
-  cp "$ROOT/launcher/_lib.sh" "$ROOT/launcher/start-cc-sessions.sh" "$d/"
+  cp "$ROOT/launcher/_lib.sh" "$ROOT/launcher/start-cc-sessions.sh" "$ROOT/launcher/start-one.sh" "$d/"
   sed -i 's|^  mintty -o ConfirmExit=no|  "$CC_TEST_MINTTY" -o ConfirmExit=no|' "$d/_lib.sh"
   grep -q 'CC_TEST_MINTTY' "$d/_lib.sh" || { echo "REFUSING: mintty call not replaced in the copy" >&2; exit 2; }
   grep -q '^  mintty ' "$d/_lib.sh" && { echo "REFUSING: a real mintty call is left in the copy" >&2; exit 2; }
@@ -1251,6 +1251,11 @@ printf '%s\n' "$*" >> "$CC_TEST_MARKER.args"
 exit 0
 STUB
   chmod +x "$d/bin/mintty-stub"
+  # The manager stub records that the fleet start wanted to open the session manager
+  # (the fallback without a local selection). Without CC_TEST_MANAGER the real
+  # cc_open_manager would try cmd.exe -- never in a test.
+  printf '#!/usr/bin/env bash\necho MANAGER >> "$CC_TEST_MARKER.mgr"\n' > "$d/bin/manager-stub"
+  chmod +x "$d/bin/manager-stub"
 }
 
 # fleet_start — runs the copied start-cc-sessions.sh and waits for the stub to have
@@ -1259,7 +1264,7 @@ STUB
 # test deterministic.
 fleet_start() { # $1 = launcher copy dir, $2 = expected starts, $3 = marker, [$4 = extra env]
   : > "$3"; : > "$3.args"
-  ( export CC_TEST_MINTTY="$1/bin/mintty-stub" CC_TEST_MARKER="$3" HOSTNAME=testhost
+  ( export CC_TEST_MINTTY="$1/bin/mintty-stub" CC_TEST_MANAGER="$1/bin/manager-stub" CC_TEST_MARKER="$3" HOSTNAME=testhost
     export CC_NO_PULL=1 CC_LIVE_PIDS='' CLAUDE_CONFIG_DIR="$1/profile"
     [[ -n "${4:-}" ]] && export "$4"
     cd "$1" && bash ./start-cc-sessions.sh >"$1/out.txt" 2>&1 </dev/null )
@@ -1270,61 +1275,59 @@ fleet_start() { # $1 = launcher copy dir, $2 = expected starts, $3 = marker, [$4
 }
 
 test_autostart() {
-  head_ "launcher: the autostart selection is local, seeded once from the config"
+  head_ "launcher: the autostart selection is local; the config is only the list"
   local W="$TMPROOT/as.$RANDOM"; mkdir -p "$W/profile/sessions" "$W/p/alpha" "$W/p/beta" "$W/p/gamma" "$W/p/delta"
   launcher_copy "$W"
   cat > "$W/projects.testhost.conf" <<CONF
 # header comment
 projects=(
   "alpha|$W/p/alpha|--add-dir \"/x y\""
-  #off "beta|$W/p/beta"
+  "beta|$W/p/beta"
   "gamma|$W/p/gamma||instructions=g"
-  #off "delta|$W/p/delta"
+  "delta|$W/p/delta"
 )
 CONF
   local cfg="$W/projects.testhost.conf" sel="$W/autostart.testhost.local"
 
   lib() { # runs a snippet with the copied _lib.sh sourced
-    ( export HOSTNAME=testhost
+    ( export HOSTNAME=testhost CC_TEST_MANAGER="$W/bin/manager-stub" CC_TEST_MARKER="$W/lib"
       # shellcheck source=/dev/null
       source "$W/_lib.sh"; eval "$1" )
   }
   assert_eq "cc_resolve_autostart derives the local file from the config name" "$sel" "$(lib "cc_resolve_autostart '$cfg'")"
 
-  local all; all="$(lib "cc_all_entries '$cfg'")"
-  assert_eq "cc_all_entries sees active AND #off entries, in file order" \
+  local all; all="$(lib "cc_all_entries '$cfg' 2>/dev/null")"
+  assert_eq "cc_all_entries sees every entry, in file order" \
     "alpha beta gamma delta" "$(printf '%s\n' "$all" | cut -d'|' -f1 | paste -sd' ' -)"
   assert_eq "... with the extra args intact"   "alpha|$W/p/alpha|--add-dir \"/x y\"" "$(printf '%s\n' "$all" | sed -n 1p)"
   assert_eq "... and the fourth field intact"  "gamma|$W/p/gamma||instructions=g"    "$(printf '%s\n' "$all" | sed -n 3p)"
+  assert_eq "... which is exactly what sourcing the array gives (the parser cannot drift)" \
+    "$(lib "projects=(); source '$cfg'; printf '%s\n' \"\${projects[@]}\"")" "$all"
+  assert_eq "... and a clean config produces no warning" "" "$(lib "cc_all_entries '$cfg' 2>&1 >/dev/null")"
 
-  # Seeding: the first call creates the file from the ACTIVE lines -- exactly what would
-  # have started before -- and says so. Behaviour-preserving by construction.
+  # --- no local file: a state of its own, no seeding ------------------------------
   [[ -f "$sel" ]] && bad "no selection file before the first run" || ok "no selection file before the first run"
-  local out; out="$(lib "cc_autostart_names '$cfg' 2>&1 >/dev/null")"
-  if printf '%s\n' "$out" | grep -q 'local selection created'; then ok "the first run seeds the file and says so"; else bad "the first run seeds the file and says so" "$out"; fi
-  [[ -f "$sel" ]] && ok "... the file now exists" || bad "... the file now exists"
-  assert_eq "... holding exactly the active entries" "alpha gamma" "$(lib "cc_autostart_names '$cfg' 2>/dev/null" | paste -sd' ' -)"
-  assert_eq "... which is what sourcing the array would have given" \
-    "$(lib "projects=(); source '$cfg'; printf '%s\n' \"\${projects[@]%%|*}\"" | paste -sd' ' -)" \
-    "$(lib "cc_autostart_names '$cfg' 2>/dev/null" | paste -sd' ' -)"
-  assert_eq "the second run seeds nothing and is silent" "" "$(lib "cc_autostart_names '$cfg' 2>&1 >/dev/null")"
+  lib "cc_autostart_names '$cfg' >/dev/null 2>&1"
+  assert_eq "cc_autostart_names without the file returns 3 (not 'empty selection')" "3" "$?"
+  [[ -f "$sel" ]] && bad "... and does NOT create the file (no seed left)" || ok "... and does NOT create the file (no seed left)"
 
-  # Editing the local file changes the selection without touching the config.
+  fleet_start "$W" 0 "$W/m0"
+  [[ -s "$W/m0" ]] && bad "the fleet start without a selection file starts nothing" "$(cat "$W/m0")" || ok "the fleet start without a selection file starts nothing"
+  if grep -q 'no autostart selection on this machine' "$W/out.txt"; then ok "... and says so loudly"; else bad "... and says so loudly" "$(cat "$W/out.txt")"; fi
+  assert_eq "... and opens the session manager (once)" "1" "$(grep -c MANAGER "$W/m0.mgr" 2>/dev/null || echo 0)"
+  [[ -f "$sel" ]] && bad "... without creating the file" || ok "... without creating the file"
+  [[ "$FLEET_RC" -ne 0 ]] && ok "... with a non-zero exit, so the starter console stays open" || bad "... with a non-zero exit" "rc=$FLEET_RC"
+
+  # --- the local file is the selection -------------------------------------------
   local before; before="$(md5sum < "$cfg")"
-  printf 'beta\r\n\n# just a comment\n   \ndelta\n' >> "$sel"
-  assert_eq "names added locally are selected (CRLF, blanks and comments tolerated)" \
-    "alpha gamma beta delta" "$(lib "cc_autostart_names '$cfg' 2>/dev/null" | paste -sd' ' -)"
+  printf 'alpha\ngamma\r\n\n# just a comment\n   \n' > "$sel"
+  assert_eq "names in the local file are selected (CRLF, blanks and comments tolerated)" \
+    "alpha gamma" "$(lib "cc_autostart_names '$cfg' 2>/dev/null" | paste -sd' ' -)"
   assert_eq "... and the config is untouched" "$before" "$(md5sum < "$cfg")"
-  : > "$sel"
-  assert_eq "an empty selection is an empty list" "" "$(lib "cc_autostart_names '$cfg' 2>/dev/null")"
-  rm -f "$sel"
 
-  # End to end through the fleet start.
   fleet_start "$W" 2 "$W/m1"
-  assert_eq "the fleet start starts exactly the seeded selection"  "alpha gamma" "$(sort "$W/m1" | paste -sd' ' -)"
-  if grep -q 'local selection created' "$W/out.txt"; then ok "... and reports the seeding"; else bad "... and reports the seeding" "$(cat "$W/out.txt")"; fi
-  [[ -f "$sel" ]] && ok "... the selection file lies next to the config" || bad "... the selection file lies next to the config"
-  if grep -q 'autostart' "$cfg"; then bad "... the config was not touched"; else ok "... the config was not touched"; fi
+  assert_eq "the fleet start starts exactly the selection"  "alpha gamma" "$(sort "$W/m1" | paste -sd' ' -)"
+  [[ -f "$W/m1.mgr" ]] && bad "... and does not open the manager" || ok "... and does not open the manager"
   assert_eq "... and the summary names the selection" "1" "$(grep -c 'selection: 2 of 4' "$W/out.txt")"
 
   printf 'beta\n' >> "$sel"
@@ -1335,7 +1338,27 @@ CONF
   fleet_start "$W" 0 "$W/m3"
   [[ -s "$W/m3" ]] && bad "an empty selection starts nothing" "$(cat "$W/m3")" || ok "an empty selection starts nothing"
   if grep -q 'no project is selected' "$W/out.txt"; then ok "... and says so loudly"; else bad "... and says so loudly" "$(cat "$W/out.txt")"; fi
+  [[ -f "$W/m3.mgr" ]] && bad "... an EMPTY selection is not a MISSING one: no manager" || ok "... an EMPTY selection is not a MISSING one: no manager"
   [[ "$FLEET_RC" -ne 0 ]] && ok "... with a non-zero exit, so the starter console stays open" || bad "... with a non-zero exit" "rc=$FLEET_RC"
+
+  # --- a stale #off line: reported, never read, never swallowed ------------------
+  # To bash the line is a comment; the entry would vanish silently from every reader.
+  printf '  #off "omega|%s/p/omega"\n)\n' "$W" > "$W/tail"; sed -i '$d' "$cfg"; cat "$W/tail" >> "$cfg"
+  assert_eq "cc_stale_off_lines names the stale entry" "omega" "$(lib "cc_stale_off_lines '$cfg'")"
+  assert_eq "cc_all_entries does not read it" "alpha beta gamma delta" "$(lib "cc_all_entries '$cfg' 2>/dev/null" | cut -d'|' -f1 | paste -sd' ' -)"
+  if lib "cc_all_entries '$cfg' 2>&1 >/dev/null" | grep -q "stale '#off' line(s) in projects.testhost.conf: omega"; then
+    ok "... but warns and names it"; else bad "... but warns and names it"; fi
+  local one; one="$(cd "$W" && HOSTNAME=testhost CC_NO_PULL=1 bash ./start-one.sh omega 2>&1)"; local rc=$?
+  assert_eq "start-one.sh refuses a name that only stands in a stale line (exit 1)" "1" "$rc"
+  if printf '%s\n' "$one" | grep -q "only stands in a stale '#off' line"; then ok "... and says why"; else bad "... and says why" "$one"; fi
+  one="$(cd "$W" && HOSTNAME=testhost CC_NO_PULL=1 bash ./start-one.sh nowhere 2>&1)"; rc=$?
+  assert_eq "start-one.sh on an unknown name: exit 1" "1" "$rc"
+  if printf '%s\n' "$one" | grep -q "not found in projects.testhost.conf"; then ok "... with the plain not-found message"; else bad "... with the plain not-found message" "$one"; fi
+  printf 'alpha\n' > "$sel"
+  fleet_start "$W" 1 "$W/m4"
+  if grep -q "stale '#off'" "$W/out.txt"; then ok "the fleet start reports the stale line too"; else bad "the fleet start reports the stale line too" "$(cat "$W/out.txt")"; fi
+  assert_eq "... and still starts the selection" "alpha" "$(paste -sd' ' - < "$W/m4")"
+  if grep -q '#off' "$cfg"; then ok "... and never rewrites the config"; else bad "... and never rewrites the config"; fi
 
   # The .gitignore keeps the selection out of the repository -- an ignore rule that
   # silently does nothing looks exactly like one that works, so ask git.
@@ -1402,9 +1425,10 @@ projects=(
   "alpha|$W/p/alpha|--add-dir $root/sibling"
 )
 CONF
+  printf 'alpha\n' > "$W/autostart.testhost.local"   # the selection is local, no seed any more
   git -C "$root/sibling" reset -q --hard HEAD~1
   assert_eq "fixture: behind again" "1" "$(behind "$root/sibling")"
-  ( export CC_TEST_MINTTY="$W/bin/mintty-stub" CC_TEST_MARKER="$W/m" HOSTNAME=testhost
+  ( export CC_TEST_MINTTY="$W/bin/mintty-stub" CC_TEST_MANAGER="$W/bin/manager-stub" CC_TEST_MARKER="$W/m" HOSTNAME=testhost
     export CC_LIVE_PIDS='' CLAUDE_CONFIG_DIR="$W/profile"
     cd "$W" && bash ./start-cc-sessions.sh >"$W/out.txt" 2>&1 </dev/null )
   assert_eq "cc_launch pulls the --add-dir repo before the start" "0" "$(behind "$root/sibling")"
@@ -1534,6 +1558,7 @@ projects=(
   "beta|$W/p/beta|--add-dir \"/tmp\"|instructions=nosuch"
 )
 CONF
+  printf 'alpha\nbeta\n' > "$W/autostart.testhost.local"   # the selection is local, no seed any more
   fleet_start "$W" 2 "$W/m1" "CC_INSTRUCTIONS_DIR=$r2/clone"
   assert_eq "e2e: both entries start"                       "alpha beta" "$(sort "$W/m1" | paste -sd' ' -)"
   assert_eq "e2e: the key from the fourth field is used"    "A v1" "$(cat "$W/p/alpha/CLAUDE.md" 2>/dev/null)"

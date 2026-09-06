@@ -10,10 +10,12 @@
 # any more. Reason: the checkboxes are a convenience for the fleet start and change all
 # the time; their state is no signal, and in the shared repo every toggle produced a
 # commit that arrived on the other machine as intent. The LIST (name, path, extra args,
-# instructions=) stays versioned. If the local file is missing, the #off state of the
-# config counts as a one-time seed.
+# instructions=) stays versioned. If the local file is missing (fresh clone, new machine),
+# NOTHING is ticked and the status line says so: tick, save (the fleet start opens exactly
+# this window in that case). A "#off" prefix in the config no longer exists; if one still
+# stands there, the config is stale - the line is NOT read and is reported on load.
 # Plus: "Start all active" (= start-cc.cmd) and "Start selected"
-# (= start-one.sh, works for disabled entries too).
+# (= start-one.sh, works for unticked entries too).
 #
 # Interaction (deliberately separated so that starting does not change the autostart):
 #   click on a row          = select it (for "Start selected") — toggles NOTHING
@@ -47,7 +49,7 @@ $GitBash   = 'C:\Program Files\Git\bin\bash.exe'
 $HostName  = ($env:COMPUTERNAME).ToLower()
 $ConfPath  = Join-Path $ScriptDir "projects.$HostName.conf"
 # Autostart selection: local, not in the repo. The list stays in the config, only the
-# checkmarks live here. If the file is missing, the #off state of the config is the seed.
+# checkmarks live here. If the file is missing, nothing is ticked (no seed state any more).
 $AutostartPath = Join-Path $ScriptDir "autostart.$HostName.local"
 
 if (-not (Test-Path $ConfPath)) {
@@ -59,9 +61,10 @@ if (-not (Test-Path $ConfPath)) {
 
 # --- Reading/writing the config --------------------------------------------
 
-# One entry = line  <indent>"name|path[|extra[|instructions=key]]"  or  <indent>#off "..."
-$script:RxOn  = '^(\s*)"(.*)"\s*$'
-$script:RxOff = '^(\s*)#off\s+"(.*)"\s*$'
+# One entry = line  <indent>"name|path[|extra[|instructions=key]]"
+# RxStale catches stale "#off" lines (step 2): not read, but reported.
+$script:RxOn    = '^(\s*)"(.*)"\s*$'
+$script:RxStale = '^(\s*)#off\s+"(.*)"\s*$'
 
 function Read-AutostartNames {
     # Returns $null when there is no local selection yet - that is NOT the same as
@@ -82,11 +85,14 @@ function Read-Conf {
     $raw   = [System.IO.File]::ReadAllText($ConfPath)
     $lines = $raw -split "`r?`n"
     $entries = New-Object System.Collections.Generic.List[object]
+    $stale   = New-Object System.Collections.Generic.List[string]
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        $enabled = $null
-        if     ($lines[$i] -match $script:RxOff) { $enabled = $false }
-        elseif ($lines[$i] -match $script:RxOn)  { $enabled = $true }
-        else { continue }
+        if ($lines[$i] -match $script:RxStale) {
+            $stale.Add(($Matches[2].Split('|', 2))[0]) | Out-Null
+            continue
+        }
+        if (-not ($lines[$i] -match $script:RxOn)) { continue }
+        $enabled = $false
         $indent = $Matches[1]; $inner = $Matches[2]
         $parts = $inner.Split('|', 4)
         $entries.Add([pscustomobject]@{
@@ -99,14 +105,13 @@ function Read-Conf {
             Enabled   = $enabled
         })
     }
-    # The checkmark comes from the LOCAL selection, no longer from the #off prefix. If the
-    # file is missing, the parsed #off state stands - that is the seed, and Save writes it
-    # down. So the bash side and the UI see the same thing the first time.
+    # The checkmark comes ONLY from the local selection. If the file is missing, nothing is
+    # ticked - since step 2 that is the honest state (no seed left), and Load-List says so.
     $sel = Read-AutostartNames
     if ($null -ne $sel) {
         foreach ($e in $entries) { $e.Enabled = ($sel -contains $e.Name) }
     }
-    return @{ Lines = $lines; Entries = $entries }
+    return @{ Lines = $lines; Entries = $entries; HasSelection = ($null -ne $sel); Stale = $stale }
 }
 
 function Save-Autostart($conf, $checkedNames) {
@@ -276,6 +281,18 @@ function Load-List {
         $list.Items.Add((Format-Item $e $isRun), $e.Enabled) | Out-Null
     }
     Update-Status
+    if (-not $script:Conf.HasSelection) {
+        $status.Text = "  No autostart selection on this machine yet - tick (space) and 'Save'."
+    }
+    if ($script:Conf.Stale.Count -gt 0) {
+        # Stale "#off" lines: a comment to bash, the entry is invisible. Not read, not
+        # swallowed - reported. The config is never written from here.
+        [System.Windows.Forms.MessageBox]::Show(
+            ("Stale '#off' line(s) in " + (Split-Path -Leaf $ConfPath) + ":`n  " +
+             ($script:Conf.Stale -join "`n  ") +
+             "`n`nThe prefix no longer exists. These lines are NOT read. Remove the prefix by hand (the line stays), then 'Reload'."),
+            'Session Manager - config is stale', 'OK', 'Warning') | Out-Null
+    }
 }
 
 function Test-Dirty {

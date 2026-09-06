@@ -22,32 +22,44 @@ See `projects.example.conf` for the format:
 projects=(
   "app|/c/code/app|--add-dir \"$HOME/session-bridge\""
   "notes|/c/notes||instructions=notes"     # 4th field: CLAUDE.md kept outside the repo
-  #off "scratch|/c/code/scratch|"          # known project, not in the initial selection
+  "scratch|/c/code/scratch|"               # in the list, selected or not -- see below
 )
 ```
 
-The `#off` prefix stands **before** the quotes — bash then reads the line as a comment, and
-the three readers (the fleet start, `start-one.sh`, the session manager) all parse that one
-form. Directories passed with `--add-dir` are pulled before the start too, if they are git
-working trees: a repo reached only that way never got a pull before, and one of ours sat 53
-commits behind while a session was editing scripts in it — caught by the rejected push, i.e.
-after the work.
+Every line is an entry; the config is the *list* and nothing else. The two readers (the
+fleet start through `cc_all_entries`, and the session manager) parse that one form, and a
+test holds the parser against the sourced array. Directories passed with `--add-dir` are
+pulled before the start too, if they are git working trees: a repo reached only that way
+never got a pull before, and one of ours sat 53 commits behind while a session was editing
+scripts in it — caught by the rejected push, i.e. after the work.
 
 ## The autostart selection is local
 
-Which projects a fleet start brings up used to be the `#off` prefix in the config — a
+Which projects a fleet start brings up used to be a `#off` prefix in the config — a
 versioned file. But the checkboxes are a convenience, toggled all the time depending on what
 is being worked on; their state is no signal. In a shared repo every toggle produced a
 commit that arrived on the other machine as a change and was read there as intent.
 
-So the selection lives in `autostart.<host>.local` next to the config, ignored by git and
-written by the session manager. If the file is missing it is **seeded once** from the
-config's active lines — exactly what would have started before, on both machines, nobody
-clicks anything anew — and the launcher says so. From then on the config is the *list*
+So the selection lives in `autostart.<host>.local` next to the config, ignored by git, one
+project name per line, written by the session manager ("Save"). The config is the *list*
 (name, path, extra args, `instructions=`) and the local file the *selection*. An empty
-selection starts nothing and says so loudly; the starter console stays open. The `#off`
-prefixes in the config are seed only, and the config header should say that; they are meant
-to disappear once both machines have run once.
+selection starts nothing and says so loudly; the starter console stays open.
+
+**If the local file is missing** (fresh clone, new machine) there is nothing to derive a
+selection from, and that is a state of its own: the fleet start starts **nothing**, says why,
+and **opens the session manager** — tick once, save, start. The alternatives were weighed and
+rejected: "all on" opens a window per project on the first run; "all off" leaves the user
+without a way out; a default in the repo would be a shared opinion about checkboxes again,
+the very thing this removes. (The migration went in two steps: first the local file was
+seeded once from the config's old `#off` state, so nobody clicked anew; once every machine
+had its file, the prefix left the config.)
+
+**A stale `#off` line** — a config not pulled, an old instruction followed — is a comment to
+bash and would hide the entry *silently*. So it is neither read nor swallowed: the fleet
+start and `start-one.sh` warn on stderr and name the entries, the session manager shows a
+warning box on load; none of them writes the config. Remove the prefix, the line stays.
+Local means unsaved: if the machine is lost, the selection is gone — acceptable for a
+convenience.
 
 ## Instructions kept outside the project repository
 

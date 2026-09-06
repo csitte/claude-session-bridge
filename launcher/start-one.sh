@@ -4,9 +4,10 @@
 #
 # Usage:  ./start-one.sh [--fresh] [--force] [--no-pull] "<project name>"
 #
-# Finds the entry in projects.<host>.conf — including ones disabled with #off
-# (starting something once does not make it an autostart). Used by the session
-# manager (session-manager.ps1), but works directly from Git Bash too.
+# Finds the entry in projects.<host>.conf — whether or not it is in the local autostart
+# selection (starting something once does not make it an autostart; the list is complete,
+# only the selection is local). Used by the session manager (session-manager.ps1), but
+# works directly from Git Bash too.
 # --fresh: start without '--continue' — an empty context, but a NEW remote session that
 # carries the name from the config (see the naming block in _lib.sh).
 # --no-pull: do not pull the project repo before the start (see
@@ -57,17 +58,14 @@ for entry in "${projects[@]}"; do
   fi
 done
 
-# Not in the active array -> look through the #off lines (disabled entries).
-while IFS= read -r line; do
-  line="${line#"${line%%[![:space:]]*}"}"   # trim left
-  [[ "$line" == "#off "* ]] || continue
-  quoted="${line#\#off }"
-  # shellcheck disable=SC2086,SC2294  # same dequoting the shell does when sourcing the conf
-  eval "entry=$quoted"   # resolves \" exactly as the shell does when sourcing
-  if [[ "${entry%%|*}" == "$name" ]]; then
-    cc_exit "$entry"
-  fi
-done < "$cfg"
-
-echo "[error] Project '$name' found neither active nor as #off in $(basename "$cfg")." >&2
+# Not in the array. Since step 2 there are no #off lines left to search -- if the name
+# still stands in one, the config is stale and the entry is invisible to bash. That is
+# said, not worked around: starting the line here anyway would leave the prefix in place
+# forever.
+if cc_stale_off_lines "$cfg" | grep -qxF -- "$name"; then
+  cc_warn_stale_off "$cfg" || true
+  echo "[error] Project '$name' only stands in a stale '#off' line of $(basename "$cfg") -- remove the prefix, then try again." >&2
+  exit 1
+fi
+echo "[error] Project '$name' not found in $(basename "$cfg")." >&2
 exit 1

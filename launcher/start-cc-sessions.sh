@@ -4,9 +4,9 @@
 #
 # Mechanics: _lib.sh (identical on every machine)
 # Data:      projects.<host>.conf  (example: projects.example.conf) -- the LIST
-#            autostart.<host>.local (local, not in git)             -- the SELECTION;
-#            seeded from the config's #off state on the first run, then owned by the
-#            session manager (see cc_autostart_names in _lib.sh).
+#            autostart.<host>.local (local, not in git)             -- the SELECTION,
+#            written by the session manager. Missing on this machine: nothing starts,
+#            the manager opens (see cc_autostart_names in _lib.sh).
 #
 # From Git Bash:   ./start-cc-sessions.sh [--fresh] [--force] [--no-pull]
 # By double click: start-cc.cmd (finds this script relative to itself).
@@ -55,10 +55,21 @@ export CC_NO_PULL="$nopull"
 cfg="$(cc_resolve_config)" || { read -n 1 -s -r -p "Press any key to close ..."; echo; exit 1; }
 
 # The LIST lives in the config (repo), the SELECTION in autostart.<host>.local (local, not
-# in the repo). So the `projects` array is no longer sourced here: `#off` lines are
-# comments to bash and never land in it, a deselected entry would be invisible.
-# cc_all_entries yields every entry in file order, cc_autostart_names the selection (and
-# creates it from the previous state on the first run).
+# in the repo). cc_all_entries yields every entry in file order, cc_autostart_names the
+# selection. If the local file is missing (fresh clone, new machine) there is no seed any
+# more: start nothing, say so, open the session manager. The check stands HERE because
+# mapfile swallows the return value of cc_autostart_names, and a missing file would
+# otherwise look like an empty selection.
+cc_sel_file="$(cc_resolve_autostart "$cfg")"
+if [[ ! -f "$cc_sel_file" ]]; then
+  echo
+  echo "WARNING: there is no autostart selection on this machine yet ($(basename "$cc_sel_file") is missing) -"
+  echo "         nothing is started. The session manager opens now: tick, 'Save', then"
+  echo "         'Start all active'. One project always works: ./start-one.sh \"<name>\""
+  cc_open_manager || true
+  read -n 1 -s -r -p "Press any key to close ..."; echo
+  exit 1
+fi
 mapfile -t cc_entries < <(cc_all_entries "$cfg")
 mapfile -t cc_selected < <(cc_autostart_names "$cfg")
 

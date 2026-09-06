@@ -15,6 +15,15 @@ commit it names will say why.
 ## Unreleased
 
 ### Changed
+- **The `#off` prefix is gone from the launcher config; the config is only the list.**
+  Which projects a fleet start opens is decided solely by `autostart.<host>.local` (written
+  by the session manager). If that file is missing on a machine, the fleet start starts
+  nothing, says so and opens the session manager (`cc_open_manager`); it is no longer seeded
+  from the config. A stale `#off` line in a config is a comment to bash and would hide the
+  entry silently — `cc_all_entries`, `start-one.sh` and the session manager now report such
+  lines instead of reading them. To migrate an existing config: make sure every machine has
+  its `autostart.<host>.local` (the previous version seeded it on the first run), then strip
+  the prefix: `sed -i 's/^\(\s*\)#off "/\1"/' projects.<host>.conf`.
 - **`--new-thread` now requires `--title "<title>"` and writes the cover sheet `thread.md`
   itself** (`title:` and `created:`). Without a title nothing is created and the command
   prints the form to use, with the caller's own arguments filled in. The forced number for a
