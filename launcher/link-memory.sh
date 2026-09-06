@@ -318,15 +318,26 @@ memory_push() {
 # Telling them apart by name would be wrong: the cloud folder and the clone root are BOTH
 # called `_session-memory`. Only "does the target sit inside a git worktree" separates them.
 push_target() {
-  local p="$1"
+  local p="$1" situation="${2:-linked}"
   if [[ -d "$p/.git" ]]; then memory_push "$p" "wrap"; return $?; fi
   if git -C "$p" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     echo "[push] $p sits inside $(git -C "$p" rev-parse --show-toplevel 2>/dev/null) (repo mode)"
     echo "       -- that repository's commit takes the memory along; nothing to do here."
     return 0
   fi
-  echo "[push] $p is not a git clone -- still the cloud folder, which carries it without a"
-  echo "       commit. After --git this call takes over."
+  # Two very different situations, and the wrong answer here is the more dangerous one: a
+  # LINKED target outside git is the old cloud folder -- the sync client carries it. A profile
+  # folder with NO link is carried by nobody: it sits on this machine alone and travels
+  # nowhere. Saying "the cloud folder carries it" there is falsely reassuring at exactly the
+  # project whose state is in fact saved nowhere.
+  if [[ "$situation" == linked ]]; then
+    echo "[push] $p is not a git clone -- still the cloud folder, which carries it without a"
+    echo "       commit. After --git this call takes over."
+  else
+    echo "[WARNING] $p is a profile folder with NO link -- it sits on this machine alone" >&2
+    echo "          and travels nowhere: neither a sync folder nor a repository carries it." >&2
+    echo "          Link it with: $(basename "$0") --git [--name <id>] <project-dir>" >&2
+  fi
   return 0
 }
 
@@ -378,7 +389,7 @@ if (( push )); then
             # Windows form of the junction back into the msys world, or git finds nothing.
             [[ $iswin == 1 ]] && t="$(cygpath -u "$t" 2>/dev/null || printf '%s' "$t")"
             push_target "$t"; exit $? ;;
-    dir)    push_target "$mem"; exit $? ;;
+    dir)    push_target "$mem" profile; exit $? ;;
     *)      echo "[push] no linked memory for '$slug' -- nothing to do."; exit 0 ;;
   esac
 fi
@@ -447,6 +458,27 @@ if (( retire )); then
     exit 1
   fi
   echo "[check] $n_ok file(s) identical on both sides, none missing."
+
+  # The new place must be SAVED before the old one goes. --retire removes the last
+  # independent copy; if the clone then hangs on this disk with uncommitted or unpushed
+  # changes, the move did not relocate the backup, it abolished it. Two separate checks,
+  # because they are two separate gaps. Before the marker check: this one the calling session
+  # can fix itself, the other one is waiting for another machine.
+  new_top="$(git -C "$neu" rev-parse --show-toplevel 2>/dev/null || true)"
+  if [[ -n "$new_top" ]]; then
+    if [[ -n "$(git -C "$new_top" status --porcelain 2>/dev/null)" ]]; then
+      echo "[abort] the memory clone has uncommitted changes -- save them first:" >&2
+      echo "            $(basename "$0") --push $repo" >&2
+      exit 1
+    fi
+    ahead="$(git -C "$new_top" rev-list --count '@{u}..HEAD' 2>/dev/null || echo '?')"
+    if [[ "$ahead" != "0" ]]; then
+      echo "[abort] the memory clone is not pushed ($ahead commit(s) local only) -- save it first:" >&2
+      echo "            git -C '$new_top' push" >&2
+      exit 1
+    fi
+    echo "[check] clone is clean and pushed."
+  fi
 
   absent=()
   while read -r h; do
@@ -560,7 +592,7 @@ if (( git_mode )); then
     # filter below); in git mode git has to know that too, or one machine's stamp lands in
     # the other's state and the two overwrite it in turns.
     if [[ ! -e "$target/.gitignore" ]]; then
-      printf '.last-wrap\nMEMORY.md.pre-link\n' > "$target/.gitignore"
+      printf '.last-wrap\n.migrated-*\nMEMORY.md.pre-link\n' > "$target/.gitignore"
     fi
   fi
 fi
@@ -570,7 +602,11 @@ if [[ $kind == dir || $relinking == 1 ]]; then
     conflicts=()
     for f in "$mem"/*; do
       b="${f##*/}"
-      [[ "$b" == ".last-wrap" ]] && continue     # per-machine stamp, does not travel
+      # Per-machine stamp AND migration markers stay behind. The marker lives in the OLD
+      # folder; with a shared memory (two checkouts on one folder) a second migration runs
+      # over the same folder in which the first already left its marker — without this line
+      # it travels into the clone as a "memory file" and gets committed. Seen for real.
+      [[ "$b" == ".last-wrap" || "$b" == .migrated-* ]] && continue
       if [[ -e "$target/$b" ]]; then
         cmp -s "$f" "$target/$b" && continue
         # MEMORY.md is the index -- one line per memory, order without meaning. Two

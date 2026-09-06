@@ -2644,6 +2644,44 @@ test_gitmemory() {
     ok "--push on a non-migrated memory says so"
   else bad "--push on a non-migrated memory says so" "$out"; fi
 
+  # --- a migration marker must never travel into the clone --------------------
+  # It belongs to the OLD folder and is per-machine. With a SHARED memory (two projects on one
+  # folder) the second migration runs over a folder in which the first already left its
+  # marker -- without the filter it travels along as a "memory file" and gets committed. That
+  # happened for real on the first rollout; this is the guard.
+  local repo2="$base/proj2"; mkdir -p "$repo2"
+  local slug2 mem2; slug2="$(slug_of "$repo2")"; mem2="$cfg/projects/$slug2/memory"
+  mkdir -p "$mem2"; echo idx > "$mem2/MEMORY.md"
+  CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot"     bash "$LM" --cloud --name shared "$repo2" >/dev/null 2>&1
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot"         SESSION_MEMORY_REPO_DIR="$cloneroot"         bash "$LM" --git --relink --name shared "$repo2" 2>&1)" || rc=$?
+  assert_eq "second project onto the same memory: exit 0" "0" "$rc"
+  if git -C "$cloneroot/shared" ls-files | grep -q '^\.migrated-'; then
+    bad "a migration marker never enters the repository" "$(git -C "$cloneroot/shared" ls-files)"
+  else ok "a migration marker never enters the repository"; fi
+  if [[ -e "$cloneroot/shared/.migrated-$(hostname | tr 'A-Z' 'a-z')" ]]; then
+    bad "a migration marker is not even copied into the clone" "$(ls -A "$cloneroot/shared")"
+  else ok "a migration marker is not even copied into the clone"; fi
+  if grep -qxF '.migrated-*' "$cloneroot/shared/.gitignore"; then
+    ok "the clone ignores markers by rule, not by accident"
+  else bad "the clone ignores markers by rule, not by accident" "$(cat "$cloneroot/shared/.gitignore")"; fi
+
+  # --- an UNLINKED profile folder is not the cloud folder ---------------------
+  # The dangerous half: saying "the sync client carries it" about a memory that travels
+  # nowhere is falsely reassuring at exactly the project whose state is saved nowhere.
+  local lrepo="$base/lonely"; mkdir -p "$lrepo"
+  local lslug lmem; lslug="$(slug_of "$lrepo")"; lmem="$cfg/projects/$lslug/memory"
+  mkdir -p "$lmem"; echo z > "$lmem/m.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --push "$lrepo" 2>&1)" || rc=$?
+  assert_eq "--push on an unlinked profile memory: exit 0" "0" "$rc"
+  if printf '%s
+' "$out" | grep -q 'travels nowhere'; then
+    ok "--push says an unlinked memory travels nowhere"
+  else bad "--push says an unlinked memory travels nowhere" "$out"; fi
+  if printf '%s
+' "$out" | grep -q 'cloud folder'; then
+    bad "--push does not claim the sync client carries an unlinked memory" "$out"
+  else ok "--push does not claim the sync client carries an unlinked memory"; fi
+
   # --- --retire: verify, demand a marker per machine, then move aside --------
   local confdir="$base/conf"; mkdir -p "$confdir"
   : > "$confdir/projects.$(hostname | tr 'A-Z' 'a-z').conf"
@@ -2669,6 +2707,26 @@ test_gitmemory() {
     ok "--retire separates 'missing' from 'differs'"
   else bad "--retire separates 'missing' from 'differs'" "$out"; fi
   echo one > "$cloudroot/shared/a.md"
+
+  # --retire removes the last independent copy -- so the new place must be saved first.
+  # Both gaps separately, because they are separate: uncommitted, and committed-but-unpushed.
+  echo scratch > "$cloneroot/shared/uncommitted.md"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot"         SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "--retire with an uncommitted clone: exit 1" "1" "$rc"
+  if printf '%s
+' "$out" | grep -q 'uncommitted changes'; then
+    ok "--retire refuses while the clone has uncommitted changes"
+  else bad "--retire refuses while the clone has uncommitted changes" "$out"; fi
+  rm -f "$cloneroot/shared/uncommitted.md"
+
+  git -C "$cloneroot/shared" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "local only"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot"         SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire --name shared "$repo" 2>&1)" || rc=$?
+  assert_eq "--retire with an unpushed clone: exit 1" "1" "$rc"
+  if printf '%s
+' "$out" | grep -q 'not pushed'; then
+    ok "--retire refuses while the clone is not pushed"
+  else bad "--retire refuses while the clone is not pushed" "$out"; fi
+  git -C "$cloneroot/shared" push -q origin HEAD
 
   # everything matches, but the second machine has no marker yet
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \

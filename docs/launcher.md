@@ -188,14 +188,26 @@ Put it in your wrap-up ritual next to `--stamp`, and let the launcher fetch it b
 session starts (`cc_memory_pull`, wired into `cc_launch`). Skip either half and the move
 saves *less* than what it replaced — that is the one way to get this wrong. `--push` tells
 the three situations apart by property rather than by folder name (own `.git` → push;
-inside another worktree → repo mode, that repo's commit takes it along; neither → still the
-cloud folder). The name cannot decide it: the cloud folder and the clone root are both
-called `_session-memory`.
+inside another worktree → repo mode, that repo's commit takes it along; a linked target that is
+neither → still the cloud folder; **an unlinked profile folder → carried by nobody**, and it
+says so loudly). The name cannot decide it: the cloud folder and the clone root are both
+called `_session-memory`. That last distinction matters more than it looks — telling someone
+"the sync client carries it" about a memory that travels nowhere is falsely reassuring at
+exactly the project whose state is in fact saved nowhere.
+
+Two machines editing the same memory between pushes end in a rejected push, reported with the
+command to catch up; `--ff-only` on the fetch side refuses to paper over it. That is a merge
+by hand, and deliberately so — the memory is prose, and no tool should guess which sentence
+wins. Migration markers (`.migrated-<host>`) and the per-machine stamp never enter the
+repository: they belong to the old folder and to one machine, and a shared memory would
+otherwise carry one machine's marker into the other's history.
 
 **Retiring the old folder: `--retire`.** Migrating alone does not reach the goal — the old
 copy stays where it is, on every machine that syncs it. `--retire` verifies file by file *by
-content, through the link*, demands a marker from **every** machine that has a
-`projects.<host>.conf`, and only then moves the folder to `_retired/<id>/` — a `mv`, not an
+content, through the link*, checks that the clone itself is **clean and pushed** (it is about
+to remove the last independent copy — if the clone then hangs on this disk alone, the move
+abolished the backup instead of relocating it), demands a marker from **every** machine that
+has a `projects.<host>.conf`, and only then moves the folder to `_retired/<id>/` — a `mv`, not an
 `rm`, so on the other machine it looks like a move rather than a loss. A machine that does
 not carry a project at all can never produce a migration marker, so it says so explicitly
 with `--mark-only --name <id>`; without that escape the condition would be unsatisfiable and
