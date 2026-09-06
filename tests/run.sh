@@ -2975,6 +2975,32 @@ test_gitmemory() {
   # (it marks THIS machine; simulate the other one by hand -- there is no second machine here)
   printf 'othermachine 2026-01-01T00:00:00Z not-carried\n' > "$cloudroot/shared/.migrated-othermachine"
 
+  # An unrelated project's folder must never be retired on the strength of THIS project's
+  # memory. `--name` and the link can name two different projects -- most easily when
+  # <repo-dir> is left off and the script falls back to the current directory -- and the
+  # content check then passes whenever the foreign folder happens to hold a subset.
+  # Everything else is satisfied here on purpose (subset content, clean pushed clone, both
+  # markers), so the name check is the only thing that can stop it.
+  local hk; hk="$(hostname | tr 'A-Z' 'a-z')"
+  mkdir -p "$cloudroot/foreign"
+  cp "$cloudroot/shared/a.md" "$cloudroot/foreign/a.md"
+  printf '%s 2026-01-01T00:00:00Z not-carried\n' "$hk" > "$cloudroot/foreign/.migrated-$hk"
+  printf 'othermachine 2026-01-01T00:00:00Z not-carried\n' > "$cloudroot/foreign/.migrated-othermachine"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
+        SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire --name foreign "$repo" 2>&1)" || rc=$?
+  assert_eq "--retire against a folder the link does not name: exit 1" "1" "$rc"
+  assert_eq "--retire leaves the foreign folder where it was" "1" \
+    "$([[ -d "$cloudroot/foreign" ]] && echo 1 || echo 0)"
+  assert_eq "--retire moved nothing aside" "0" \
+    "$([[ -d "$cloudroot/_retired/foreign" ]] && echo 1 || echo 0)"
+  if printf '%s\n' "$out" | grep -q -- '--name foreign'; then
+    ok "--retire says which name the link fails to match"
+  else bad "--retire says which name the link fails to match" "$out"; fi
+  if printf '%s\n' "$out" | grep -q -- '<repo-dir>'; then
+    ok "--retire points at the missing <repo-dir>"
+  else bad "--retire points at the missing <repo-dir>" "$out"; fi
+  rm -rf "$cloudroot/foreign"
+
   rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" SESSION_MEMORY_DIR="$cloudroot" \
         SESSION_DEVICE_CONF_DIR="$confdir" bash "$LM" --retire -n --name shared "$repo" 2>&1)" || rc=$?
   assert_eq "--retire -n with every marker present: exit 0" "0" "$rc"

@@ -518,6 +518,23 @@ if (( retire )); then
   if [[ "$(norm "$neu")" == "$(norm "$old")" ]]; then
     echo "[abort] the link still points at the OLD folder -- migrate first (--git --relink)." >&2; exit 1
   fi
+  # The link must belong to EXACTLY this name. `old` comes from `--name`, `neu` from the working
+  # directory -- and the working directory has a default (`.`), the name does not. A call without
+  # <repo-dir> therefore falls back silently to the current directory: `--retire --name other`
+  # issued from inside some unrelated tree compares THAT project's sync folder against the CURRENT
+  # project's memory, and retires it whenever the contents happen to be a subset -- on the strength
+  # of a comparison with a foreign memory. Observed once; what stopped it was the content conflict,
+  # i.e. luck. The check below stops it on the substance: a loud failure beats a silent wrong match.
+  # Compared by basename, lowercased like the id, never as a substring -- sibling ids share
+  # prefixes (`foo` next to `foo-product`), and a prefix test would pick the wrong folder.
+  if [[ "$(basename "$neu" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$name" | tr 'A-Z' 'a-z')" ]]; then
+    echo "[abort] the link for '$slug' points at '$neu' -- that does not belong to '--name $name'." >&2
+    echo "        This would compare the sync folder of '$name' against a foreign memory." >&2
+    echo "        Looks like <repo-dir> is missing: without it the script takes the CURRENT" >&2
+    echo "        directory ($native). Call it with the project directory:" >&2
+    echo "          $(basename "$0") --retire --name $name <repo-dir>" >&2
+    exit 1
+  fi
   echo "new:      $neu  (through the link)"
 
   missing=(); differs=(); n_ok=0
