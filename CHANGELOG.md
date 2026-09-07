@@ -61,6 +61,19 @@ commit it names will say why.
   silently starting nothing.
 
 ### Fixed
+- **`link-memory.sh` no longer vouches for the profile path when `autoMemoryDirectory` is
+  set.** Claude Code's own settings key relocates the auto-memory folder; where it is set,
+  the profile path is a leftover and everything derived from it describes the wrong folder.
+  `--stamp` used to stamp that leftover with exit 0 and a success message, and the launcher's
+  shortfall warning is built on that stamp — so a wrap-up reported green while the real memory
+  was never committed and never pushed. Every mode that reasons from the profile path now
+  refuses and names the file the key is set in (`--mark-only` excepted; it never touches the
+  profile path), and `cc_memory_state` reports the situation once at start-up instead of
+  deriving a shortfall warning from a stale stamp. Only a string value triggers it: `null`
+  means "not set" to the resolver itself, and a non-string Claude Code rejects, so in both
+  cases the profile path stays valid. A `--settings <file>` on the command line is invisible
+  to the check, and the message says so. See `docs/launcher.md`, "A setting can move the
+  memory out from under all of this".
 - `projects.example.conf` showed the `#off` prefix inside the quotes, where bash would have
   read it as an active entry named `#off scratch`. The prefix stands before the quotes,
   which is what `start-one.sh` and the session manager have always parsed.

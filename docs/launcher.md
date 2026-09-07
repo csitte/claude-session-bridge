@@ -159,6 +159,29 @@ bash launcher/link-memory.sh --git /d/work/app      # git mode:   <parent>/_sess
 bash launcher/link-memory.sh --cloud /d/work/app    # cloud mode: <cloud>/_session-memory/<id>/
 ```
 
+**A setting can move the memory out from under all of this.** Claude Code has a settings key
+of its own, `autoMemoryDirectory`, which relocates the auto-memory folder. Where it is set the
+profile path is no longer the memory but a leftover: reads and writes both go elsewhere, and
+an existing memory under the profile path simply becomes **invisible** — no migration, no
+warning. `link-memory.sh` therefore **refuses** every mode that reasons from the profile path
+(`--mark-only` excepted, it never touches it), and the launcher reports the situation once at
+start-up instead of drawing a shortfall warning from a stamp nobody maintains any more. What
+made this a refusal rather than an adaptation is worth stating, because the failure was silent
+in the reassuring direction: `--stamp` used to stamp the orphaned folder with exit 0 and a
+**success message** — counting 2 files for a memory that had 3 at that moment — and that stamp
+is exactly what the shortfall warning is built on. A wrap-up would have reported green while
+the real memory was never committed and never pushed.
+
+Only *whether* the key is set is checked, never what follows from it: resolution spans five
+settings layers plus two environment variables, and reimplementing that here would mean
+keeping it in sync with someone else's precedence order. Only a **string** value triggers the
+refusal — `null` means "not set" to the resolver itself and a non-string Claude Code rejects,
+so in both cases the profile path stays valid and these tools are right; the refusal sits in
+the wrap-up path, where a false positive would block saving work. A `--settings <file>` on the
+command line is invisible to the check, which is why the message says so: a guard whose limit
+goes unmentioned is taken for exhaustive. If you want the setting, either remove it and let
+the link carry again, or keep that memory by hand — these tools then stay out of it.
+
 **Which mode?** Repo mode only for infrastructure repos that exist for this purpose alone
 (the bridge tooling, a launcher config repo): the memory rides the push the wrap-up makes
 anyway, and every memory write shows up as a diff in `git status`. Everything with a public
