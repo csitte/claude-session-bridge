@@ -105,6 +105,86 @@ slug="$(printf '%s' "$native" | sed 's/[^A-Za-z0-9]/-/g')"
 profile="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 mem="$profile/projects/$slug/memory"
 
+# --- guard: `autoMemoryDirectory` beats every link ---------------------------
+# Claude Code has a setting of its own for the memory folder. When it is set, the session
+# reads and writes THERE -- the profile path `~/.claude/projects/<slug>/memory` is then no
+# longer the memory but a leftover. There is no migration and no warning: an existing
+# memory under the profile path simply becomes invisible (measured with a marker file in
+# both places, before and after).
+#
+# Why this is a GUARD and not an adaptation -- the reason is measured, not feared: without
+# it `--stamp` stamps the orphaned profile folder, exit 0, WITH a success message (it
+# counted 2 files for a memory that had 3 at that moment). That stamp is what the launcher's
+# shortfall warning is built on, so it would vouch for a folder nobody writes to any more,
+# while the real memory is never committed and never pushed. `--retire` at least failed
+# loudly already; `--push` warned about the wrong folder.
+#
+# ONLY WHETHER IT IS SET IS CHECKED -- never what follows from it. Resolution has five
+# settings layers plus two environment variables; reimplementing that here would mean
+# keeping it in sync with someone else's precedence order, which is exactly the kind of
+# coupling that goes stale in silence. A yes/no does not go stale. That is also why the
+# guard does not depend on the order: it asks every file that could possibly carry the
+# setting, and uses the first hit only to be able to NAME it.
+#
+# Only a STRING value triggers it. The schema demands a string, so a number or `true` is
+# rejected by Claude Code itself and the profile path stays valid -- in which case our
+# tools would be right. `null` explicitly means "not set" (that is how the resolver tests
+# it). A false positive would block the wrap step, so only what really redirects triggers.
+#
+# The command line's `--settings <file>` flag is NOT visible from here. It is named in the
+# message so nobody mistakes the guard for exhaustive.
+#
+# TWO COPIES OF THIS RULE: the candidate list and the value read are the same in
+# `launcher/_lib.sh` (`cc_automemory_override`, for the start-up notice). Add a file here
+# and you add it there -- `test_ruleparity` compares both versions line by line and goes
+# red on its own.
+automemory_files() { # $1 = project directory -> candidates, in Claude Code's order
+  local d="$1" pd="${PROGRAMDATA:-}"
+  [[ -n "$pd" ]] && pd="$(cygpath -u "$pd" 2>/dev/null || printf '%s' "$pd")"
+  printf '%s\n' "${pd:-/c/ProgramData}/ClaudeCode/managed-settings.json" \
+    "/Library/Application Support/ClaudeCode/managed-settings.json" \
+    "/etc/claude-code/managed-settings.json" \
+    "$d/.claude/settings.local.json" \
+    "$d/.claude/settings.json" \
+    "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+}
+automemory_value() { # $1 = settings file -> string value, else empty
+  # The trailing sed undoes JSON's backslash doubling: a Windows path is stored as
+  # "C:\\Users\\x", and whoever is shown that raw looks for the fault in the path instead
+  # of in the setting. For DISPLAY only -- nothing is resolved here.
+  [[ -r "$1" ]] || return 0
+  tr -d '\n' < "$1" | sed -n 's/.*"autoMemoryDirectory"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | sed 's/\\\\/\\/g'
+}
+automemory_override() { # -> "<file>|<value>" of the first hit, else empty
+  local f v
+  while IFS= read -r f; do
+    v="$(automemory_value "$f")"
+    [[ -n "$v" ]] || continue
+    printf '%s|%s\n' "$f" "$v"; return 0
+  done < <(automemory_files "$1")
+  return 0
+}
+automemory_guard() {
+  local hit; hit="$(automemory_override "$repo")"
+  [[ -n "$hit" ]] || return 0
+  echo "[abort] 'autoMemoryDirectory' is set -- the profile path is then NOT the memory." >&2
+  echo "        set in: ${hit%%|*}" >&2
+  echo "        value:  ${hit#*|}" >&2
+  echo "        The session reads and writes there; this would only be a leftover:" >&2
+  echo "          $mem" >&2
+  echo "        So this tool refuses rather than stamping, saving or verifying against the" >&2
+  echo "        leftover -- a stamp on the wrong folder looks like a secured state and is" >&2
+  echo "        not one." >&2
+  echo "        Resolve it: remove the setting (then the link carries again), or keep that" >&2
+  echo "        memory by hand -- in which case this tool stays out of it." >&2
+  echo '        (A --settings <file> on the command line is invisible to this guard.)' >&2
+  exit 1
+}
+# --mark-only does not touch the profile path (it only writes a device marker into the old
+# store) -- the guard applies to everything else, including -n: a dry run that misstates
+# the situation is worse than none.
+(( markonly )) || automemory_guard
+
 # --- --stamp: what is here, and from when? -----------------------------------
 # Your wrap-up ritual writes `<host> <UTC> <file count>` to `<memory>/.last-wrap` at the
 # end; the launcher reads it before starting a session (cc_memory_state in _lib.sh).

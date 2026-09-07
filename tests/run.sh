@@ -2078,6 +2078,112 @@ test_stamp() {
 }
 
 # --------------------------------------------------------------------------
+# autoMemoryDirectory: the setting that moves the memory out from under us
+# --------------------------------------------------------------------------
+
+# Claude Code can relocate the auto-memory folder by settings key. When that happens the
+# profile path is a leftover, and every tool here that reasons from it reasons about the
+# wrong folder. The case that made this a guard was measured, and it is the first assertion
+# below: `--stamp` used to stamp the leftover with exit 0 and a success message, so the
+# launcher would afterwards vouch for a folder nobody writes to.
+#
+# The negative half matters as much as the positive one: this guard sits in the wrap path,
+# so a false positive blocks saving work. Hence the four no-trigger cases (null, a number,
+# unrelated settings, and the key's name inside a hook command).
+test_automemory() {
+  head_ "autoMemoryDirectory: the guard, and what must NOT trigger it"
+  local LM="$ROOT/launcher/link-memory.sh"
+  local cfg="$TMPROOT/amcfg.$RANDOM" repo slug mem out rc keep
+  repo="$TMPROOT/amrepo.$RANDOM"; mkdir -p "$cfg" "$repo"
+  slug="$(slug_of "$repo")"
+  mem="$cfg/projects/$slug/memory"; mkdir -p "$mem"
+  echo idx > "$mem/MEMORY.md"; echo a > "$mem/a.md"; echo b > "$mem/b.md"
+  set_key() { printf '%s\n' "$1" > "$cfg/settings.json"; }
+  rc_of() { CLAUDE_CONFIG_DIR="$cfg" bash "$LM" "$@" >/dev/null 2>&1; echo $?; }
+
+  # baseline: without the setting nothing changes at all
+  assert_eq "no setting -> --stamp still works" "0" "$(rc_of --stamp "$repo")"
+  assert_eq "no setting -> the stamp counts the files" "3" "$(cut -d' ' -f3 < "$mem/.last-wrap")"
+
+  # THE measured case: the stamp must not vouch for the leftover
+  keep="$(cat "$mem/.last-wrap")"
+  set_key '{"autoMemoryDirectory": "C:\\elsewhere\\mem"}'
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo" 2>&1)" || rc=$?
+  assert_eq "--stamp refuses with exit 1" "1" "$rc"
+  assert_eq "... and leaves the existing stamp untouched" "$keep" "$(cat "$mem/.last-wrap")"
+  if printf '%s\n' "$out" | grep -qF "'autoMemoryDirectory' is set"; then
+    ok "... and names the cause"
+  else bad "... and names the cause" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF 'C:\elsewhere\mem'; then
+    ok "... and shows the value with backslashes unescaped"
+  else bad "... and shows the value with backslashes unescaped" "$out"; fi
+  if printf '%s\n' "$out" | grep -qF "$cfg/settings.json"; then
+    ok "... and names the file it is set in"
+  else bad "... and names the file it is set in" "$out"; fi
+  assert_eq "--push refuses too" "1" "$(rc_of --push "$repo")"
+  # --retire aborts on a missing link anyway, so an exit code alone proves nothing here:
+  # the message has to show it stopped for THIS reason.
+  out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --retire --name x "$repo" 2>&1)" || true
+  if printf '%s\n' "$out" | grep -qF "'autoMemoryDirectory' is set"; then
+    ok "--retire refuses for this reason, not just for a missing link"
+  else bad "--retire refuses for this reason, not just for a missing link" "$out"; fi
+  assert_eq "linking refuses too, even as a dry run" "1" "$(rc_of -n "$repo")"
+  # --mark-only never touches the profile path, so it stays usable
+  out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --mark-only --name x 2>&1)" || true
+  if printf '%s\n' "$out" | grep -qF "'autoMemoryDirectory' is set"; then
+    bad "--mark-only is not blocked by the guard" "$out"
+  else ok "--mark-only is not blocked by the guard"; fi
+
+  # what must NOT trigger it -- a false positive here blocks saving work
+  set_key '{"autoMemoryDirectory": null}'
+  assert_eq "null does not trigger" "0" "$(rc_of --stamp "$repo")"
+  set_key '{"autoMemoryDirectory": 7}'
+  assert_eq "a non-string does not trigger" "0" "$(rc_of --stamp "$repo")"
+  set_key '{"model": "opus", "env": {"X": "1"}}'
+  assert_eq "unrelated settings do not trigger" "0" "$(rc_of --stamp "$repo")"
+  set_key '{"hooks": {"Stop": [{"command": "grep autoMemoryDirectory x"}]}}'
+  assert_eq "the key's name inside a hook command does not trigger" "0" "$(rc_of --stamp "$repo")"
+  rm -f "$cfg/settings.json"
+
+  # project-level files, and a value split across lines
+  mkdir -p "$repo/.claude"
+  printf '{\n  "autoMemoryDirectory":\n    "/tmp/elsewhere"\n}\n' > "$repo/.claude/settings.local.json"
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo" 2>&1)" || rc=$?
+  assert_eq "settings.local.json triggers, value across lines" "1" "$rc"
+  if printf '%s\n' "$out" | grep -qF '/tmp/elsewhere'; then
+    ok "... and the value is read across the line break"
+  else bad "... and the value is read across the line break" "$out"; fi
+  mv "$repo/.claude/settings.local.json" "$repo/.claude/settings.json"
+  assert_eq "a checked-in settings.json triggers as well" "1" "$(rc_of --stamp "$repo")"
+  rm -rf "$repo/.claude"
+
+  # the launcher half: one notice, and the shortfall warning must not fire instead
+  state() {
+    ( export CLAUDE_CONFIG_DIR="$cfg"
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      cc_memory_state proj "$repo" 2>&1
+      echo REACHED )
+  }
+  printf 'other-host 2026-09-01T07:00:00Z 9\n' > "$mem/.last-wrap"
+  out="$(state)"
+  if printf '%s\n' "$out" | grep -q '9 file(s) expected'; then
+    ok "without the setting the launcher still reports a shortfall"
+  else bad "without the setting the launcher still reports a shortfall" "$out"; fi
+  set_key '{"autoMemoryDirectory": "/tmp/elsewhere"}'
+  out="$(state)"
+  if printf '%s\n' "$out" | grep -qF "'autoMemoryDirectory' is set"; then
+    ok "with the setting the launcher says where the memory really is"
+  else bad "with the setting the launcher says where the memory really is" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'file(s) expected'; then
+    bad "the stale stamp must not produce a shortfall warning" "$out"
+  else ok "the stale stamp must not produce a shortfall warning"; fi
+  if printf '%s\n' "$out" | grep -q '^REACHED$'; then
+    ok "... and the start run continues"
+  else bad "... and the start run continues" "$out"; fi
+}
+
+# --------------------------------------------------------------------------
 # the participant-table rule exists in more than one file -- keep them equal
 # --------------------------------------------------------------------------
 
@@ -2115,6 +2221,26 @@ test_ruleparity() {
   if grep -q 'SUSPICION' "$TMPROOT/parity.out"; then
     bad "watch-bridge reads the same table (no suspicion in the matching directory)" "$(cat "$TMPROOT/parity.out")"
   else ok "watch-bridge reads the same table (no suspicion in the matching directory)"; fi
+
+  # Second duplicated rule, same treatment: which settings files can carry
+  # `autoMemoryDirectory`, and how its value is read. link-memory.sh refuses on it,
+  # _lib.sh reports it at start-up -- and a file added to one list but not the other
+  # would leave exactly the silent half this guard exists to remove.
+  # Compared as WHOLE FUNCTION BODIES, not as lines matching some content pattern. The
+  # first version of this check grepped for lines containing `settings.json` -- and a
+  # mutation that added a differently named file to one copy sailed straight through it,
+  # green. A content filter can only see divergence it already anticipates; the body sees
+  # all of it. (Comments are dropped: only one copy carries the display note.)
+  local c="$ROOT/launcher/_lib.sh"
+  amrule() { # $1 = file -> both function bodies, the `cc_` prefix normalised away
+    sed -n '/^\(cc_\)\{0,1\}automemory_files() {/,/^}/p; /^\(cc_\)\{0,1\}automemory_value() {/,/^}/p' "$1" \
+      | sed 's/^cc_//; s/^[[:space:]]*//; s/[[:space:]]\{1,\}/ /g' | grep -v '^#'
+  }
+  assert_eq "link-memory.sh and _lib.sh look in the same settings files, and read the value alike" \
+    "$(amrule "$b")" "$(amrule "$c")"
+  if [[ "$(amrule "$b" | grep -c 'managed-settings\.json')" == 3 ]]; then
+    ok "the autoMemoryDirectory rule was actually found (the check can go red)"
+  else bad "the autoMemoryDirectory rule was actually found (the check can go red)" "$(amrule "$b")"; fi
 }
 
 # --------------------------------------------------------------------------
@@ -2836,8 +2962,9 @@ case "${1:-all}" in
   reap) test_reap ;;
   linkmemory) test_linkmemory ;;
   gitmemory) test_gitmemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_linkmemory; test_gitmemory; test_stamp; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|autostart|addedrepos|instructions|isync|reap|linkmemory|gitmemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
+  automemory) test_automemory ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|autostart|addedrepos|instructions|isync|reap|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

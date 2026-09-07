@@ -641,6 +641,10 @@ cc_memory_path() { # $1 = directory (msys path) -> profile memory path
 # cloud folder and the clone root are both called `_session-memory`.
 cc_memory_pull() { # $1 = name, $2 = directory (msys path)
   local name="$1" dir="$2" mem top proj
+  # If the memory lives elsewhere via `autoMemoryDirectory`, the profile path is a leftover
+  # and a pull on it would fetch the wrong clone. Skipped silently: the situation is
+  # reported one line later in cc_memory_state, and saying it twice does not make it truer.
+  [[ -z "$(cc_automemory_override "$dir")" ]] || return 0
   mem="$(cc_memory_path "$dir")" || return 0
   [[ -d "$mem" ]] || return 0
   top="$(git -C "$mem" rev-parse --show-toplevel 2>/dev/null)" || return 0
@@ -650,8 +654,60 @@ cc_memory_pull() { # $1 = name, $2 = directory (msys path)
   return 0
 }
 
+# cc_automemory_override -- does the memory live elsewhere by setting?
+#
+# Claude Code has a setting of its own for the memory folder, `autoMemoryDirectory`. When
+# it is set, the profile path that `cc_memory_path` builds is NOT the memory any more -- and
+# everything this file concludes from it applies to a folder nobody writes to: the stamp
+# vouches for a leftover, the pull fetches the wrong clone. Both would be silent.
+#
+# Only WHETHER it is set is checked, never what follows from it -- resolution has five
+# settings layers plus two environment variables, and reimplementing that here would mean
+# keeping it in sync with someone else's precedence order. Only a string value triggers it
+# (`null` explicitly means "not set"; a number Claude Code rejects itself).
+#
+# TWO COPIES OF THIS RULE: candidate list and value read are the same in
+# `launcher/link-memory.sh` (`automemory_files` / `automemory_value`), which carries the
+# guard. Add a file here and you add it there -- `test_ruleparity` compares both versions
+# line by line and goes red on its own.
+cc_automemory_files() { # $1 = project directory -> candidates, in Claude Code's order
+  local d="$1" pd="${PROGRAMDATA:-}"
+  [[ -n "$pd" ]] && pd="$(cygpath -u "$pd" 2>/dev/null || printf '%s' "$pd")"
+  printf '%s\n' "${pd:-/c/ProgramData}/ClaudeCode/managed-settings.json" \
+    "/Library/Application Support/ClaudeCode/managed-settings.json" \
+    "/etc/claude-code/managed-settings.json" \
+    "$d/.claude/settings.local.json" \
+    "$d/.claude/settings.json" \
+    "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+}
+cc_automemory_value() { # $1 = settings file -> string value, else empty
+  [[ -r "$1" ]] || return 0
+  tr -d '\n' < "$1" | sed -n 's/.*"autoMemoryDirectory"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1 | sed 's/\\\\/\\/g'
+}
+cc_automemory_override() { # $1 = project directory -> "<file>|<value>" or empty
+  local f v
+  while IFS= read -r f; do
+    v="$(cc_automemory_value "$f")"
+    [[ -n "$v" ]] || continue
+    printf '%s|%s\n' "$f" "$v"; return 0
+  done < <(cc_automemory_files "$1")
+  return 0
+}
+
 cc_memory_state() { # $1 = name, $2 = directory (msys path)
-  local name="$1" dir="$2" mem shost sts scount actual ts_s now_s age=""
+  local name="$1" dir="$2" mem shost sts scount actual ts_s now_s age="" over
+  # The override first, the stamp second: if the memory lives elsewhere by setting, a stamp
+  # under the profile path is a statement about a leftover. A shortfall warning drawn from
+  # it would be worse than none -- it would read as "sync still running" and reassure
+  # afterwards. Reported exactly ONCE per start (here, not also in cc_memory_pull) and
+  # without a return value: the notice never decides whether a session starts.
+  over="$(cc_automemory_override "$dir")"
+  if [[ -n "$over" ]]; then
+    echo "[memory] $name: 'autoMemoryDirectory' is set (${over%%|*})." >&2
+    echo "         The memory lives at ${over#*|} -- not under the profile path." >&2
+    echo "         Stamp, save and retire do not apply there; link-memory.sh refuses." >&2
+    return 0
+  fi
   mem="$(cc_memory_path "$dir")" || return 0
   [[ -d "$mem" && -r "$mem/.last-wrap" ]] || return 0
   read -r shost sts scount < "$mem/.last-wrap" 2>/dev/null || return 0
