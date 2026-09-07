@@ -3091,9 +3091,18 @@ test_linkcommands() {
       *) ln -s "$2" "$1" ;;
     esac
   }
-  is_link_() { case "$(uname -s 2>/dev/null || echo)" in
-      MINGW*|MSYS*|CYGWIN*) [[ -L "$1" ]] || [[ "$(cd "$1" 2>/dev/null && pwd -P)" != "$1" ]] ;;
-      *) [[ -L "$1" ]] ;; esac; }
+  # Is $1 a link (junction or symlink)? Canonicalise BOTH sides: comparing a resolved path
+  # against the raw string is wrong on Windows, where the parent can carry an 8.3 short name
+  # (RUNNER~1 next to runneradmin) -- then every plain folder looks like a link. That is the
+  # same trap norm() documents in the tool itself, and it does not show on a dev machine
+  # where both forms coincide; the CI is the only place that sees it.
+  is_link_() {
+    local p par
+    [[ -L "$1" ]] && return 0
+    par="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
+    p="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+    [[ "$p" != "$par/$(basename "$1")" ]]
+  }
 
   setup_() { # a repo with two commits of wrap.md, plus an empty profile folder
     root="$TMPROOT/lc.$RANDOM.$RANDOM"; repo="$root/repo"; cfg="$root/profile"
