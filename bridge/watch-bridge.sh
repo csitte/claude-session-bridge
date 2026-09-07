@@ -576,15 +576,53 @@ $rx  = "watch-bridge\.sh'?\s+'?([A-Za-z0-9._][A-Za-z0-9._-]*)"
 # remnant. Reported from the field and measured (wrapper under claude.exe, regex no match).
 # The file is named in the command line -- so read it.
 $rxs = 'watch-bridge\.sh\s+\$\(head -1 ([^)]+\.session-id)\)'
+# Third form, and this time the end of the line rather than another form: an arming
+# paragraph may pass the file WITHOUT a path -- `$(head -1 .session-id)`, meant relative to
+# the working tree, which is the only device-independent way to write it when two checkouts
+# share one CLAUDE.md (an absolute path would be wrong on the other machine). `[^)]+`
+# demands at least one character before `.session-id` and does not match. The consequence
+# was the exact picture described above: `--status` reported a delivering session as a
+# silent remnant, and the next arm reaped it. Reported from the field, measured here.
+#
+# Widening to `[^)]*` is the obvious repair and the wrong one: the capture would then be
+# `.session-id` RELATIVE, and `Get-Content` resolves it against the working directory of
+# THIS PowerShell process, not the wrapper's (Win32_Process does not expose a process cwd).
+# Where several checkouts each hold their own `.session-id`, a wrapper would be assigned a
+# FOREIGN id -- and the reaping logic would then decide about the wrong session. Two
+# independent reporters argued against it before it was built.
+#
+# Reading the id out of the child process (where it stands expanded) does not work either,
+# and that is measured rather than assumed: the wrapper is not the live parent of the script.
+# The recorded parent pid belongs to an intermediate process that has already exited, so the
+# chain breaks immediately -- checked on a reproduction and on a real, delivering watcher.
+# A first attempt along the children was removed again: it would have looked like a solution
+# and hit nothing.
+#
+# So the id is NOT guessed. Such an arm is reported instead of dropped, and the arming path
+# touches nothing while one is running. An arm nobody can attribute is a structural
+# consequence of the shared-checkout form, not carelessness.
+$rxopt = 'watch-bridge\.sh\s+-'
 foreach ($p in $all.Values) {
   if ($p.Name -ne 'bash.exe') { continue }
+  $kind  = if ($p.CommandLine -like '* -c *') { 'wrapper' } else { 'script' }
   $id = $null
   if ($p.CommandLine -match $rx)  { $id = $Matches[1] }
   if (-not $id -and $p.CommandLine -match $rxs) {
     try { $id = (Get-Content -LiteralPath $Matches[1] -TotalCount 1 -ErrorAction Stop).Trim() } catch { $id = $null }
   }
-  if (-not $id) { continue }
-  $kind  = if ($p.CommandLine -like '* -c *') { 'wrapper' } else { 'script' }
+  if (-not $id) {
+    # Reported, not silently dropped. Until now such an arm fell out of the inventory via
+    # `continue` -- not recorded wrongly but not at all, and that absence is what produced
+    # the "unarmed" misdiagnosis. What cannot be identified must not be reaped either:
+    # `handle_existing` filters on its own id and leaves this row alone. One-shot calls
+    # (`--status`, `--fold`, ...) are not arms and stay out, or every diagnostic run would
+    # report itself.
+    if ($kind -eq 'wrapper' -and $p.CommandLine -like '*watch-bridge.sh*' -and $p.CommandLine -notmatch $rxopt) {
+      $uage = [int]($now - $p.CreationDate).TotalSeconds
+      'unknown|-|{0}|{1}|0|{2}' -f $p.ProcessId, $uage, $p.CreationDate.ToString('MM-dd HH:mm')
+    }
+    continue
+  }
   $under = 0
   if ($kind -eq 'wrapper') {
     $c = $all[[int]$p.ParentProcessId]; $d = 0
@@ -976,7 +1014,7 @@ status_report() {
   local filter="${1:-}" grace="${WATCH_BRIDGE_START_GRACE:-90}"
   local kind id pid age under started st r
   local -A live=() count=() young=()
-  local -a rows=() spinners=() zombies=()
+  local -a rows=() spinners=() zombies=() unknownarms=()
   while IFS='|' read -r kind id pid age under started; do
     [[ -n "${kind:-}" ]] || continue
     # Orphaned consoles belong to no id and are reported separately. They have to go
@@ -985,6 +1023,7 @@ status_report() {
     case "$kind" in
       spinner)   spinners+=("$pid|${age:-0}|${under:-0}|$started"); continue ;;
       zombie)    zombies+=("$pid|${age:-0}|${under:-0}|$started");  continue ;;
+      unknown)   unknownarms+=("$pid|${age:-0}|$started");          continue ;;
       claudepid) continue ;;
     esac
     [[ -n "${id:-}" ]] || continue
@@ -1031,6 +1070,23 @@ status_report() {
         echo "DUPLICATE: '$id' has ${count[$id]} old watchers — every message arrives that many times."
       fi
     done
+  fi
+
+  # Arms without a determinable id: independent of the id filter, since which session they
+  # belong to is precisely the open question. It stands BEFORE the console blocks because it
+  # qualifies the table above: a session can appear as "unarmed" there while its watcher is
+  # delivering. A note rather than a warning -- nothing is broken as long as nobody takes the
+  # table for complete.
+  if [[ ${#unknownarms[@]} -gt 0 ]]; then
+    echo "note: ${#unknownarms[@]} watcher arm(s) without a determinable session id — they count in"
+    echo "      no row above and are not reaped. A session behind one of them can appear as"
+    echo "      'unarmed' although it is delivering."
+    for r in "${unknownarms[@]}"; do
+      IFS='|' read -r pid age started <<<"$r"
+      printf '      PID %-8s armed %s (%ss)\n' "$pid" "$started" "$age"
+    done
+    echo "      Remedy in that session's arming paragraph: name the id literally (or with a"
+    echo "      path if it comes from .session-id) — then the line disappears."
   fi
 
   # Orphaned consoles: their own block with their own signal word, and DELIBERATELY
@@ -1366,9 +1422,13 @@ handle_existing() {
   done
 
   local kind id pid age under started
-  local delivering=0 script_pid=""
+  local delivering=0 script_pid="" unattributable=0
   local -a stale=() spin=()
   while IFS='|' read -r kind id pid age under started; do
+    # An arm whose id cannot be determined: it may be the wrapper of the very process we
+    # are about to end as a "silent remnant" -- and it cannot be proven either way, because
+    # there is no live parent edge between wrapper and script. So it is counted, not guessed.
+    if [[ "$kind" == unknown ]]; then unattributable=$((unattributable+1)); continue; fi
     # Orphaned consoles with sustained load belong to NO id -- collect them separately,
     # before any id filter. Exactly this blindness is why the incident ran for fourteen
     # hours although a reaper existed.
@@ -1402,7 +1462,17 @@ handle_existing() {
     exit 0
   fi
 
-  if [[ ${#stale[@]} -gt 0 ]]; then
+  # Reap only when the situation is UNAMBIGUOUS. If an arm without a determinable id is
+  # running, the supposed remnant may be its live script -- and this very step cut one
+  # session's delivery for half an hour before the guard existed. The duplicate watcher that
+  # may arise instead is VISIBLE (`--status` reports DOUBLE ARM, every message arrives
+  # twice); severed delivery is not. Between visible too-much and invisible too-little we
+  # choose too-much.
+  if [[ ${#stale[@]} -gt 0 && $unattributable -gt 0 ]]; then
+    echo "watch-bridge: $unattributable arm(s) without a determinable id are running -- the" >&2
+    echo "              supposed remnant of '$me' (PID ${stale[*]}) is left untouched." >&2
+    echo "              Look with: watch-bridge.sh --status" >&2
+  elif [[ ${#stale[@]} -gt 0 ]]; then
     local list; list=$(IFS=,; echo "${stale[*]}")
     powershell.exe -NoProfile -NonInteractive \
       -Command "Stop-Process -Id $list -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1

@@ -1772,6 +1772,110 @@ STUB
 }
 
 # --------------------------------------------------------------------------
+# arms whose id cannot be determined (the shared-checkout form)
+# --------------------------------------------------------------------------
+
+# Two checkouts sharing one CLAUDE.md have to pass the id as `$(head -1 .session-id)` --
+# the only device-independent way to write it, since an absolute path would be wrong on the
+# other machine. In the wrapper's command line that stands unexpanded and without a path, so
+# the inventory cannot attribute the arm to a session. Until this was handled such an arm
+# fell out of the inventory entirely: `--status` then called a delivering session "unarmed",
+# and the next arm reaped its live script. Measured in the field: half an hour of lost
+# delivery. The id is deliberately not guessed -- reading a relative `.session-id` would
+# resolve it against the wrong working directory and could attribute a FOREIGN id.
+test_unknownarm() {
+  head_ "watcher: unattributable arms are reported, and nothing is reaped around them"
+  local W="$TMPROOT/unk.$RANDOM"; mkdir -p "$W/bin"
+  local log="$W/stop.log"; : > "$log"
+  local B; B="$(new_bridge)"
+  local out
+  mk_stub() { # $1 = the extra inventory line
+    cat > "$W/bin/powershell.exe" <<STUB
+#!/usr/bin/env bash
+if printf '%s' "\$*" | grep -q 'Stop-Process'; then
+  printf '%s\n' "\$*" | grep -oE -- '-Id [0-9,]+' >> '$log'
+  exit 0
+fi
+cat <<'INV'
+script|app|111|500|0|09-01 10:00
+$1
+INV
+STUB
+    chmod +x "$W/bin/powershell.exe"
+  }
+  wb() { ( export PATH="$W/bin:$PATH" WATCH_BRIDGE_INV_TTL=0 SESSION_BRIDGE_DIR="$B"; bash "$WATCHER" "$@" 2>&1 ); }
+  arm() { ( export PATH="$W/bin:$PATH" WATCH_BRIDGE_INV_TTL=0 SESSION_BRIDGE_DIR="$B"
+            unset WATCH_BRIDGE_NO_REAP; timeout 3 bash "$WATCHER" app 1 2>&1 ); }
+
+  mk_stub 'unknown|-|222|400|0|09-01 10:05'
+  local found; found="$(PATH="$W/bin:$PATH" command -v powershell.exe)"
+  if [[ "$found" != "$W/bin/powershell.exe" ]]; then
+    bad "the powershell stub takes precedence on PATH" "found: $found"; return 0
+  fi
+  ok "the powershell stub takes precedence on PATH"
+
+  out="$(wb --status)"
+  assert_eq "--status: still exactly one watcher row" "1" "$(printf '%s\n' "$out" | grep -c '^app ')"
+  if printf '%s\n' "$out" | grep -q 'without a determinable session id'; then
+    ok "--status: the unattributable arm is named"
+  else bad "--status: the unattributable arm is named" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'PID 222 '; then ok "... with its pid"; else bad "... with its pid" "$out"; fi
+  if printf '%s\n' "$out" | grep -qE '^- +[0-9]'; then
+    bad "--status: it is not shown as a watcher row with id '-'" "$out"
+  else ok "--status: it is not shown as a watcher row with id '-'"; fi
+
+  # The half that prevents the damage: with such an arm present, nothing is reaped.
+  : > "$log"
+  out="$(arm)"
+  assert_eq "arm: nothing is killed while an arm is unattributable" "" "$(cat "$log")"
+  if printf '%s\n' "$out" | grep -q 'left untouched'; then ok "arm: and it says why"; else bad "arm: and it says why" "$out"; fi
+
+  # Control, and the reason this test can go red: the SAME fixture without that one line
+  # reaps the remnant exactly as before. Without this half, a guard that never reaps would
+  # pass too.
+  mk_stub 'claudepid|-|4242|0|0|'
+  : > "$log"
+  arm >/dev/null
+  assert_eq "control: without it the silent remnant is reaped as before" "-Id 111" "$(cat "$log")"
+
+  # PowerShell half: the id classification itself, against a synthetic process table.
+  if ! has_inventory; then
+    printf '  skip no PowerShell -- the id classification cannot be exercised here\n'
+    return 0
+  fi
+  local block
+  block="$(awk '/^\$rx  = / {p=1} /^# --- Orphaned ConPTY hosts/ {p=0} p' "$WATCHER")"
+  if [[ -z "$block" ]]; then bad "the id block is found in the script"; return 0; fi
+  ok "the id block is found in the script"
+  printf '%s\n' "$block" > "$W/ids.ps1"
+  mkdir -p "$W/sid"; printf 'shared\n' > "$W/sid/.session-id"
+  cat > "$W/idfix.ps1" <<'PS1'
+$now = Get-Date
+$all = @{}
+function P($pid_, $parent, $name, $cl) {
+  $all[[int]$pid_] = [pscustomobject]@{ Name=$name; ProcessId=$pid_; ParentProcessId=$parent;
+    CreationDate=$now.AddSeconds(-300); CommandLine=$cl }
+}
+P 40  1  'claude.exe' 'claude'
+P 111 1  'bash.exe'   'bash /x/watch-bridge.sh app'
+P 112 40 'bash.exe'   'bash -c "bash /x/watch-bridge.sh app"'
+P 222 40 'bash.exe'   'bash -c "bash /x/watch-bridge.sh $(head -1 .session-id)"'
+P 223 40 'bash.exe'   ('bash -c "bash /x/watch-bridge.sh $(head -1 ' + $env:SIDDIR + '/.session-id)"')
+P 224 40 'bash.exe'   'bash -c "bash /x/watch-bridge.sh --status"'
+. $env:CLASSIFY
+PS1
+  out="$( SIDDIR="$(cygpath -w "$W/sid" 2>/dev/null || printf '%s' "$W/sid")" \
+          CLASSIFY="$(cygpath -w "$W/ids.ps1" 2>/dev/null || printf '%s' "$W/ids.ps1")" \
+          powershell.exe -NoProfile -NonInteractive -File "$(cygpath -w "$W/idfix.ps1" 2>/dev/null || printf '%s' "$W/idfix.ps1")" \
+          2>&1 | tr -d '\r' | sed 's/|[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]$//' | LC_ALL=C sort | paste -sd' ' - )"
+  # The literal id resolves twice (script and wrapper), the path-ful `.session-id` form
+  # resolves by reading the file, the path-less one becomes `unknown`, and the one-shot
+  # `--status` call is not an arm at all -- otherwise every diagnostic run would report itself.
+  assert_eq "classification: literal and path-ful resolve, path-less becomes 'unknown', one-shot is ignored" \
+    "script|app|111|300|0 unknown|-|222|300|0 wrapper|app|112|300|1 wrapper|shared|223|300|1" "$out"
+}
+
+# --------------------------------------------------------------------------
 # link-memory: profile memory -> repo, linked
 # --------------------------------------------------------------------------
 
@@ -2960,11 +3064,12 @@ case "${1:-all}" in
   instructions) test_instructions ;;
   isync) test_isync ;;
   reap) test_reap ;;
+  unknownarm) test_unknownarm ;;
   linkmemory) test_linkmemory ;;
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|autostart|addedrepos|instructions|isync|reap|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

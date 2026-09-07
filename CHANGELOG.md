@@ -61,6 +61,20 @@ commit it names will say why.
   silently starting nothing.
 
 ### Fixed
+- **An arm whose session id cannot be determined no longer disappears from the inventory —
+  and nothing is reaped around it.** Two checkouts sharing one `CLAUDE.md` have to pass the
+  id as `$(head -1 .session-id)`, which stands unexpanded and without a path in the wrapper's
+  command line. Such an arm used to be dropped entirely: `--status` then reported a
+  *delivering* session as a silent remnant, and the next arm killed its live script —
+  measured in the field as half an hour of lost delivery. `--status` now reports these arms
+  in a block of their own (pid and arming time), and the arming path leaves everything alone
+  while one of them is running, saying why. The duplicate watcher that may result is visible
+  (`--status` reports a double arm); severed delivery is not. The id is deliberately **not**
+  guessed: resolving a relative `.session-id` would use the reading process's working
+  directory and could attribute a foreign id, and the wrapper is not the live parent of the
+  script, so there is no process chain to follow either (both measured before choosing).
+  Where a `CLAUDE.md` is *not* shared, name the id literally in the arming paragraph and the
+  note disappears; never put a concrete id into a shared one.
 - **`link-memory.sh` no longer vouches for the profile path when `autoMemoryDirectory` is
   set.** Claude Code's own settings key relocates the auto-memory folder; where it is set,
   the profile path is a leftover and everything derived from it describes the wrong folder.
