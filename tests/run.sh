@@ -1239,6 +1239,9 @@ launcher_copy() { # $1 = target dir -> writes _lib.sh + start-cc-sessions.sh + s
   local d="$1"
   mkdir -p "$d/bin"
   cp "$ROOT/launcher/_lib.sh" "$ROOT/launcher/start-cc-sessions.sh" "$ROOT/launcher/start-one.sh" "$d/"
+  # link-commands.sh travels with the copy: cc_check_commands only prints its "not linked"
+  # line when the tool is actually next to it, so without this the line is untestable.
+  cp "$ROOT/launcher/link-commands.sh" "$d/" 2>/dev/null || true
   sed -i 's|^  mintty -o ConfirmExit=no|  "$CC_TEST_MINTTY" -o ConfirmExit=no|' "$d/_lib.sh"
   grep -q 'CC_TEST_MINTTY' "$d/_lib.sh" || { echo "REFUSING: mintty call not replaced in the copy" >&2; exit 2; }
   grep -q '^  mintty ' "$d/_lib.sh" && { echo "REFUSING: a real mintty call is left in the copy" >&2; exit 2; }
@@ -3066,9 +3069,133 @@ test_canonicalise() {
   else bad "the check detects a slug built without canonicalising (it can go red)" "probe not flagged"; fi
 }
 
+# link-commands.sh links the profile's command folder to the repo copy instead of comparing
+# the two. The interesting cases are the refusals: everything that is in the profile and NOT
+# in the repo without loss would become invisible behind the link, so the tool has to stop
+# before touching anything. The fixture is a real little repo with a real history, because
+# the blob hash -- not the mtime -- decides whether a differing file is a harmless older
+# version or unsaved work.
+test_linkcommands() {
+  head_ "link-commands: the profile folder becomes a link to the repo copy"
+  local G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
+  local LC="$ROOT/launcher/link-commands.sh"
+  local root repo cfg out rc
+
+  # A link the test makes itself (for the "points elsewhere" case). Same split as the tool:
+  # a junction on Windows, a symlink everywhere else -- without it this case is Windows-only.
+  mklink_() { # $1 = link, $2 = target
+    case "$(uname -s 2>/dev/null || echo)" in
+      MINGW*|MSYS*|CYGWIN*)
+        powershell.exe -NoProfile -NonInteractive -Command \
+          "New-Item -ItemType Junction -Path '$(cygpath -w "$1")' -Target '$(cygpath -w "$2")' | Out-Null" >/dev/null 2>&1 ;;
+      *) ln -s "$2" "$1" ;;
+    esac
+  }
+  is_link_() { case "$(uname -s 2>/dev/null || echo)" in
+      MINGW*|MSYS*|CYGWIN*) [[ -L "$1" ]] || [[ "$(cd "$1" 2>/dev/null && pwd -P)" != "$1" ]] ;;
+      *) [[ -L "$1" ]] ;; esac; }
+
+  setup_() { # a repo with two commits of wrap.md, plus an empty profile folder
+    root="$TMPROOT/lc.$RANDOM.$RANDOM"; repo="$root/repo"; cfg="$root/profile"
+    mkdir -p "$repo/.claude/commands" "$cfg/commands"
+    $G init -q "$repo"
+    printf 'wrap v1\n' > "$repo/.claude/commands/wrap.md"
+    printf 'next v1\n' > "$repo/.claude/commands/next.md"
+    ( cd "$repo" && $G add -A && $G commit -qm v1 )
+    printf 'wrap v2\n' > "$repo/.claude/commands/wrap.md"
+    ( cd "$repo" && $G add -A && $G commit -qm v2 )
+  }
+  run_() { CLAUDE_CONFIG_DIR="$cfg" bash "$LC" "$@" 2>&1; }
+
+  # --- the clean case: profile identical to the repo -> link
+  setup_
+  cp "$repo/.claude/commands/wrap.md" "$repo/.claude/commands/next.md" "$cfg/commands/"
+  rc=0; out="$(run_ "$repo")" || rc=$?
+  assert_eq "linking an identical profile: exit 0" "0" "$rc"
+  rc=0; CLAUDE_CONFIG_DIR="$cfg" bash "$LC" --status "$repo" >/dev/null 2>&1 || rc=$?
+  assert_eq "--status then reports linked" "0" "$rc"
+  # the point of the whole exercise: a new file in the repo is visible at once, no sync step
+  printf 'third\n' > "$repo/.claude/commands/third.md"
+  assert_eq "a new repo file appears in the profile immediately" "1" \
+    "$([[ -f "$cfg/commands/third.md" ]] && echo 1 || echo 0)"
+  out="$(run_ "$repo")"
+  if printf '%s\n' "$out" | grep -q 'already linked'; then ok "a second run is idempotent"
+  else bad "a second run is idempotent" "$out"; fi
+
+  # --- undo, and it must work without a repo: that is when you need it most
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" CC_COMMANDS_REPO= bash "$LC" --unlink 2>&1)" || rc=$?
+  assert_eq "--unlink without a repo argument: exit 0" "0" "$rc"
+  assert_eq "--unlink leaves a real folder with the files" "1" \
+    "$([[ -f "$cfg/commands/wrap.md" ]] && ! is_link_ "$cfg/commands" && echo 1 || echo 0)"
+
+  # --- a file that exists only in the profile would vanish behind the link -> refuse
+  setup_
+  cp "$repo/.claude/commands/wrap.md" "$cfg/commands/"
+  printf 'local only\n' > "$cfg/commands/local.md"
+  rc=0; out="$(run_ "$repo")" || rc=$?
+  assert_eq "a profile-only file: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'local.md exists only in the profile'; then
+    ok "it names the file that would be lost"
+  else bad "it names the file that would be lost" "$out"; fi
+  assert_eq "and nothing was touched" "1" \
+    "$([[ -f "$cfg/commands/local.md" ]] && ! is_link_ "$cfg/commands" && echo 1 || echo 0)"
+
+  # --- a changed profile version that is in no commit carries unsaved work -> refuse
+  setup_
+  printf 'wrap CHANGED BY HAND\n' > "$cfg/commands/wrap.md"
+  rc=0; out="$(run_ "$repo")" || rc=$?
+  assert_eq "unsaved changes in the profile: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'in NO commit'; then ok "it says why it refuses"
+  else bad "it says why it refuses" "$out"; fi
+  assert_eq "and did not link" "0" "$(is_link_ "$cfg/commands" && echo 1 || echo 0)"
+
+  # --- an OLDER COMMITTED version may pass: its content is in the history, nothing is lost
+  setup_
+  printf 'wrap v1\n' > "$cfg/commands/wrap.md"
+  rc=0; out="$(run_ "$repo")" || rc=$?
+  assert_eq "an older committed version: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -q 'older committed version'; then ok "it says it supersedes it"
+  else bad "it says it supersedes it" "$out"; fi
+  assert_eq "the profile now shows the repo version" "1" \
+    "$(cmp -s "$cfg/commands/wrap.md" "$repo/.claude/commands/wrap.md" && echo 1 || echo 0)"
+
+  # --- a link to somewhere else belongs to someone else -> do not touch it
+  setup_
+  mkdir -p "$root/other"; cp "$repo/.claude/commands/wrap.md" "$root/other/"
+  rm -rf "$cfg/commands"; mklink_ "$cfg/commands" "$root/other"
+  rc=0; out="$(run_ "$repo")" || rc=$?
+  assert_eq "a link pointing elsewhere: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'already points elsewhere'; then ok "it names the other target"
+  else bad "it names the other target" "$out"; fi
+
+  # --- an empty repo folder would produce an empty profile -> refuse
+  setup_
+  rm -f "$repo"/.claude/commands/*.md
+  rc=0; out="$(run_ "$repo")" || rc=$?
+  assert_eq "an empty target: exit 1" "1" "$rc"
+
+  # --- and what the reporter makes of it: silent when linked, one line when not
+  setup_
+  mkdir -p "$repo/launcher"
+  cp "$ROOT/launcher/_lib.sh" "$ROOT/launcher/link-commands.sh" "$repo/launcher/"
+  cp "$repo/.claude/commands/wrap.md" "$repo/.claude/commands/next.md" "$cfg/commands/"
+  check_() { ( export CLAUDE_CONFIG_DIR="$cfg"
+               # shellcheck source=/dev/null
+               source "$repo/launcher/_lib.sh"; cc_check_commands 2>&1 ) }
+  out="$(check_)"
+  if printf '%s\n' "$out" | grep -q 'not linked'; then ok "unlinked: the reporter says so even at parity"
+  else bad "unlinked: the reporter says so even at parity" "$out"; fi
+  run_ "$repo" >/dev/null 2>&1
+  out="$(check_)"
+  assert_eq "linked: the reporter stays silent" "" "$out"
+
+  unset -f mklink_ is_link_ setup_ run_ check_
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   commands) test_commands ;;
+  linkcommands) test_linkcommands ;;
   canonicalise) test_canonicalise ;;
   indexrename) test_indexrename ;;
   movesnotice) test_movesnotice ;;
@@ -3094,7 +3221,7 @@ case "${1:-all}" in
   linkmemory) test_linkmemory ;;
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 

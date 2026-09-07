@@ -352,8 +352,44 @@ six weeks in a version six weeks old for exactly that reason; the current one wa
 unused. Nothing looks broken: the profile under `~/.claude/` does not travel, and nobody
 compares it by hand.
 
-`cc_check_commands` compares the two once per start run (a machine state, not a per-project
-one) and reports three cases, staying silent otherwise:
+**The fix is a link, not a better report.** `link-commands.sh` turns `~/.claude/commands` into
+a junction to `<repo>/.claude/commands`, so there is only ONE file: a `git pull` puts new
+commands in front of every session on the machine, and editing a ritual file *is* editing the
+working tree — it shows up in `git status` and travels with the next commit.
+
+```bash
+bash launcher/link-commands.sh            # link (idempotent)
+bash launcher/link-commands.sh --status   # 0 = linked, 10 = not linked
+bash launcher/link-commands.sh --unlink   # undo: copy the content back into the profile
+```
+
+Link once per machine. The tool refuses while anything is in the way: a file that exists only
+in the profile would become invisible behind the link (abort, it names the file); a changed
+profile version that is in no commit carries work saved nowhere (abort, with the `diff` to
+run). Only an *older committed* version may pass, because its content is in the history and
+nothing is lost. The old folder is moved aside rather than deleted, the result is verified
+THROUGH the link, and a failed verification rolls back.
+
+**Why not simply report it?** Because that was the first answer, and it was not enough. The
+reporter below works — it correctly announced `wrap.md: OUTDATED` with a ready-made `cp`, and
+the profile on the second machine was still **eight days old**. Reporting does not replace
+pulling across. The timing makes it worse: you edit a ritual file while busy with something
+else, i.e. in a single session started by hand, whereas the reporter runs at the fleet start —
+the one moment when nobody is editing one. A `SessionStart` hook would not have fixed that but
+doubled it: `settings.json` is itself a profile file and travels no better than what it reports.
+
+**A reporter is a procedure; a link is a state.** What does not change on its own may be checked
+rarely — which is why "is it linked?" is fine at the fleet start, although "are the contents
+equal?" was already too late there.
+
+Two consequences worth knowing. Commands that were repo-only and worked through `--add-dir`
+become visible everywhere once linked. And without a working clone of the repository there are
+no commands at all — the same bet the memory link takes.
+
+Where a profile is **not** linked, `cc_check_commands` still compares the two once per start
+run (a machine state, not a per-project one) and reports three cases, staying silent otherwise
+— plus one line naming `link-commands.sh`, even at parity, because parity only means the
+divergence has not happened yet. Where the profile **is** linked, it says nothing at all:
 
 | | |
 |---|---|

@@ -35,6 +35,20 @@ commit it names will say why.
   field.
 
 ### Added
+- **`launcher/link-commands.sh`: link the profile's slash-command folder to the repository
+  copy** instead of reconciling two versions of it. `~/.claude/commands/*.md` are ritual texts
+  that every session executes, and they live in the machine profile, which does not travel — a
+  change applies only where it was typed, with no diff pointing at it and no push that could
+  fail. Once linked there is one file: a `git pull` puts new commands in front of every session
+  on the machine, and editing one shows up in `git status` and travels with the next commit.
+  `--status` reports the state (0 linked, 10 not linked), `--unlink` undoes it, `-n` shows what
+  would happen. The tool refuses while anything is in the way: a file that exists only in the
+  profile would become invisible behind the link, and a changed profile version that is in no
+  commit carries work saved nowhere — only an *older committed* version may pass, decided by
+  blob hash rather than mtime. The old folder is moved aside, not deleted, and a failed
+  verification through the link rolls back. `cc_check_commands` now stays silent where the
+  profile is linked, and otherwise adds one line naming the tool — even at parity, because
+  parity only means the divergence has not happened yet.
 - `watch-bridge.sh --reap [--dry-run] [--all]`: kills orphaned `conhost.exe` consoles that
   keep spinning after a session ended. Eleven of them once held 3.7 of 4 cores for fourteen
   hours. `--status` reports them as well, and the arm reaps spinners on the way in. Load is

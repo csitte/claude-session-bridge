@@ -315,6 +315,25 @@ cc_check_commands() {
   [[ -d "$repo/.claude/commands" && -d "$glob" ]] || return 0
   git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
 
+  # If the profile is LINKED to the repo copy (link-commands.sh), there is only one version
+  # and comparing is moot -- stay quiet. Everything below describes the state before linking.
+  #
+  # Why linking exists although this reporter does: because it works and was not enough. In
+  # the field it reported `wrap.md: OUTDATED` with a ready-made `cp`, and the profile on the
+  # second machine was still eight days old. Reporting does not replace pulling across. And
+  # the fleet start, where this runs, is exactly the moment when nobody is editing a ritual
+  # file -- you do that in a single session you started by hand.
+  #
+  # Checked without PowerShell: `pwd -P` resolves the junction to its target. If the test
+  # comes out wrong, only the old comparison runs on -- that costs a line of output, never
+  # correctness.
+  local gp rp
+  gp="$(cd "$glob" 2>/dev/null && pwd -P)" || gp=""
+  rp="$(cd "$repo/.claude/commands" 2>/dev/null && pwd -P)" || rp=""
+  if [[ -n "$gp" && "$gp" == "$rp" ]]; then
+    return 0
+  fi
+
   for f in "$glob"/*.md; do
     [[ -f "$f" ]] || continue
     name="$(basename "$f")"
@@ -343,6 +362,17 @@ cc_check_commands() {
     fi
     n=$((n + 1))
   done
+
+  # While the profile is not linked, add a line about it -- even when everything matches,
+  # because that is exactly when the gap is invisible: matching only means the divergence
+  # has not happened yet. The line goes away for good once someone links; that is what
+  # separates it from a warning you dismiss every time.
+  local lc="$CC_SCRIPT_DIR/link-commands.sh"
+  if [[ -f "$lc" ]]; then
+    echo "[commands] profile not linked to the repo copy -- what you change here applies on" >&2
+    echo "           this machine only. Fix for good: bash $lc" >&2
+  fi
+
   CC_COMMANDS_FINDINGS="$n"
   return 0
 }
