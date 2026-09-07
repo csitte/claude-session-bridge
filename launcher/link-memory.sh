@@ -526,7 +526,7 @@ if (( retire )); then
   # of a comparison with a foreign memory. Observed once; what stopped it was the content conflict,
   # i.e. luck. The check below stops it on the substance: a loud failure beats a silent wrong match.
   # Compared by basename, lowercased like the id, never as a substring -- sibling ids share
-  # prefixes (`foo` next to `foo-product`), and a prefix test would pick the wrong folder.
+  # prefixes (`app` next to `app-product`), and a prefix test would pick the wrong folder.
   if [[ "$(basename "$neu" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$name" | tr 'A-Z' 'a-z')" ]]; then
     echo "[abort] the link for '$slug' points at '$neu' -- that does not belong to '--name $name'." >&2
     echo "        This would compare the sync folder of '$name' against a foreign memory." >&2

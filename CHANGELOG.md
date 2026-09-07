@@ -61,6 +61,13 @@ commit it names will say why.
   silently starting nothing.
 
 ### Fixed
+- **`--retire` now refuses when the linked memory does not belong to `--name`.** `--name` says
+  which sync folder is retired; the working directory says what it is checked against — and only
+  the second has a default (`.`). A call that left out `<repo-dir>` therefore compared one
+  project's sync folder against *another* project's memory, and retired it whenever the contents
+  happened to be a subset. It now aborts and prints the call with the project directory filled
+  in. Names are compared by basename, lowercased, never as a substring, so sibling ids such as
+  `app` and `app-product` cannot be confused.
 - **An arm whose session id cannot be determined no longer disappears from the inventory —
   and nothing is reaped around it.** Two checkouts sharing one `CLAUDE.md` have to pass the
   id as `$(head -1 .session-id)`, which stands unexpanded and without a path in the wrapper's
