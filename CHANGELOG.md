@@ -22,28 +22,6 @@ commit it names will say why.
   frameworks and protocols the large vendors ship (OpenAI Agents SDK, Microsoft Agent
   Framework, CrewAI, LangGraph, A2A, MCP) — including what those do better and when you
   should use them instead. No behaviour change; documentation only.
-
-### Changed
-- **The `#off` prefix is gone from the launcher config; the config is only the list.**
-  Which projects a fleet start opens is decided solely by `autostart.<host>.local` (written
-  by the session manager). If that file is missing on a machine, the fleet start starts
-  nothing, says so and opens the session manager (`cc_open_manager`); it is no longer seeded
-  from the config. A stale `#off` line in a config is a comment to bash and would hide the
-  entry silently — `cc_all_entries`, `start-one.sh` and the session manager now report such
-  lines instead of reading them. To migrate an existing config: make sure every machine has
-  its `autostart.<host>.local` (the previous version seeded it on the first run), then strip
-  the prefix: `sed -i 's/^\(\s*\)#off "/\1"/' projects.<host>.conf`.
-- **`--new-thread` now requires `--title "<title>"` and writes the cover sheet `thread.md`
-  itself** (`title:` and `created:`). Without a title nothing is created and the command
-  prints the form to use, with the caller's own arguments filled in. The forced number for a
-  fan-out is still a positional argument (`--new-thread <slug> --title "…" 069`). Reason: in a
-  live bridge 64 of 102 threads had no cover sheet, because writing it was a prose step after
-  the command. The title is a named option rather than a second positional argument so that
-  the old documented fan-out form fails out loud instead of silently turning `069` into a
-  title. No `participants:` is written — the command cannot know them, and nothing reads the
-  field.
-
-### Added
 - **`launcher/link-commands.sh`: link the profile's slash-command folder to the repository
   copy** instead of reconciling two versions of it. `~/.claude/commands/*.md` are ritual texts
   that every session executes, and they live in the machine profile, which does not travel — a
@@ -77,6 +55,24 @@ commit it names will say why.
   no longer changes a versioned file.
 
 ### Changed
+- **The `#off` prefix is gone from the launcher config; the config is only the list.**
+  Which projects a fleet start opens is decided solely by `autostart.<host>.local` (written
+  by the session manager). If that file is missing on a machine, the fleet start starts
+  nothing, says so and opens the session manager (`cc_open_manager`); it is no longer seeded
+  from the config. A stale `#off` line in a config is a comment to bash and would hide the
+  entry silently — `cc_all_entries`, `start-one.sh` and the session manager now report such
+  lines instead of reading them. To migrate an existing config: make sure every machine has
+  its `autostart.<host>.local` (the previous version seeded it on the first run), then strip
+  the prefix: `sed -i 's/^\(\s*\)#off "/\1"/' projects.<host>.conf`.
+- **`--new-thread` now requires `--title "<title>"` and writes the cover sheet `thread.md`
+  itself** (`title:` and `created:`). Without a title nothing is created and the command
+  prints the form to use, with the caller's own arguments filled in. The forced number for a
+  fan-out is still a positional argument (`--new-thread <slug> --title "…" 069`). Reason: in a
+  live bridge 64 of 102 threads had no cover sheet, because writing it was a prose step after
+  the command. The title is a named option rather than a second positional argument so that
+  the old documented fan-out form fails out loud instead of silently turning `069` into a
+  title. No `participants:` is written — the command cannot know them, and nothing reads the
+  field.
 - The process inventory behind `--status` is fetched once per run and cached for a few
   seconds, and it carries the live `claude` pids, so a `--status` opens one PowerShell
   console instead of two. Simultaneous arms are serialised through a local lock.
