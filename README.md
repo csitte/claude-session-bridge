@@ -16,6 +16,10 @@ measurements from that fleet, not estimates.
 Background: [*A running session is not a reachable session*](https://dev.to/csitte/a-running-session-is-not-a-reachable-session-34fc)
 — the three failure modes behind this design, in prose.
 
+New here? [docs/overview.md](docs/overview.md) explains the whole thing without shell: what it
+can do, one worked example of three sessions on two machines coordinating a breaking change
+on their own, and how this compares to the agent frameworks the large vendors ship.
+
 ## What that buys you
 
 These are the properties that made us stop looking for something else. Where one of them came
@@ -111,7 +115,8 @@ The watcher on top is pure latency reduction — see [docs/watcher.md](docs/watc
 ## Layout
 
 ```
-docs/protocol.md    the message format and the folding rules — start here
+docs/overview.md    what this is in plain words, with a worked example — start here
+docs/protocol.md    the message format and the folding rules
 docs/watcher.md     the push layer: arming, self-recognition, diagnosis
 docs/launcher.md    starting and stopping a fleet; the cold-start problem
 docs/lessons.md     what six weeks of operating this taught us (with numbers)
@@ -124,8 +129,9 @@ CONTRIBUTING.md     ground rules, and what a port to another platform would touc
 .github/workflows/  CI: shellcheck + suite on Linux, suite + analyzer on Windows
 ```
 
-If you read only one file after this one, read [docs/protocol.md](docs/protocol.md) — the
-channel is the part worth copying even if you never run a line of this code.
+If you read only one file after this one, read [docs/overview.md](docs/overview.md) if you are
+still deciding, and [docs/protocol.md](docs/protocol.md) if you are not — the channel is the part
+worth copying even if you never run a line of this code.
 
 ## Quickstart (bridge + watcher only)
 

@@ -14,6 +14,15 @@ commit it names will say why.
 
 ## Unreleased
 
+### Added
+- **`docs/overview.md` — what this is, in plain words.** A non-technical entry point for
+  readers who have not decided yet whether they want any of this: the four capabilities in
+  prose, one worked example of three sessions on two machines carrying a breaking change
+  between them without a human relaying anything, and an honest comparison with the agent
+  frameworks and protocols the large vendors ship (OpenAI Agents SDK, Microsoft Agent
+  Framework, CrewAI, LangGraph, A2A, MCP) — including what those do better and when you
+  should use them instead. No behaviour change; documentation only.
+
 ### Changed
 - **The `#off` prefix is gone from the launcher config; the config is only the list.**
   Which projects a fleet start opens is decided solely by `autostart.<host>.local` (written
