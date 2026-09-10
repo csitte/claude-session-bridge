@@ -54,6 +54,18 @@ commit it names will say why.
   the session manager and seeded once from the config's `#off` lines. Toggling a checkbox
   no longer changes a versioned file.
 
+### Fixed
+- **`cc_check_commands` compares places, not spellings.** It decided whether the profile is
+  linked to the repository copy by comparing two `pwd -P` results as strings. Git Bash mounts
+  `C:/Users/<user>/AppData/Local/Temp` as `/tmp` (type `usertemp`), so one place has two
+  spellings and `pwd -P` returns a different one depending on the way in — through the junction
+  `/tmp/x/target`, directly the long path. The reporter then said "not linked" immediately after
+  linking. It now asks `-ef` (same device and inode) first and keeps the string comparison as a
+  fallback. Harmless in the field, since neither `~/.claude` nor a repository lives under that
+  mount; visible in the suite, where one case went red whenever `TMPDIR` pointed there. The
+  function is now listed in the canonicalisation check that already covers every other
+  path-comparing function.
+
 ### Changed
 - **`docs/watcher.md`: read the whole fold output — the checks print above the table.** No
   behaviour change; the document now says why the advisory lines sit above the thread list and

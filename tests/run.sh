@@ -3044,22 +3044,46 @@ test_canonicalise() {
   # does it" the moment a caller is extracted. That is not hypothetical: this case went red
   # for exactly the right reason when cc_memory_path was split out of cc_memory_state.
   # Separator is '|', not ':' -- a Windows-style path in $ROOT would split on a colon.
-  local spec fn file want body missing=""
+  #
+  # The match ignores comment lines. A function that only MENTIONS the vocabulary in its
+  # prose passes otherwise, and the check then guards nothing: cc_check_commands explains
+  # `-ef` twice above the line that uses it, so deleting that line left the group green.
+  # Measured over all eight entries when this was added -- only that one had comment hits,
+  # the other seven matched code, so the group had been intact by luck rather than design.
+  canon_body_has_() { # <function> <file> <wanted text>
+    awk -v n="$1" 'index($0, n "() {")==1 {i=1} i {print} i && /^}/ {exit}' "$2" \
+      | grep -v '^[[:space:]]*#' | grep -qF -- "$3"
+  }
+  canon_body_found_() { # <function> <file> -- does the function exist at all
+    [[ -n "$(awk -v n="$1" 'index($0, n "() {")==1 {i=1} i {print} i && /^}/ {exit}' "$2")" ]]
+  }
+
+  local spec fn file want missing=""
   for spec in "cc_session_running|$ROOT/launcher/_lib.sh|pwd -P" \
               "cc_has_transcript|$ROOT/launcher/_lib.sh|pwd -P" \
               "cc_memory_path|$ROOT/launcher/_lib.sh|pwd -P" \
               "cc_memory_state|$ROOT/launcher/_lib.sh|cc_memory_path" \
               "cc_memory_pull|$ROOT/launcher/_lib.sh|cc_memory_path" \
+              "cc_check_commands|$ROOT/launcher/_lib.sh|-ef" \
               "norm|$ROOT/launcher/link-memory.sh|pwd -P" \
               "id_from_table|$ROOT/launcher/link-memory.sh|norm "; do
     fn="${spec%%|*}"; file="${spec#*|}"; want="${file#*|}"; file="${file%%|*}"
     # index() instead of a dynamic regex: escaping ( ) { inside an awk string is a trap of
     # its own (it cost two attempts here), and a plain-text match is what is meant anyway.
-    body="$(awk -v n="$fn" 'index($0, n "() {")==1 {i=1} i {print} i && /^}/ {exit}' "$file")"
-    [[ -n "$body" ]] || { missing+="$fn (not found) "; continue; }
-    printf '%s' "$body" | grep -qF "$want" || missing+="$fn "
+    canon_body_found_ "$fn" "$file" || { missing+="$fn (not found) "; continue; }
+    canon_body_has_ "$fn" "$file" "$want" || missing+="$fn "
   done
   assert_eq "every path-comparing function canonicalises (or delegates to one that does)" "" "$missing"
+
+  # (B) must be able to fail the same way (A) can -- and the probe runs through the SAME
+  # function, not a copy of its logic. A copy is what made an earlier rule-parity check
+  # worthless here: it stayed green against the mutation it was written for.
+  local probe2="$TMPROOT/canon-comment.$RANDOM.sh"
+  { printf 'f() {\n'; printf '  # this one talks about pwd -P but never runs it\n';
+    printf '  echo "$1"\n'; printf '}\n'; } > "$probe2"
+  if canon_body_has_ f "$probe2" 'pwd -P'; then
+    bad "vocabulary in a comment does not count as canonicalising" "comment counted as code"
+  else ok "vocabulary in a comment does not count as canonicalising"; fi
 
   # the check must be able to fail, or it guards nothing
   local probe="$TMPROOT/canon.$RANDOM.sh"

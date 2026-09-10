@@ -324,9 +324,23 @@ cc_check_commands() {
   # the fleet start, where this runs, is exactly the moment when nobody is editing a ritual
   # file -- you do that in a single session you started by hand.
   #
-  # Checked without PowerShell: `pwd -P` resolves the junction to its target. If the test
-  # comes out wrong, only the old comparison runs on -- that costs a line of output, never
-  # correctness.
+  # Compare the two PLACES, not their spellings: `-ef` asks for device and inode, is true
+  # through a junction or symlink, and stays false for a link that points somewhere else
+  # (five cases measured, negative controls included).
+  #
+  # Why not the string comparison alone: Git Bash mounts
+  # C:/Users/<user>/AppData/Local/Temp as /tmp (type usertemp). One place then has two
+  # spellings, and `pwd -P` returns a different one depending on the way in -- through the
+  # junction /tmp/x/target, directly the long path. The reporter said "not linked" right
+  # after linking. Harmless in the field (neither ~/.claude nor the repositories live
+  # there), but it turned one test red whenever TMPDIR pointed at that mount.
+  #
+  # The string comparison stays below as a fallback: `-ef` needs both sides to exist, and
+  # if either test comes out wrong, only the old path runs on -- that costs a line of
+  # output, never correctness.
+  if [[ -e "$glob" && "$glob" -ef "$repo/.claude/commands" ]]; then
+    return 0
+  fi
   local gp rp
   gp="$(cd "$glob" 2>/dev/null && pwd -P)" || gp=""
   rp="$(cd "$repo/.claude/commands" 2>/dev/null && pwd -P)" || rp=""
