@@ -33,6 +33,28 @@ other than `DONE` — slug, status, youngest message. Exit code 0 even when the 
 non-zero only when the bridge itself is missing. The allow-rule for arming
 (`Bash(bash …/watch-bridge.sh:*)`) already covers it, so a session can run it unattended.
 
+**Read the whole output — the checks print above the table.** Every advisory line (WARNUNG,
+ACHTUNG, HINWEIS, VERDACHT, `Namensform:`, `Stempel:`, `Threadnummer:`) is printed *before* the
+thread list, deliberately so: a warning placed after somebody's inbox is a warning nobody
+reads. A `| tail -N` on the fold therefore removes exactly the findings while leaving the exit
+code at 0. Both of our maintainer sessions did this on the same morning, independently. One
+lost a `Namensform:` line that sat in **line 2** and was reported from the outside eleven
+minutes later; the other missed a duplicate thread number that had been printed at the top of
+*every* fold for two days. The first case had a second route to the same finding — the
+consequence was visible in the thread list, which `tail` leaves intact. The second had none,
+and a filter that gets away with it once buys exactly the confidence that is worthless the
+next time.
+
+> A filter on your own diagnostic tool silently disables it. The choice of which findings to
+> see gets made before you know what they are.
+
+If you must shorten the output, filter on the signal words, never on a position:
+
+```bash
+bash …/watch-bridge.sh --fold <id> \
+  | grep -E 'WARNUNG|ACHTUNG|HINWEIS|VERDACHT|Namensform|Stempel|Threadnummer|^THREAD|^[0-9]'
+```
+
 **Why a command, and not an instruction to "fold the threads".** Every session used to
 improvise its own loop. On a cloud-sync folder that is not merely inelegant: each file
 access triggers a fetch round, and two of our sessions hit the two-minute tool timeout on

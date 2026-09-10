@@ -55,6 +55,13 @@ commit it names will say why.
   no longer changes a versioned file.
 
 ### Changed
+- **`docs/watcher.md`: read the whole fold output — the checks print above the table.** No
+  behaviour change; the document now says why the advisory lines sit above the thread list and
+  what a `| tail -N` on the fold costs. Both maintainer sessions filtered their own diagnostic
+  that way on the same morning, independently: one lost a `Namensform:` warning from line 2 and
+  heard about it from the outside eleven minutes later, the other missed a duplicate thread
+  number that every fold had printed at the top for two days. Includes the filter form that
+  survives — signal words, never a position.
 - **The `#off` prefix is gone from the launcher config; the config is only the list.**
   Which projects a fleet start opens is decided solely by `autostart.<host>.local` (written
   by the session manager). If that file is missing on a machine, the fleet start starts
