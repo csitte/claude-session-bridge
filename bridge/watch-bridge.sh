@@ -728,8 +728,14 @@ delivery_state() { # $1 = id
     [[ "$kind" == script ]] && seen_script=1
     [[ "$kind" == wrapper && "$under" == 1 ]] && delivering=1
   done < <(watcher_inventory)
-  if   [[ $delivering -eq 1 ]]; then echo delivering
-  elif [[ $seen_script -eq 1 ]]; then echo stale
+  # Delivering means BOTH halves: a live wrapper under claude.exe AND a script of that id.
+  # A wrapper whose script has died delivers nothing -- and until 2026-09-14 this answered
+  # "delivering" for it, which silenced arm_hint, the one reminder every session reads at
+  # startup, in precisely the case it exists for. A shell on its own is a remnant, and is
+  # reported as one: the advice that goes with "stale" -- arm now, the arm clears it --
+  # is exactly right for it.
+  if   [[ $delivering -eq 1 && $seen_script -eq 1 ]]; then echo delivering
+  elif [[ $seen_script -eq 1 || $delivering -eq 1 ]]; then echo stale
   else echo none; fi
 }
 
@@ -1422,7 +1428,7 @@ handle_existing() {
   done
 
   local kind id pid age under started
-  local delivering=0 script_pid="" unattributable=0
+  local delivering=0 script_pid="" unattributable=0 wrapper_live=0
   local -a stale=() spin=()
   while IFS='|' read -r kind id pid age under started; do
     # An arm whose id cannot be determined: it may be the wrapper of the very process we
@@ -1439,10 +1445,26 @@ handle_existing() {
     [[ "$kind" == script || "$kind" == wrapper ]] || continue
     [[ "${id:-}" == "$me" ]] || continue
     [[ "${age:-0}" -gt 30 ]] || continue
-    [[ "$kind" == wrapper && "$under" == 1 ]] && delivering=1
+    [[ "$kind" == wrapper && "$under" == 1 ]] && wrapper_live=1
     [[ "$kind" == script ]] && script_pid="$pid"
     stale+=("$pid")
   done < <(watcher_inventory)
+
+  # "Delivering" here means what it means in --status: a wrapper under claude.exe AND a
+  # script of the same id. Until 2026-09-14 the wrapper alone was enough -- and a wrapper
+  # whose script is dead delivers nothing. A session hit exactly that on 2026-09-11: the
+  # first arm stepped aside with "already delivering (PID ?)", --status said "no watcher"
+  # four minutes later, and the session received nothing until it was armed a second time
+  # by hand.
+  #
+  # This is the MIRROR IMAGE of the id-less-arm case, not a repeat of it: there a live arm
+  # counted as a remnant and was cleared, here a remnant counted as live. That decision is
+  # untouched -- arms without a determinable id are already out via `continue` above, so
+  # wrapper_live never sees them.
+  #
+  # The 30-second filter above covers the startup case: an arm whose wrapper is up and
+  # whose script is still coming is younger than 30s and is not considered at all.
+  [[ $wrapper_live -eq 1 && -n "$script_pid" ]] && delivering=1
 
   # ALWAYS reap spinners -- even if this arm is about to step aside. They have nothing
   # to do with delivery, and every second costs CPU time.
@@ -1457,9 +1479,19 @@ handle_existing() {
     [[ $locked -eq 1 ]] && rmdir "$lock" 2>/dev/null
     # Deliberately stdout: this is the only notification this arm produces, and it
     # explains to the fresh context why its monitor ends immediately.
-    echo "watch-bridge: a watcher for '$me' is already delivering (PID ${script_pid:-?}) —" \
+    # No more ${script_pid:-?}: given the condition above the pid cannot be empty here.
+    # That "?" was the only visible trace of the bug, and it sat in a sentence that gives
+    # the all-clear.
+    echo "watch-bridge: a watcher for '$me' is already delivering (PID $script_pid) —" \
          "this arm ends, delivery continues unchanged."
     exit 0
+  fi
+
+  # A shell without its script. Until 2026-09-14 this was the silent step-aside above.
+  # Now this arm takes over -- and says what it found, or the repair would be invisible.
+  if [[ $wrapper_live -eq 1 && -z "$script_pid" ]]; then
+    echo "watch-bridge: found a shell without its script for '$me' — it delivers nothing." >&2
+    echo "              This arm takes over." >&2
   fi
 
   # Reap only when the situation is UNAMBIGUOUS. If an arm without a determinable id is

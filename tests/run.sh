@@ -1731,6 +1731,39 @@ STUB
   assert_eq "arm: silent remnant and spinner reaped, the idle leftover left alone" "-Id 900
 -Id 111" "$(cat "$log")"
 
+  # A SHELL WITHOUT ITS SCRIPT -- the mirror image of the case above, reported from the
+  # field on 2026-09-11. A wrapper under claude.exe whose script is gone delivers nothing,
+  # yet both safety nets used to read it as "fine", and for the same reason: they asked
+  # for the wrapper alone.
+  #   * the arm stepped aside with "already delivering (PID ?)" -- the session then sat
+  #     there receiving nothing until someone armed a second time by hand;
+  #   * delivery_state answered "delivering", so arm_hint -- the one reminder every
+  #     session reads at startup -- stayed silent in exactly the case it exists for.
+  # The question both must ask is the one --status already asked: wrapper AND script.
+  cat > "$W/bin/powershell.exe" <<STUB
+#!/usr/bin/env bash
+if printf '%s' "\$*" | grep -q 'Stop-Process'; then
+  printf '%s\n' "\$*" | grep -oE -- '-Id [0-9,]+' >> '$log'
+  exit 0
+fi
+cat <<'INV'
+wrapper|app|112|500|1|09-01 10:00
+claudepid|-|4242|0|0|
+INV
+STUB
+  chmod +x "$W/bin/powershell.exe"; : > "$log"
+  out="$( ( export PATH="$W/bin:$PATH" WATCH_BRIDGE_INV_TTL=0 SESSION_BRIDGE_DIR="$(new_bridge)"
+           unset WATCH_BRIDGE_NO_REAP; timeout 3 bash "$WATCHER" app 1 2>&1 ) )"
+  if printf '%s\n' "$out" | grep -q 'already delivering'; then
+    bad "arm: a shell without its script does NOT count as delivering" "$out"
+  else ok "arm: a shell without its script does NOT count as delivering"; fi
+  if printf '%s\n' "$out" | grep -qi 'shell without'; then ok "... and the arm says what it found"; else bad "... and the arm says what it found" "$out"; fi
+  assert_eq "arm: the dead shell is reaped" "-Id 112" "$(cat "$log")"
+
+  out="$( ( export PATH="$W/bin:$PATH" WATCH_BRIDGE_INV_TTL=0 SESSION_BRIDGE_DIR="$(new_bridge)"
+           bash "$WATCHER" --fold app 2>&1 ) )"
+  if printf '%s\n' "$out" | grep -q 'ACHTUNG\|ATTENTION'; then ok "--fold: the arm reminder fires for a shell without its script"; else bad "--fold: the arm reminder fires for a shell without its script" "$out"; fi
+
   # Every consumer of the inventory filters on script/wrapper explicitly -- a structural
   # check, because a missing filter shows only when the new kinds actually occur.
   local body missing=""

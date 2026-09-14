@@ -55,6 +55,21 @@ commit it names will say why.
   no longer changes a versioned file.
 
 ### Fixed
+- **A shell without its script no longer counts as delivering.** `watch-bridge.sh <id>`
+  treated a live wrapper under `claude.exe` as proof that a watcher was delivering, without
+  requiring a script process of that id. A wrapper whose script has died delivers nothing,
+  so the new arm stepped aside — printing `already delivering (PID ?)` — and the session
+  received no pushes at all until someone armed it a second time by hand. `--status` said
+  "no watcher" for the same machine state at the same moment, because it has always required
+  a script. Both now ask the same question: wrapper **and** script. This is the mirror image
+  of the id-less-arm case fixed earlier (there a live arm was mistaken for a remnant); that
+  behaviour is unchanged, since arms without a determinable id never reach this test.
+
+  The same wrong test sat in `delivery_state`, and therefore in the arm reminder printed as
+  the **last line of every `--fold`** — the one reminder every session reads at startup. It
+  stayed silent for a shell without its script, i.e. in exactly the failure it exists to
+  catch. If you change what "delivering" means, change all three readers:
+  `handle_existing`, `delivery_state`, `status_report`.
 - **`cc_check_commands` compares places, not spellings.** It decided whether the profile is
   linked to the repository copy by comparing two `pwd -P` results as strings. Git Bash mounts
   `C:/Users/<user>/AppData/Local/Temp` as `/tmp` (type `usertemp`), so one place has two
