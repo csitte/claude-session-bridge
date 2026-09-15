@@ -90,6 +90,13 @@ post_state() { # $1=bridge $2=thread $3=name $4=from $5=sets-owner $6=sets-statu
   printf -- '---\nfrom: %s\nto: someone\ntype: reply\ndate: 2026-01-01T00:00:00Z\nsets-owner: %s\nsets-status: %s\n---\n\nbody\n' \
     "$4" "$5" "$6" > "$1/threads/$2/msgs/$3.md"
 }
+# A filename stamp N days in the past. Fixtures for anything that compares against the
+# CURRENT date must be relative, or the test passes today and fails in three months -- the
+# first version of the fold-age tests used fixed January dates and went red the same day.
+daysago() { # $1 = days back -> YYYY-MM-DDTHHMMSSZ
+  date -u -d "$1 days ago" +%Y-%m-%dT%H%M%SZ 2>/dev/null     || date -u -v-"$1"d +%Y-%m-%dT%H%M%SZ 2>/dev/null
+}
+
 post_status_only() { # $1=bridge $2=thread $3=name $4=sets-status ('' = no sets-* at all)
   mkdir -p "$1/threads/$2/msgs"
   {
@@ -362,6 +369,74 @@ test_watcher() {
   if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'NOTE:'; then
     bad "--fold prints no owner note when there is nothing to report"
   else ok "--fold prints no owner note when there is nothing to report"; fi
+
+  # --- Threads owned by a participant who has no session of their own ---------
+  # The fold folds on `owner == me`. Anyone without a session never folds, so their
+  # threads fall through every net — no push (not running), no fold (never folds) — while
+  # the owner field makes it look as if somebody is on it. In the bridge this was written
+  # for, six such threads existed and four had been sitting for a week.
+  head_ "watcher: --fold can stand in for a participant with no session"
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  export WATCH_BRIDGE_SETTLE=0
+  # Relative dates -- the age is computed against today (see daysago).
+  post_state "$b" 001-mine   "$(daysago 1)__other__a1" other app   OPEN
+  post_state "$b" 002-human  "$(daysago 9)__app__b1"   app   human OPEN
+  post       "$b" "$(daysago 2)__other__b2" other human 002-human
+  post_state "$b" 003-human  "$(daysago 4)__app__c1"   app   human OPEN
+  post_state "$b" 004-closed "$(daysago 6)__app__d1"   app   human DONE
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q 'WAITING ON\|WARTET AUF'; then
+    bad "no proxy block without the variable" "$fold"
+  else ok "no proxy block without the variable"; fi
+
+  fold="$(WATCH_BRIDGE_VERTRITT=human bash "$WATCHER" --fold app 2>/dev/null)"
+  assert_eq "the proxy block lists the open threads of that participant, oldest first" \
+    "002-human 003-human" \
+    "$(printf '%s\n' "$fold" | sed -n 's/^  \(00[0-9]-human\) .*/\1/p' | paste -sd' ' -)"
+  if printf '%s\n' "$fold" | grep -qE '^  004-closed'; then
+    bad "a DONE thread of that participant is not listed" "$fold"
+  else ok "a DONE thread of that participant is not listed"; fi
+  # The age is that of the HANDOVER, not of the last message: 002-human was handed over 9
+  # days ago and last written to 2 days ago. Reporting the newer date would make a thread
+  # look fresher every time somebody comments on it without acting on it.
+  if printf '%s\n' "$fold" | grep -qE '^  002-human +9 d'; then
+    ok "the age is measured from the handover, not the last message"
+  else bad "the age is measured from the handover, not the last message" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -qE '^  002-human .*other'; then
+    ok "... and the last writer is named"
+  else bad "... and the last writer is named" "$fold"; fi
+  assert_eq "the proxy block leaves the thread list alone" "001-mine" \
+    "$(printf '%s\n' "$fold" | awk '/^[0-9]/ {print $1}' | paste -sd' ' -)"
+
+  # --- Threads I write in but do not own --------------------------------------
+  # Same blind spot from the other side: a thread I work in, that is not mine, is invisible
+  # in my fold even when six messages have arrived since I last wrote.
+  head_ "watcher: --fold points at threads I participate in but do not own"
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  post_state "$b" 001-mine "$(daysago 1)__other__a1" other app OPEN
+  # 005-joined: app wrote 3 days ago, then two others did.
+  post_state "$b" 005-joined "$(daysago 9)__other__e1" other other OPEN
+  post       "$b" "$(daysago 3)__app__e2"   app   other 005-joined
+  post       "$b" "$(daysago 2)__other__e3" other other 005-joined
+  post       "$b" "$(daysago 1)__third__e4" third other 005-joined
+  # 006-stale: app wrote long ago; the age filter must drop this one.
+  post_state "$b" 006-stale "$(daysago 45)__other__f1" other other OPEN
+  post       "$b" "$(daysago 40)__app__f2"  app   other 006-stale
+  post       "$b" "$(daysago 1)__other__f3" other other 006-stale
+  # 007-quiet: app wrote last — nothing new from anyone else.
+  post_state "$b" 007-quiet "$(daysago 9)__other__g1" other other OPEN
+  post       "$b" "$(daysago 1)__app__g2" app other 007-quiet
+  fold="$(WATCH_BRIDGE_TEILNAHME_TAGE=7 bash "$WATCHER" --fold app 2>/dev/null)"
+  assert_eq "only threads I wrote in recently, with newer messages from others" \
+    "005-joined" \
+    "$(printf '%s\n' "$fold" | sed -n 's/^  \(00[0-9]-[a-z]*\) .*new.*/\1/p' | paste -sd' ' -)"
+  if printf '%s\n' "$fold" | grep -qE '^  005-joined +2 '; then
+    ok "... and counts only the messages that are not mine"
+  else bad "... and counts only the messages that are not mine" "$fold"; fi
+  fold="$(WATCH_BRIDGE_TEILNAHME_TAGE=0 bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q 'MITGESCHRIEBEN\|PARTICIPATED'; then
+    bad "0 switches the participation check off" "$fold"
+  else ok "0 switches the participation check off"; fi
 
   head_ "watcher: filenames that do not sort (the name is what folds)"
   b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety

@@ -15,6 +15,22 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **`--fold` can stand in for a participant who has no session
+  (`WATCH_BRIDGE_VERTRITT=<id>[,<id>]`).** The fold folds on `owner == me`, so anyone without
+  a session of their own never folds and their threads fall through every net -- no push,
+  no fold -- while the owner field makes it look as though somebody is on it. Common enough
+  to matter: the human who decides in conversation, a mailbox, an external party. In the
+  fleet this was written for, six threads were waiting on one human and four had been
+  sitting for a week. Off by default, because a session that does not bundle decisions
+  cannot act on someone else's question. Prints thread, waiting time and last writer, oldest
+  first; the waiting time is the age of the handover, not of the last message.
+- **`--fold` names threads you write in but do not own
+  (`WATCH_BRIDGE_TEILNAHME_TAGE`, default 7, `0` disables).** The same blind spot from the
+  other side. A complete working conversation between two sessions once ran past a third for
+  seventeen hours -- including a handover it needed -- although it was in the `cc:` of every
+  message. The age filter is what makes this usable rather than noisy: without it one thread
+  showed up with 61 new messages for a session that had left it 20 days earlier, and with 2
+  for a session still in it. Median across six sessions: 1 thread, maximum 8.
 - **`docs/overview.md` — what this is, in plain words.** A non-technical entry point for
   readers who have not decided yet whether they want any of this: the four capabilities in
   prose, one worked example of three sessions on two machines carrying a breaking change

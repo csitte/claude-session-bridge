@@ -668,6 +668,63 @@ instead of archive-ripeness, working directory instead of registry, sync lag ins
 index. All three tools do something useful; they only name the **reason** wrongly — and the
 reason is what the reader acts on.
 
+### The fold can stand in for a participant who has no session
+
+The fold folds on `owner == me`. Anyone **without a session of their own never folds**, so
+their threads fall through every net: no push (they are not running), no fold (they never
+fold) — and from the outside it looks as though somebody is on it, because the owner field
+is filled in. The value is right; the label promises work that nobody is doing.
+
+This is worth stating because such a participant is common: the human who decides in
+conversation, a mailbox, an external party someone relays to. In the fleet this was written
+for, six open threads were waiting on one human, and four had been sitting for a week before
+anyone noticed.
+
+```bash
+WATCH_BRIDGE_VERTRITT=chris bash watch-bridge.sh --fold coordinator
+```
+
+Several ids separated by commas. **Off by default**, and deliberately: a session that does
+not bundle decisions cannot act on somebody else's question, and a line you cannot act on is
+noise — the same reasoning as for the ownerless-thread note, which only appears where an
+action follows. An id in the code instead of a variable would be wrong for every other
+deployment.
+
+Printed are thread, **waiting time** and the last writer, oldest first. The waiting time is
+the age of the **handover** (`sets-owner`), not of the last message — otherwise a thread
+looks fresher every time somebody comments on it without acting on it.
+
+### The fold names threads you write in but do not own
+
+The same blind spot from the other side: a thread you work in, that is not yours, is
+invisible in your fold even when messages keep arriving. In the fleet this was written for,
+a complete working conversation between two sessions ran past a third for seventeen hours —
+including a handover with exactly the material it needed — although it was named in the
+`cc:` of every message. It surfaced by coincidence.
+
+The check reports open threads where you have written, that are not yours, and where others
+have written since. **The age filter carries the rest** (default 7 days,
+`WATCH_BRIDGE_TEILNAHME_TAGE`, `0` switches it off). Without it the hint also reports
+threads you left long ago: measured across six sessions, one thread appeared with **61** new
+messages for a session whose own last message was **20 days** old — pure noise — while the
+same thread appeared with **2** for a session that had written that morning. Same rule, two
+verdicts: the threshold separates *still in this* from *was in this once*. Median across
+those sessions: 1 thread, maximum 8.
+
+A thread whose date cannot be read is **not** reported — the check would otherwise be
+loudest exactly where the filenames are broken.
+
+Two traps worth repeating, both hit while building this:
+
+1. **The author is the field between the second and third `__`, with no assumption about
+   the suffix.** A pattern ending in `[0-9a-f]+` missed 47 of 1245 files (`__ack1.md`,
+   `__cam1.md`); the protocol says the suffix is free. What caught it was a **second,
+   differently built measurement** that had been written off as redundant and finished in
+   the background.
+2. **Fixtures for anything that compares against *today* must use relative dates.** The
+   first version of these tests used fixed dates and went red the same day. `tests/run.sh`
+   has `daysago <n>` for this.
+
 ## Creating a thread: `--new-thread <slug> --title "<title>" [nr]`
 
 Creates `threads/<NNN>-<slug>/msgs`, writes the cover sheet `thread.md` and prints the folder

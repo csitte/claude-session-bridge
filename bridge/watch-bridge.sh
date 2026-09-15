@@ -321,12 +321,20 @@ fold_report() {
       { grep -rHm1 --include='*.md' '^sets-owner:'  . 2>/dev/null | sed 's/^/O:/'
         grep -rHm1 --include='*.md' '^sets-status:' . 2>/dev/null | sed 's/^/S:/'
         find . -mindepth 3 -maxdepth 3 -path './*/msgs/*.md' 2>/dev/null | sed 's/^/L:/'
-      } | tr -d '\r' | awk -v me="$me" '
+      } | tr -d '\r' | awk -v me="$me" -v vert="${WATCH_BRIDGE_VERTRITT:-}" '
         { k=substr($0,1,1); rest=substr($0,3)
           if (k=="L") path=rest; else { i=index(rest,":"); path=substr(rest,1,i-1); rest=substr(rest,i+1) }
           n=split(path, p, "/"); slug=p[2]; file=p[n]        # p[1]="." from the leading ./
           if (slug ~ /^_/) next
-          if (k=="L") { if (file>last[slug]) last[slug]=file; next }
+          if (k=="L") { if (file>last[slug]) last[slug]=file
+                        alle[slug]=alle[slug] " " file
+                        # The author is the field between the second and third "__" --
+                        # NO assumption about the suffix. In our own bridge 47 of 1245
+                        # files carry a non-hex one (`__ack1.md`, `__cam1.md`), and the
+                        # protocol says the suffix is free. The test includes the
+                        # separators so `__app__` never matches `__app-b__`.
+                        if (index(file, "__" me "__")>0 && file>mine[slug]) mine[slug]=file
+                        next }
           i=index(rest,":"); v=substr(rest,i+1); sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v)
           if (v=="") next
           if (k=="O") { if (file>=fo[slug]) { fo[slug]=file; owner[slug]=v } }
@@ -334,7 +342,20 @@ fold_report() {
         END { for (s in last) {
                 if (owner[s]=="") { if (status[s]!="DONE") orph[++no]=s "|" (status[s]==""?"?":status[s]); continue }
                 if (owner[s]==me && status[s]!="DONE")
-                  printf "T|%s|%s|%s|%s\n", s, (status[s]==""?"?":status[s]), owner[s], last[s] }
+                  printf "T|%s|%s|%s|%s\n", s, (status[s]==""?"?":status[s]), owner[s], last[s]
+                # Standing in for a participant with no session of their own. Their
+                # threads fold nowhere. fo[s] is the file that last set the owner: the
+                # waiting time is the age of the HANDOVER, not of the last message.
+                else if (vert!="" && status[s]!="DONE" && index(","vert",", ","owner[s]",")>0)
+                  printf "C|%s|%s|%s|%s\n", s, owner[s], fo[s], last[s]
+                # Participation: open threads I have written in that are not mine, and
+                # where others have written since. They fall out of the fold, which goes
+                # by owner.
+                else if (status[s]!="DONE" && mine[s]!="" && last[s]>mine[s]) {
+                  n2=split(alle[s], fs2, " "); c=0
+                  for (j=1;j<=n2;j++)
+                    if (fs2[j]>mine[s] && index(fs2[j], "__" me "__")==0) c++
+                  if (c>0) printf "P|%s|%s|%s|%d\n", s, mine[s], last[s], c } }
               for (i=1;i<=no;i++) printf "X|%s\n", orph[i] }' \
       | sort )
   }
@@ -412,6 +433,8 @@ fold_report() {
   name_hint
   stamp_hint
   number_hint
+  proxy_hint "$tmp"
+  participation_hint "$tmp"
   local slug st ow last kind
   if ! grep -q '^T|' "$tmp"; then
     echo "no open thread with owner '$me'."
@@ -423,6 +446,73 @@ fold_report() {
   fi
   orphan_hint "$tmp"
   arm_hint "$me"
+}
+
+# --- Standing in for a participant who has no session -------------------------
+# The fold folds on `owner == me`. Anyone without a session of their own never folds, so
+# their threads fall through every net: no push (they are not running), no fold (they never
+# fold) -- and from the outside it looks as though somebody is on it, because the owner
+# field is filled in. The value is right and the label promises work that nobody is doing.
+#
+# This is not hypothetical. In the bridge this was written for, one participant is a human
+# who decides in conversation and has no session at all; six open threads were waiting on
+# him and four had been sitting for a week before anyone noticed.
+#
+# WHY A VARIABLE AND NOT A FIXED ID: an id in the code would be wrong for every other
+# deployment. Whoever stands in says so at the call site:
+#   WATCH_BRIDGE_VERTRITT=chris bash watch-bridge.sh --fold coordinator
+# Several ids separated by commas. Empty (the default) means no block at all, which is the
+# right thing for every session that stands in for nobody: they cannot act on someone
+# else's decision, and a line they cannot act on is noise.
+proxy_hint() { # $1 = fold's tmp file
+  grep -q '^C|' "$1" 2>/dev/null || return 0
+  local slug ow setzer last tage autor heute_s s_s
+  heute_s=$(date -u +%s)
+  # The ids go in the HEADING, not in a closing line: the loop below sits behind a pipe and
+  # therefore in a subshell, so a variable set inside it is empty again afterwards.
+  echo "WAITING ON ${WATCH_BRIDGE_VERTRITT//,/, } (has no session, so never folds):"
+  while IFS='|' read -r _ slug ow setzer last; do
+    tage=""
+    if [[ "$setzer" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}) ]]; then
+      s_s=$(date -u -d "${BASH_REMATCH[1]}" +%s 2>/dev/null || echo "")
+      [[ -n "$s_s" ]] && tage=$(( (heute_s - s_s) / 86400 ))
+    fi
+    autor="${last#*Z__}"; autor="${autor%%__*}"
+    printf '  %-40s %-7s last: %s\n' "$slug" "${tage:+${tage} d}" "${autor:-?}"
+  done < <(grep '^C|' "$1" | sort -t'|' -k4,4)
+  echo "         The age is that of the handover, not of the last message."
+}
+
+# --- Threads I write in but do not own ----------------------------------------
+# The same blind spot from the other side: a thread I work in, that is not mine, is
+# invisible in my fold even when messages keep arriving.
+#
+# THE AGE FILTER CARRIES THE REST. Without it the hint also reports threads one left long
+# ago: measured across six sessions, one thread showed up with 61 new messages for a
+# session whose own last message was 20 days old -- pure noise -- and the same thread
+# showed up with 2 new messages for a session that had written that morning. Same rule,
+# two verdicts; the threshold separates "still in this" from "was in this once".
+# Median across those sessions: 1 thread, maximum 8.
+participation_hint() { # $1 = fold's tmp file
+  grep -q '^P|' "$1" 2>/dev/null || return 0
+  local tage="${WATCH_BRIDGE_TEILNAHME_TAGE:-7}" slug meine last n alt heute_s s_s zeilen=""
+  [[ "$tage" == 0 ]] && return 0          # 0 switches the check off
+  heute_s=$(date -u +%s)
+  while IFS='|' read -r _ slug meine last n; do
+    alt=""
+    if [[ "$meine" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}) ]]; then
+      s_s=$(date -u -d "${BASH_REMATCH[1]}" +%s 2>/dev/null || echo "")
+      [[ -n "$s_s" ]] && alt=$(( (heute_s - s_s) / 86400 ))
+    fi
+    # An unreadable date is NOT reported: it would otherwise slip past the filter, and the
+    # hint would be loudest exactly where the filenames are broken.
+    [[ -n "$alt" && "$alt" -le "$tage" ]] || continue
+    zeilen+="$(printf '  %-40s %2d new    (I last wrote %d d ago)' "$slug" "$n" "$alt")"$'\n'
+  done < <(grep '^P|' "$1" | sort -t'|' -k2,2r)
+  [[ -n "$zeilen" ]] || return 0
+  echo "PARTICIPATED, NOT MINE (falls out of the fold):"
+  printf '%s' "$zeilen"
+  echo "         Only threads I wrote in within $tage days."
 }
 
 # --- Reminder to arm, printed as the LAST line of the fold --------------------
