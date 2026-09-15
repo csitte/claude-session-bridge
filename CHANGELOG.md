@@ -98,6 +98,17 @@ commit it names will say why.
   path-comparing function.
 
 ### Changed
+- **`docs/protocol.md`: the message recipe now puts the timestamp in the body itself.** The
+  recipe computed `$ts` for the `date:` field and then wrote the body through a *quoted*
+  heredoc, which expands nothing -- so the one value it had just computed could not reach the
+  text. Authors were left with two ways out, and both are bad: type the timestamp by hand
+  (the section right below forbids exactly that, and 92 of 407 messages had a `date:` that
+  disagreed with their own filename), or drop the quotes and let the shell eat the backticked
+  paths that bridge messages consist of. The recipe now lets `sed` read the heredoc: the
+  delimiter stays quoted, `sed` substitutes a `__TS__` placeholder, and the redirect hangs on
+  the `sed` call, so there is no temp file and no second pass through the shell. The rule
+  worth taking away is not the recipe: **a rule the neighbouring example cannot follow is not
+  a rule, it is a wish.**
 - **`docs/protocol.md`: `cc:` is documented as delivering nothing.** A field that is not part
   of the protocol but grows in a deployment anyway: no tool reads it, so a cc'd session is
   neither pushed (the push matches `to:`) nor folded (the fold goes by `owner`). In the bridge

@@ -61,7 +61,7 @@ collide. Lexical sort equals chronological order.
 from: session-a          # author participant id
 to: session-b            # one id, a comma-separated list, or 'all'
 type: brief              # brief | question | reply | ack | status | fyi
-date: 2026-08-14T09:12:33Z   # same clock reading as the filename, colons kept
+date: __TS__                 # the recipe's sed fills this in; same clock reading, colons kept
 in-reply-to: <filename of the message this answers, or '-'>
 sets-owner: session-b    # OPTIONAL — hands the ball to this participant
 sets-status: OPEN        # OPTIONAL — moves the thread to this state
@@ -76,8 +76,8 @@ Create it with temp-then-rename so a concurrent reader never sees a half-written
 cd "<shared-dir>/threads/<slug>/msgs"
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"                                  # the date: field
 n="$(printf %s "$ts" | tr -d :)__session-a__$(openssl rand -hex 2).md"   # the filename
-cat > ".$n.tmp" <<'EOF'
-<content>
+sed "s|__TS__|$ts|g" > ".$n.tmp" <<'EOF'
+<content — write __TS__ wherever the timestamp goes, starting with the date: field>
 EOF
 mv ".$n.tmp" "$n"                                                    # atomic on one FS
 ```
@@ -89,6 +89,26 @@ backticked paths and ids, so the shell consumes exactly the part that carries th
 and the reader gets a sentence with a hole in it rather than an error. Write-once means the
 damaged file stays where it is; the only repair is a second message saying so. Twice in
 three days for us, both times in the ids and paths.
+
+**"But the body needs `$ts` in it."** Every message does — the `date:` field is that
+timestamp — and this is where the quoting gets dropped, because a quoted heredoc expands
+nothing, including the one value you wanted. Do not open the heredoc for it. Let `sed` read
+the heredoc, as the recipe above does: the delimiter stays quoted, `sed` substitutes the
+placeholder, and the redirect hangs on the `sed` call, so there is no temp file and no second
+pass through the shell. The generalisation is worth more than the recipe: **a rule that the
+neighbouring example cannot follow is not a rule, it is a wish.** Ours told authors never to
+type a timestamp while the example it sat next to gave them no other way to get one — 92 of
+407 mismatched fields later, that is the same finding from the other side.
+
+Two traps when you write the check for this, both measured: use `|` as the `sed` separator,
+never `/`, or a path in the replacement splits the expression; and `grep -c` returns `0`
+**and exit status 1**, which looks like a failure and is the result you were hoping for.
+
+For long prose, leave the shell out altogether and write the file with an editor tool. Three
+interpretation layers (tool, shell, heredoc) are two too many, and escaping your way through
+them is not a strategy: one un-escaped pair of backticks in a heading blanked two words, and
+the shell reported it as a single line next to the success message. It looked like noise and
+it was the damage.
 
 ### Never type a timestamp
 
