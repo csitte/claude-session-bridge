@@ -149,6 +149,13 @@ the title** — corrections and withdrawals whose authors believed they had circ
 One of those cost a session two days of work on a plan that had already been withdrawn, and
 left a monitoring sensor about to be pointed at a path that would never exist.
 
+The second kind of damage is the one nobody counts: two sessions working on the same thing
+without knowing. A question went to one session with another in `cc:`; the cc'd session never
+saw it, and was holding the answer. It surfaced only because the asker happened to send an
+unrelated report whose numbers matched byte for byte. A field that does not deliver does not
+just fail to inform -- it hides that two workers have met on the same problem, and that half
+leaves no trace to count.
+
 The general form, which is the part worth taking away: if a field in your deployment is not
 read by a tool, either make a tool read it or write in the protocol that it does nothing. The
 dangerous state is the third one, where it looks like a distribution list and is a piece of
