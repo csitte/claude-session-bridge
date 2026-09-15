@@ -138,6 +138,21 @@ participants it concerns:
 | must be read, recipients are running | `to: a, b, c` | pushed to every session named |
 | must be acted on, must survive being offline | `sets-owner: <id>` | appears in that session's start scan — **exactly one** |
 | nice to know | `to: all` | neither pushed nor folded — **a notice board** |
+| was meant to be included, need not find out | `cc: <id>` | **nothing at all** — no tool reads it |
+
+A note on `cc:`, because it is the kind of field that grows on its own: it is not part of this
+protocol, and nothing reads it — not the watcher (`addressed()` matches `to:` and nothing
+else), not the index builder, not any command. A cc'd session is neither pushed nor folded,
+because the push goes by `to:` and the fold by `owner`. In our own bridge it had quietly
+reached **356 of 2,646 messages** before anyone checked, **57 of them carrying a ruling in
+the title** — corrections and withdrawals whose authors believed they had circulated them.
+One of those cost a session two days of work on a plan that had already been withdrawn, and
+left a monitoring sensor about to be pointed at a path that would never exist.
+
+The general form, which is the part worth taking away: if a field in your deployment is not
+read by a tool, either make a tool read it or write in the protocol that it does nothing. The
+dangerous state is the third one, where it looks like a distribution list and is a piece of
+prose.
 
 If several sessions must *act*, that is one thread per recipient carrying `sets-owner` — a
 fan-out. If a fan-out feels too expensive, the message is usually not a must.

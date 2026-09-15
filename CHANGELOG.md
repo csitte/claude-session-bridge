@@ -82,6 +82,13 @@ commit it names will say why.
   path-comparing function.
 
 ### Changed
+- **`docs/protocol.md`: `cc:` is documented as delivering nothing.** A field that is not part
+  of the protocol but grows in a deployment anyway: no tool reads it, so a cc'd session is
+  neither pushed (the push matches `to:`) nor folded (the fold goes by `owner`). In the bridge
+  this was written for, it had reached 356 of 2,646 messages before anyone checked, 57 of them
+  carrying a ruling in the title -- corrections and withdrawals whose authors believed they had
+  circulated them. Documentation only; no behaviour change. The general rule is stated with it:
+  a field no tool reads should either get a reader or be declared inert.
 - **`docs/watcher.md`: read the whole fold output — the checks print above the table.** No
   behaviour change; the document now says why the advisory lines sit above the thread list and
   what a `| tail -N` on the fold costs. Both maintainer sessions filtered their own diagnostic
