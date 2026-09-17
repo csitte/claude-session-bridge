@@ -30,7 +30,11 @@ commit it names will say why.
   that failure looks like success. `CC_NO_CLONE=1` switches the fetching off. If the clone
   works but the memory cannot be connected, the session is started **and told so** through
   its start prompt -- a launcher note on stderr is read by nobody, and a session writing
-  into an unconnected memory directory loses its work silently.
+  into an unconnected memory directory loses its work silently. Leftovers of aborted attempts
+  are cleared on the next launch, identified by the pid in their name: the first real run left
+  one behind because the launcher died while the login dialog was open, so the failure branch
+  never ran. The sweep happens before the "does the target exist" question -- otherwise a
+  leftover beside a clone that later succeeded would sit there forever.
 - **`--fold` can stand in for a participant who has no session
   (`WATCH_BRIDGE_VERTRITT=<id>[,<id>]`).** The fold folds on `owner == me`, so anyone without
   a session of their own never folds and their threads fall through every net -- no push,

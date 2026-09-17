@@ -854,10 +854,39 @@ cc_link_memory_after_clone() { # $1 = name, $2 = directory
   return 1
 }
 
+# cc_clone_leftovers — leftovers of aborted attempts. 0 = go on, 1 = one is still running.
+#
+# If the launcher dies IN THE MIDDLE of the clone -- window closed, login dialog cancelled --
+# the `rm -rf` in the failure branch never runs: the first real run of this code left a 53 KB
+# tree behind, found only because the successful second attempt sat next to it. An `rm` on our
+# own `$$` does not catch that, the pid is a different one.
+#
+# Checked BEFORE asking whether the target exists. Otherwise the leftover of the first attempt
+# stays forever once the second one succeeded -- that was the first version. The pid is in the
+# name: if it is gone the tree is dead; if it is alive someone else is cloning and we touch
+# **nothing**.
+cc_clone_leftovers() { # $1 = name, $2 = directory
+  local name="$1" dir="$2" leftover pid rc=0
+  for leftover in "$dir".clone-unfinished.*; do
+    [[ -d "$leftover" ]] || continue
+    pid="${leftover##*.}"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      echo "[clone] $name: '$leftover' belongs to a running attempt (pid $pid) — nothing touched." >&2
+      rc=1; continue
+    fi
+    echo "[clone] $name: cleared the leftover of an aborted attempt ($leftover)." >&2
+    rm -rf "$leftover" 2>/dev/null || true
+  done
+  return $rc
+}
+
 # cc_clone_missing — fetches the missing clone. 0 = it is there now, 1 = it is not.
 cc_clone_missing() { # $1 = name, $2 = directory
-  local name="$1" dir="$2" url rc parent tmp out
+  local name="$1" dir="$2" url rc parent tmp out busy=0
+  cc_clone_leftovers "$name" "$dir" || busy=1
+  # With the target already in place a foreign attempt decides nothing -- the session starts.
   [[ -d "$dir" ]] && return 0
+  (( busy == 0 )) || return 1
   if [[ "${CC_NO_CLONE:-0}" == "1" ]]; then
     echo "[clone] $name: directory missing; CC_NO_CLONE=1 — not fetched." >&2
     return 1

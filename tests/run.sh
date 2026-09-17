@@ -3411,6 +3411,30 @@ rc=0" "$(url crlf)"
   if [[ -e "$root/dst/broken" ]]; then bad "a failed clone leaves nothing behind" "$root/dst/broken exists"; else ok "a failed clone leaves nothing behind"; fi
   if compgen -G "$root/dst/*.clone-unfinished.*" >/dev/null; then bad "... not even the temporary tree" "leftover"; else ok "... not even the temporary tree"; fi
 
+  # Leftovers of aborted attempts. The first real run produced one: the launcher died while
+  # the login dialog was open, so the cleanup never ran. A dead pid means a dead tree.
+  mkdir -p "$root/dst/leftover.clone-unfinished.999999"
+  out="$(clone nomem "$root/dst/leftover")"
+  if [[ -e "$root/dst/leftover.clone-unfinished.999999" ]]; then bad "a leftover with a dead pid is cleared" "still there"; else ok "a leftover with a dead pid is cleared"; fi
+  assert_eq "... and the clone then proceeds"          "x" "$(cat "$root/dst/leftover/file.txt" 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q 'cleared the leftover'; then ok "... and it says so"; else bad "... and it says so" "$out"; fi
+  # A live pid means someone else is cloning: touch nothing, not even the target.
+  mkdir -p "$root/dst/busy.clone-unfinished.$$"
+  out="$(clone nomem "$root/dst/busy")"
+  if printf '%s\n' "$out" | grep -q 'belongs to a running attempt'; then ok "a leftover with a live pid stops the fetch"; else bad "a leftover with a live pid stops the fetch" "$out"; fi
+  if [[ -e "$root/dst/busy" ]]; then bad "... and nothing was created beside it" "target exists"; else ok "... and nothing was created beside it"; fi
+  if [[ -d "$root/dst/busy.clone-unfinished.$$" ]]; then ok "... and the running attempt's tree is untouched"; else bad "... and the running attempt's tree is untouched" "removed"; fi
+  rm -rf "$root/dst/busy.clone-unfinished.$$"
+  # The leftover sweep runs BEFORE the "does the target exist" question, or a leftover next to
+  # a successful clone would sit there forever -- which is what the first version did.
+  mkdir -p "$root/dst/nomem.clone-unfinished.999998"
+  assert_eq "a leftover beside an EXISTING clone is cleared too" "rc=0" "$(clone nomem "$root/dst/nomem" | tail -1)"
+  if [[ -e "$root/dst/nomem.clone-unfinished.999998" ]]; then bad "... really gone" "still there"; else ok "... really gone"; fi
+  # And a live attempt beside an existing target must not stop the start.
+  mkdir -p "$root/dst/nomem.clone-unfinished.$$"
+  assert_eq "a live attempt beside an existing clone does not stop the start" "rc=0" "$(clone nomem "$root/dst/nomem" | tail -1)"
+  rm -rf "$root/dst/nomem.clone-unfinished.$$"
+
   out="$(clone unlisted "$root/dst/unlisted")"
   if printf '%s\n' "$out" | grep -q 'no clone address is known'; then ok "an unlisted project says so"; else bad "an unlisted project says so" "$out"; fi
   if printf '%s\n' "$out" | grep -q "unlisted|<address>"; then ok "... and names the exact fix"; else bad "... and names the exact fix" "$out"; fi
