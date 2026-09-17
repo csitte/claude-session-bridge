@@ -91,6 +91,18 @@ commit it names will say why.
   no longer changes a versioned file.
 
 ### Fixed
+- **A session is now told when it starts without its project instructions.** For a project
+  whose `CLAUDE.md` is kept outside its own repository (`instructions=<key>`), four things can
+  go wrong: the instructions clone is missing on this machine, the key is not in it, the file
+  was never committed, or copying it in fails. Each case was reported loudly -- on stderr,
+  into a console that nobody inside the session reads -- and the session then ran a whole day
+  without its rules. It happened on a freshly set up machine: the clone was missing and the
+  project only noticed because it went looking for the file itself. All four cases now set
+  `CC_INSTRUCTIONS_NOTE`, the same path into the start prompt that a merge conflict already
+  used. The note states the **state**, not the intent: with a file in the working tree it says
+  the file may be outdated, with none that the session is running without instructions -- a
+  different job in each case. The fix comes last in the text because it is usually a command,
+  and a sentence behind it sticks to the path.
 - **A shell without its script no longer counts as delivering.** `watch-bridge.sh <id>`
   treated a live wrapper under `claude.exe` as proof that a watcher was delivering, without
   requiring a script process of that id. A wrapper whose script has died delivers nothing,

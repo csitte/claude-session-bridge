@@ -536,6 +536,34 @@ cc_instructions_root() {
 #
 # Returns 0 always (a missing source is reported, the start proceeds without
 # instructions). CC_NO_INSTRUCTIONS=1 skips everything.
+
+# cc_instructions_note — puts the REASON into the start prompt why this session runs without
+# its project instructions, or with an outdated copy.
+#
+# Why it exists: the branches below all report loudly -- on stderr, into a console that
+# nobody inside the session reads. The case was real: on a newly set up machine the
+# instructions clone was simply missing, the project started without its CLAUDE.md, and it
+# only noticed because it went looking for the file itself. For the merge conflict the path
+# into the start prompt already existed; for the silent cases it did not. A session reads
+# CLAUDE.md and the start prompt, nothing else.
+#
+# It reports the STATE, not the intent: whether a (possibly outdated) file is lying in the
+# working tree or none at all decides what the session has to do.
+#
+# NO backtick, NO dollar sign in the text -- it travels through a double-quoted bash -lc
+# line, where both would be expanded.
+cc_instructions_note() { # $1 = reason (one sentence), $2 = the fix, $3 = file in the working tree
+  local reason="$1" fix="$2" dst="$3" state
+  if [[ -e "$dst" ]]; then
+    state="A CLAUDE.md is lying in the working tree, but nothing was copied in - it may be outdated."
+  else
+    state="There is NO CLAUDE.md in the working tree - you are running without your project instructions."
+  fi
+  # The fix comes LAST because it is usually a command: a sentence behind it sticks to the
+  # path, and whoever copies the line copies the sentence with it.
+  CC_INSTRUCTIONS_NOTE="Note from the launcher: $reason $state A file copied in now takes effect as an instruction at the NEXT session start - if you need it now, read it yourself in this session. And report the situation instead of quietly working around it. The fix: $fix"
+}
+
 cc_instructions_before_start() { # $1 = name, $2 = directory, $3 = key
   local name="$1" dir="$2" key="$3" root src dst tmp h
 
@@ -547,6 +575,10 @@ cc_instructions_before_start() { # $1 = name, $2 = directory, $3 = key
     echo "[instructions] $name: no clone under $root" >&2
     echo "               The session starts WITHOUT project instructions. Clone your" >&2
     echo "               instructions repository there, or set CC_INSTRUCTIONS_DIR." >&2
+    cc_instructions_note \
+      "This project keeps its CLAUDE.md outside its own repository, in the instructions clone $root - and that clone does not exist on this machine." \
+      "clone the instructions repository to $root, or point CC_INSTRUCTIONS_DIR at it." \
+      "$dir/CLAUDE.md"
     return 0
   fi
 
@@ -583,6 +615,10 @@ cc_instructions_before_start() { # $1 = name, $2 = directory, $3 = key
     echo "[instructions] $name: '$key/CLAUDE.md' is not in the clone ($root)" >&2
     echo "               The session starts WITHOUT project instructions -- wrong key, or" >&2
     echo "               the file has not been committed yet." >&2
+    cc_instructions_note \
+      "The file $key/CLAUDE.md is missing from the instructions clone $root." \
+      "either the key in the config is wrong, or the file was never committed - look in the clone." \
+      "$dst"
     return 0
   fi
 
@@ -598,6 +634,10 @@ cc_instructions_before_start() { # $1 = name, $2 = directory, $3 = key
       else
         rm -f -- "$tmp"
         echo "[instructions] $name: catching up failed ($src -> $dst) -- old state stays." >&2
+        cc_instructions_note \
+          "The newer version from the instructions clone could not be pulled in ($src)." \
+          "copy it by hand and look at the reason (permissions, a lock, no space)." \
+          "$dst"
       fi
       return 0
     fi
@@ -617,6 +657,10 @@ cc_instructions_before_start() { # $1 = name, $2 = directory, $3 = key
     rm -f -- "$tmp"
     echo "[instructions] $name: could not be copied in ($src -> $dst)" >&2
     echo "               The session starts WITHOUT project instructions." >&2
+    cc_instructions_note \
+      "The file $src could not be copied into the working tree." \
+      "copy it by hand and look at the reason (permissions, a lock, no space)." \
+      "$dst"
   fi
   return 0
 }
@@ -804,8 +848,8 @@ cc_repo_url() { # $1 = project name -> address on stdout
   file="$(cc_repos_file)"
   [[ -r "$file" ]] || return 1
   # Exact comparison over the WHOLE first field, never as a prefix. That trap has struck
-  # repeatedly in this toolkit (`xorino` against `xorino-product`, `wdiff` against
-  # `wdiff-b`); here its price would be a silently cloned wrong project.
+  # repeatedly in this toolkit (`app` against `app-product`, `app` against `app-b`); here
+  # its price would be a silently cloned wrong project.
   url="$(awk -F'|' -v n="$name" '
            { sub(/\r$/, "") }                  # CRLF: this file travels between machines
            /^[[:space:]]*#/ { next }

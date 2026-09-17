@@ -681,7 +681,7 @@ for, six open threads were waiting on one human, and four had been sitting for a
 anyone noticed.
 
 ```bash
-WATCH_BRIDGE_VERTRITT=chris bash watch-bridge.sh --fold coordinator
+WATCH_BRIDGE_VERTRITT=owner bash watch-bridge.sh --fold coordinator
 ```
 
 Several ids separated by commas. **Off by default**, and deliberately: a session that does

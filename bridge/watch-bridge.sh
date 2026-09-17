@@ -460,7 +460,7 @@ fold_report() {
 #
 # WHY A VARIABLE AND NOT A FIXED ID: an id in the code would be wrong for every other
 # deployment. Whoever stands in says so at the call site:
-#   WATCH_BRIDGE_VERTRITT=chris bash watch-bridge.sh --fold coordinator
+#   WATCH_BRIDGE_VERTRITT=owner bash watch-bridge.sh --fold coordinator
 # Several ids separated by commas. Empty (the default) means no block at all, which is the
 # right thing for every session that stands in for nobody: they cannot act on someone
 # else's decision, and a line they cannot act on is noise.

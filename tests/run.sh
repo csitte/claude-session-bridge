@@ -1621,6 +1621,50 @@ test_instructions() {
       CC_INSTRUCTIONS_NOTE=""; cc_instructions_before_start proj "$r/tree" otherkey 2>/dev/null; printf '%s' "${CC_INSTRUCTIONS_NOTE:-}" ) )"
   assert_eq "conflict in ANOTHER project's file: no task for this session" "" "$note"
 
+  # The four SILENT cases. Each of them starts a session WITHOUT its instructions (or with an
+  # outdated copy), and each one used to say so only on stderr -- into a console that nobody
+  # inside the session reads. The case was real: on a freshly set up machine the instructions
+  # clone was simply missing; the project ran without its rules and noticed only because it
+  # went looking for the file itself.
+  ins_note() { # $1 = instructions root, $2 = working tree, $3 = key -> the note, or empty
+    ( export CC_INSTRUCTIONS_DIR="$1" CC_NO_PULL=1
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"
+      CC_INSTRUCTIONS_NOTE=""
+      cc_instructions_before_start proj "$2" "$3" 2>/dev/null
+      printf '%s' "${CC_INSTRUCTIONS_NOTE:-}" )
+  }
+  local r3="$TMPROOT/in3.$RANDOM" notes=""
+  instructions_fixture "$r3"
+  mkdir -p "$r3/nogit" "$r3/empty-tree" "$r3/old-tree"
+  printf 'OLD LOCAL RULES\n' > "$r3/old-tree/CLAUDE.md"
+
+  note="$(ins_note "$r3/nogit" "$r3/empty-tree" proj)"; notes="$notes$note"
+  [[ -n "$note" ]] && ok "no clone on this machine: the session is told" || bad "no clone on this machine: the session is told"
+  if printf '%s' "$note" | grep -q 'NO CLAUDE.md'; then ok "... and that it has no instructions at all"; else bad "... and that it has no instructions at all" "$note"; fi
+  if printf '%s' "$note" | grep -q -- "$r3/nogit"; then ok "... it names the place the clone belongs"; else bad "... it names the place the clone belongs" "$note"; fi
+
+  # Same branch, different state -- and therefore a different job for the session. A file in
+  # the tree is not nothing: it may be an older version that still works.
+  note="$(ins_note "$r3/nogit" "$r3/old-tree" proj)"; notes="$notes$note"
+  if printf '%s' "$note" | grep -q 'may be outdated'; then ok "no clone, but a file in the tree: outdated, not missing"; else bad "no clone, but a file in the tree: outdated, not missing" "$note"; fi
+  if printf '%s' "$note" | grep -q 'NO CLAUDE.md'; then bad "... and NOT reported as missing" "$note"; else ok "... and NOT reported as missing"; fi
+
+  note="$(ins_note "$r3/clone" "$r3/empty-tree" nosuchkey)"; notes="$notes$note"
+  [[ -n "$note" ]] && ok "key not in the clone: the session is told" || bad "key not in the clone: the session is told"
+  if printf '%s' "$note" | grep -q 'nosuchkey/CLAUDE.md'; then ok "... naming the file that was looked for"; else bad "... naming the file that was looked for" "$note"; fi
+
+  # Copy failure: a target directory that does not exist makes `cp` fail without a chmod dance.
+  note="$(ins_note "$r3/clone" "$r3/gone" proj)"; notes="$notes$note"
+  [[ -n "$note" ]] && ok "copying in fails: the session is told" || bad "copying in fails: the session is told"
+
+  # All four travel the same way as the conflict task: through a double-quoted bash -lc line.
+  if [[ -n "$notes" ]] && ! printf '%s' "$notes" | grep -q '[$`]'; then ok "all four without backtick or dollar"; else bad "all four without backtick or dollar" "$notes"; fi
+  # Counted, not grepped: a claim about the CONCATENATION is true as soon as ONE note carries
+  # the sentence, and would stay green if three of them lost it.
+  assert_eq "each of the four says the copy takes effect at the next start" "4" \
+    "$(printf '%s' "$notes" | grep -o 'NEXT session start' | wc -l | tr -d ' ')"
+
   # End to end: the entry's fourth field reaches the function, and the task reaches the
   # START PROMPT -- the log is read by nobody inside the session.
   local W="$TMPROOT/ine.$RANDOM"; mkdir -p "$W/profile/sessions" "$W/p/alpha" "$W/p/beta"
