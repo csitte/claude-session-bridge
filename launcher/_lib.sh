@@ -777,6 +777,135 @@ cc_memory_state() { # $1 = name, $2 = directory (msys path)
   return 0
 }
 
+# --------------------------------------------------------------------------
+# When the clone is missing, fetch it instead of skipping (2026-09-17)
+#
+# Until now a missing directory was the only reason to skip an entry. On a freshly set up
+# machine that hit 13 of 22 entries — the session manager listed projects that could not be
+# started, and the reason sat in a stderr line nobody reads there. The list is meant to stay
+# complete; what is not on the machine yet gets fetched at start.
+#
+# THE ADDRESS DOES NOT BELONG IN THE PROJECT CONFIG, for two reasons. The config is the
+# **list** (name, path, options), and adding or dropping a project is a decision, not
+# mechanics. And the config is **per machine** — the paths diverge (`/d/gitwork/x` against
+# `/c/gitrep/x`) while the clone address is the same everywhere. Two copies of one address
+# are two places where it can go stale. Hence a separate, machine-independent file next to
+# the configs: `projects.repos.conf`, one `name|address` line each.
+#
+# NOTHING IS GUESSED. Without a line the entry is skipped as before — but with the reason
+# and the exact fix. An address assembled from the project name would sooner or later hit a
+# same-named foreign repository, and that does not announce itself: the clone succeeds, the
+# session starts, and only the content gives it away.
+cc_repos_file() { printf '%s\n' "${CC_REPOS_FILE:-$CC_SCRIPT_DIR/projects.repos.conf}"; }
+
+cc_repo_url() { # $1 = project name -> address on stdout
+                # 0 = address, 1 = no line, 2 = explicitly "not a git project"
+  local name="$1" file url
+  file="$(cc_repos_file)"
+  [[ -r "$file" ]] || return 1
+  # Exact comparison over the WHOLE first field, never as a prefix. That trap has struck
+  # repeatedly in this toolkit (`xorino` against `xorino-product`, `wdiff` against
+  # `wdiff-b`); here its price would be a silently cloned wrong project.
+  url="$(awk -F'|' -v n="$name" '
+           { sub(/\r$/, "") }                  # CRLF: this file travels between machines
+           /^[[:space:]]*#/ { next }
+           NF < 2 { next }
+           { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $1)
+             gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2) }
+           $1 == n { print $2; exit }' "$file")"
+  [[ -n "$url" ]] || return 1
+  [[ "$url" == "-" ]] && return 2
+  printf '%s\n' "$url"
+}
+
+# cc_link_memory_after_clone — connect the memory of the fresh clone.
+#
+# Without this step the session would write into a profile directory that nobody backs up
+# and no second machine sees — the very gap the memory setup exists to close. If it fails
+# the session is started ANYWAY, but it learns about it: the note travels through the start
+# prompt into the session. A stderr line is read by no session, and "does not save, but
+# only tells the console" is exactly the silent shape this whole path is built against.
+cc_link_memory_after_clone() { # $1 = name, $2 = directory
+  local name="$1" dir="$2" lm out mode=()
+  CC_CLONE_NOTE=""
+  lm="$CC_SCRIPT_DIR/link-memory.sh"
+  if [[ ! -r "$lm" ]]; then
+    CC_CLONE_NOTE="Note from the launcher: your project was just freshly cloned. The memory is NOT connected — link-memory.sh could not be found ($lm). Please sort that out before writing anything to memory: a wrap-up would otherwise save into a directory no second machine sees."
+    echo "[memory] $name: link-memory.sh not found ($lm) — memory NOT connected." >&2
+    return 1
+  fi
+  # Repo mode or a memory repository of its own? Decided by the FINDING, not by a list of
+  # names: if the fresh clone itself tracks a `memory/` directory, the memory lives inside
+  # the repo. A list of names would be a second registry that goes stale the moment a
+  # project changes mode.
+  if [[ -z "$(git -C "$dir" ls-files memory 2>/dev/null | head -1)" ]]; then
+    mode=(--git)
+  fi
+  if out="$(bash "$lm" "${mode[@]}" "$dir" 2>&1)"; then
+    echo "[memory] $name: connected (${mode[*]:-repo mode})." >&2
+    return 0
+  fi
+  # Strip backticks, `$` and `"` from the foreign output before it goes into the note: the
+  # start prompt ends up as a double-quoted string on a command line, and there the shell
+  # would execute them rather than show them.
+  CC_CLONE_NOTE="Note from the launcher: your project was just freshly cloned, but the memory could NOT be connected. Last lines from link-memory.sh: $(printf '%s' "$out" | grep -v '^$' | tail -2 | tr '\n' ' ' | tr -d '`$"'). Please sort that out before working — a wrap-up would otherwise save into a directory no second machine sees."
+  echo "[memory] $name: NOT connected — the session starts without a saved memory:" >&2
+  printf '         %s\n' "$(printf '%s\n' "$out" | grep -v '^$' | tail -3)" >&2
+  return 1
+}
+
+# cc_clone_missing — fetches the missing clone. 0 = it is there now, 1 = it is not.
+cc_clone_missing() { # $1 = name, $2 = directory
+  local name="$1" dir="$2" url rc parent tmp out
+  [[ -d "$dir" ]] && return 0
+  if [[ "${CC_NO_CLONE:-0}" == "1" ]]; then
+    echo "[clone] $name: directory missing; CC_NO_CLONE=1 — not fetched." >&2
+    return 1
+  fi
+  url="$(cc_repo_url "$name")"; rc=$?
+  if (( rc == 2 )); then
+    echo "[clone] $name: listed as 'not git' in $(cc_repos_file) — '$dir' has to be there by itself." >&2
+    echo "        For a synced folder that means: the sync is still loading, or the folder is not marked offline." >&2
+    return 1
+  fi
+  if (( rc == 1 )); then
+    echo "[clone] $name: directory '$dir' is missing and no clone address is known." >&2
+    echo "        Fix: add a line '$name|<address>' to $(cc_repos_file)" >&2
+    echo "        (or '$name|-' if it is not a git project). Nothing is guessed here." >&2
+    return 1
+  fi
+  parent="$(dirname "$dir")"
+  mkdir -p "$parent" 2>/dev/null || { echo "[clone] $name: cannot create '$parent'." >&2; return 1; }
+  echo "[clone] $name: '$dir' is missing — fetching $url" >&2
+  echo "        This can take a while. A hosted remote may pop up a login window once." >&2
+  # Clone into a sibling directory and rename only then. An aborted clone would otherwise
+  # leave half a tree behind, and the next start would find an existing directory and open
+  # a session inside it — the failure would look like success.
+  tmp="$dir.clone-unfinished.$$"
+  rm -rf "$tmp" 2>/dev/null || true
+  # BatchMode for ssh and no terminal prompt: a clone waiting for input inside the launcher
+  # blocks the starter console for no visible reason — and in a fleet start everything
+  # behind it. A GUI credential helper is NOT affected, that is a window of its own; only
+  # git's own terminal question falls away, and then it fails loudly instead of waiting.
+  if out="$(GIT_TERMINAL_PROMPT=0 \
+            GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes" \
+            git clone "$url" "$tmp" 2>&1)"; then
+    if mv "$tmp" "$dir" 2>/dev/null; then
+      echo "[clone] $name: fetched into '$dir'." >&2
+    else
+      echo "[clone] $name: cloned, but '$tmp' could not be renamed to '$dir'." >&2
+      return 1
+    fi
+  else
+    echo "[clone] $name: NOT fetched — the session will not be started:" >&2
+    printf '        %s\n' "$(printf '%s\n' "$out" | grep -v '^$' | tail -3)" >&2
+    rm -rf "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  cc_link_memory_after_clone "$name" "$dir" || true
+  return 0
+}
+
 # cc_launch — starts ONE entry in its own mintty window.
 # Format:  "name|path"  or  "name|path|extra-args"  (3rd field passed to claude as-is)
 #          or "name|path|extra-args|instructions=<key>" (4th field, see
@@ -796,9 +925,18 @@ cc_launch() {
     *) echo "[config] $name: fourth field not understood ('${_f[3]}') — ignored." >&2 ;;
   esac
 
+  # A leftover from an earlier entry of the same run would be fatal here: a fleet start
+  # calls cc_launch repeatedly in ONE process, and the note would otherwise reach the next
+  # session, whose memory is fine.
+  CC_CLONE_NOTE=""
   if [[ ! -d "$dir" ]]; then
-    echo "[skipped] $name: directory '$dir' does not exist." >&2
-    return 1
+    # Since 2026-09-17 the clone is fetched instead of skipped (see cc_clone_missing). The
+    # skip branch stays for everything that cannot be fetched: no address known, explicitly
+    # not a git project, or the clone failed. cc_clone_missing has named the reason by then.
+    if ! cc_clone_missing "$name" "$dir"; then
+      echo "[skipped] $name: directory '$dir' does not exist." >&2
+      return 1
+    fi
   fi
 
   # Its own return value, not 1: "already running" is the normal case on a second
@@ -852,14 +990,23 @@ cc_launch() {
   else
     echo "[note] $name: session-startprompt.txt missing — the session will not arm itself." >&2
   fi
-  if (( prompt_have )) && [[ -n "${CC_INSTRUCTIONS_NOTE:-}" ]]; then
+  # Two sources for the addition, one delivery: the task from cc_instructions_before_start
+  # and -- since 2026-09-17 -- the note from a fresh clone whose memory could not be
+  # connected. Both have to REACH the session; it does not read stderr.
+  local note="${CC_INSTRUCTIONS_NOTE:-}"
+  if [[ -n "${CC_CLONE_NOTE:-}" ]]; then
+    note="${note:+$note
+
+}$CC_CLONE_NOTE"
+  fi
+  if (( prompt_have )) && [[ -n "$note" ]]; then
     promptarg="\"\$(cat '$CC_SCRIPT_DIR/session-startprompt.txt')
 
-$CC_INSTRUCTIONS_NOTE\""
+$note\""
   elif (( prompt_have )); then
     promptarg="\"\$(cat '$CC_SCRIPT_DIR/session-startprompt.txt')\""
-  elif [[ -n "${CC_INSTRUCTIONS_NOTE:-}" ]]; then
-    promptarg="\"$CC_INSTRUCTIONS_NOTE\""
+  elif [[ -n "$note" ]]; then
+    promptarg="\"$note\""
   fi
 
   # --continue only when there is something to resume (see cc_has_transcript).

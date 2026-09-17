@@ -15,6 +15,22 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **The launcher fetches a missing clone instead of skipping the entry
+  (`launcher/projects.repos.conf`, see `projects.repos.example.conf`).** Until now a missing
+  directory was the only reason to skip a project, and the reason went to stderr where the
+  session manager does not show it. On a freshly set up machine that hit 13 of 22 entries:
+  the list offered projects that could not be started. Now `cc_launch` looks the project up
+  in `projects.repos.conf`, clones it, connects its memory (`link-memory.sh`; repo mode or
+  its own repository -- decided by whether the fresh clone tracks a `memory/` directory) and
+  starts as usual. The address file is deliberately separate from `projects.<host>.conf`:
+  that one is the list and exists per machine, the address is the same everywhere, and two
+  copies of one address are two places where it can go stale. **Nothing is guessed** -- with
+  no line the entry is skipped as before, but with the reason and the exact fix; an address
+  assembled from a project name hits a same-named foreign repository sooner or later, and
+  that failure looks like success. `CC_NO_CLONE=1` switches the fetching off. If the clone
+  works but the memory cannot be connected, the session is started **and told so** through
+  its start prompt -- a launcher note on stderr is read by nobody, and a session writing
+  into an unconnected memory directory loses its work silently.
 - **`--fold` can stand in for a participant who has no session
   (`WATCH_BRIDGE_VERTRITT=<id>[,<id>]`).** The fold folds on `owner == me`, so anyone without
   a session of their own never folds and their threads fall through every net -- no push,

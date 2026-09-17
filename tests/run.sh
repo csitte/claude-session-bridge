@@ -3333,6 +3333,129 @@ test_linkcommands() {
   unset -f mklink_ is_link_ setup_ run_ check_
 }
 
+# --------------------------------------------------------------------------
+# launcher: a missing clone is fetched instead of skipped
+# --------------------------------------------------------------------------
+
+test_clone() {
+  head_ "launcher: fetch a missing clone, connect its memory, tell the session when that failed"
+  local root="$TMPROOT/clone.$RANDOM"
+  local G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
+  mkdir -p "$root/scripts" "$root/dst" "$root/bin"
+  # Two source repositories: one that tracks memory/ (repo mode), one that does not.
+  local r
+  for r in withmem nomem; do
+    $G init -q "$root/src/$r"
+    ( cd "$root/src/$r" && echo x > file.txt
+      if [ "$r" = withmem ]; then mkdir memory && echo m > memory/a.md; fi
+      $G add -A && $G commit -qm init ) >/dev/null
+  done
+  # link-memory.sh is replaced by a stub -- the real one creates a link in the user profile.
+  # It records its arguments in a FILE: cc_link_memory_after_clone captures the stub's
+  # output to build its note, so anything the stub prints never reaches the test. The
+  # first version of these two checks asserted on the captured text and went red against
+  # working code -- a fixture that cannot observe the thing under test proves nothing.
+  cat > "$root/scripts/link-memory.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "${STUB_LOG:-/dev/null}"
+[ "${STUB_FAIL:-0}" = "1" ] && { echo "refused: something is in the way"; exit 1; }
+exit 0
+STUB
+  printf 'arm yourself\n' > "$root/scripts/session-startprompt.txt"
+  {
+    echo "# a comment must not be read as an entry"
+    echo "withmem|$root/src/withmem"
+    echo "  nomem  |  $root/src/nomem  "
+    printf 'crlf|%s\r\n' "$root/src/nomem"
+    echo "broken|$root/src/does-not-exist"
+    echo "synced|-"
+  } > "$root/scripts/projects.repos.conf"
+
+  url() { ( # shellcheck source=/dev/null
+            source "$ROOT/launcher/_lib.sh"; CC_SCRIPT_DIR="$root/scripts"
+            cc_repo_url "$1"; echo "rc=$?" ) }
+  assert_eq "a listed name yields its address"        "$root/src/withmem
+rc=0" "$(url withmem)"
+  assert_eq "surrounding spaces are trimmed"          "$root/src/nomem
+rc=0" "$(url nomem)"
+  assert_eq "a CRLF line is read as well"             "$root/src/nomem
+rc=0" "$(url crlf)"
+  # The prefix trap, third time in this toolkit: its price here is a silently cloned
+  # wrong project, so the name is compared whole or not at all.
+  assert_eq "a prefix of a listed name matches nothing" "rc=1" "$(url withme)"
+  assert_eq "an unlisted name yields nothing"           "rc=1" "$(url nothing)"
+  assert_eq "a comment line is not an entry"            "rc=1" "$(url '# a comment must not be read as an entry')"
+  assert_eq "'-' means: not a git project"              "rc=2" "$(url synced)"
+
+  local stublog="$root/stub.log"
+  clone() { # $1=name $2=dir [$3=STUB_FAIL] -> output + rc
+    : > "$stublog"
+    ( export STUB_FAIL="${3:-0}" STUB_LOG="$stublog"
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"; CC_SCRIPT_DIR="$root/scripts"
+      cc_clone_missing "$1" "$2" 2>&1; echo "rc=$?" )
+  }
+  local out
+  out="$(clone nomem "$root/dst/nomem")"
+  assert_eq "a missing clone is fetched"              "x" "$(cat "$root/dst/nomem/file.txt" 2>/dev/null)"
+  assert_eq "... and its memory is connected as its own repository" "--git $root/dst/nomem" "$(cat "$stublog")"
+  # Repo mode is decided by the FINDING (a tracked memory/), not by a list of names.
+  out="$(clone withmem "$root/dst/withmem")"
+  assert_eq "a repo that tracks memory/ is linked in repo mode" "$root/dst/withmem" "$(cat "$stublog")"
+  assert_eq "an existing directory is left alone, silently" "rc=0" "$(clone nomem "$root/dst/nomem")"
+
+  out="$(clone broken "$root/dst/broken")"
+  if printf '%s\n' "$out" | grep -q 'rc=1'; then ok "a clone that fails does not start a session"; else bad "a clone that fails does not start a session" "$out"; fi
+  # The half tree is the dangerous part: the next start would find a directory and open a
+  # session inside it, so the failure would look like success.
+  if [[ -e "$root/dst/broken" ]]; then bad "a failed clone leaves nothing behind" "$root/dst/broken exists"; else ok "a failed clone leaves nothing behind"; fi
+  if compgen -G "$root/dst/*.clone-unfinished.*" >/dev/null; then bad "... not even the temporary tree" "leftover"; else ok "... not even the temporary tree"; fi
+
+  out="$(clone unlisted "$root/dst/unlisted")"
+  if printf '%s\n' "$out" | grep -q 'no clone address is known'; then ok "an unlisted project says so"; else bad "an unlisted project says so" "$out"; fi
+  if printf '%s\n' "$out" | grep -q "unlisted|<address>"; then ok "... and names the exact fix"; else bad "... and names the exact fix" "$out"; fi
+  out="$(clone synced "$root/dst/synced")"
+  if printf '%s\n' "$out" | grep -q "not git"; then ok "a 'not git' entry is never cloned"; else bad "a 'not git' entry is never cloned" "$out"; fi
+  assert_eq "CC_NO_CLONE=1 switches the fetching off" "rc=1" \
+    "$( ( export CC_NO_CLONE=1
+          # shellcheck source=/dev/null
+          source "$ROOT/launcher/_lib.sh"; CC_SCRIPT_DIR="$root/scripts"
+          cc_clone_missing nomem "$root/dst/off" >/dev/null 2>&1; echo "rc=$?" ) )"
+
+  # What cc_launch really puts on the command line. A note that only reaches stderr is
+  # read by nobody: the session has to learn that its memory is not connected.
+  cat > "$root/bin/mintty" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$MINTTY_LOG"
+STUB
+  chmod +x "$root/bin/mintty"
+  local cfg="$root/cfg"; mkdir -p "$cfg/sessions"
+  launch() { # $1=name $2=dir [$3=STUB_FAIL] -> the command line mintty was called with
+    local log="$root/log.$RANDOM"
+    ( export PATH="$root/bin:$PATH" MINTTY_LOG="$log" CLAUDE_CONFIG_DIR="$cfg"
+      export CC_LIVE_PIDS='' CC_NO_PULL=1 CC_FRESH=0 CC_FORCE=0 STUB_FAIL="${3:-0}"
+      # shellcheck source=/dev/null
+      source "$ROOT/launcher/_lib.sh"; CC_SCRIPT_DIR="$root/scripts"
+      cc_launch "$1|$2" >/dev/null 2>&1
+      wait )
+    cat "$log" 2>/dev/null
+  }
+  assert_eq "a fresh clone whose memory connected carries no note" "0" \
+    "$(launch nomem "$root/dst/a" | grep -c 'Note from the launcher')"
+  assert_eq "a fresh clone whose memory failed tells the session"  "1" \
+    "$(launch nomem "$root/dst/b" 1 | grep -c 'Note from the launcher')"
+  # The note must not survive into the next entry of the same fleet start -- one process
+  # launches many projects, and the next one's memory is fine.
+  assert_eq "the note does not leak into the next launch"          "0" \
+    "$(launch nomem "$root/dst/c" | grep -c 'Note from the launcher')"
+  assert_eq "an unlisted project opens no window at all"           "0" \
+    "$(launch unlisted "$root/dst/nope" | wc -l)"
+  # The check has to be able to go red, or it guards nothing.
+  assert_eq "an empty recording is not mistaken for a match"       "0" \
+    "$(printf '' | grep -c 'Note from the launcher')"
+  unset -f url clone launch
+}
+
 case "${1:-all}" in
   watcher) test_watcher ;;
   commands) test_commands ;;
@@ -3362,8 +3485,9 @@ case "${1:-all}" in
   linkmemory) test_linkmemory ;;
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
+  clone) test_clone ;;
+  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"
