@@ -719,6 +719,30 @@ test_mark() {
   log="$(mark_run "$b5" "$td5" app 4)"
   if grep -q 'ATTENTION' "$log"; then ok "an empty mark is announced on stdout too, not swallowed"; else bad "an empty mark is announced on stdout too" "stdout=[$(cat "$log")] stderr=[$(cat "$log.err")]"; fi
 
+  # A QUIET bridge must not raise the alarm. The mark is only written when something
+  # changes, so on a quiet bridge its mtime stops moving -- and then it no longer answers
+  # "how long was there no watcher?" but "when did the last message arrive?". Every re-arm
+  # after a quiet hour would report a gap that never existed, and ask for a full scan.
+  # Found in production, not here: four of five marks on the machine were 3800s old with
+  # their watchers running the whole time.
+  local b6; b6="$(new_bridge)"
+  local td6="$TMPROOT/marktmp6.$RANDOM"
+  post "$b6" 2026-01-01T000000Z__other__f1 other app
+  log="$(mark_run "$b6" "$td6" app 5 "WATCH_BRIDGE_STATE_MAX_AGE=3 WATCH_BRIDGE_STATE_TOUCH=1")"
+  assert_eq "quiet bridge, run 1: silent" "0" "$(mark_reported "$log")"
+  log="$(mark_run "$b6" "$td6" app 4 "WATCH_BRIDGE_STATE_MAX_AGE=3 WATCH_BRIDGE_STATE_TOUCH=1")"
+  if [[ -f "$log" ]] && ! grep -q 'ATTENTION' "$log"; then ok "a quiet bridge does not fake a gap: the mark keeps proving it is alive"; else bad "a quiet bridge does not fake a gap" "stdout=[$(cat "$log" 2>&1)]"; fi
+
+  # ... and the check can go red: with the idle touch effectively off, the same run alarms.
+  # Without this the case above would pass on a tool that never touches at all.
+  local b7; b7="$(new_bridge)"
+  local td7="$TMPROOT/marktmp7.$RANDOM"
+  post "$b7" 2026-01-01T000000Z__other__g1 other app
+  log="$(mark_run "$b7" "$td7" app 5 "WATCH_BRIDGE_STATE_MAX_AGE=3 WATCH_BRIDGE_STATE_TOUCH=99999")"
+  assert_eq "quiet bridge, no idle touch, run 1: silent" "0" "$(mark_reported "$log")"
+  log="$(mark_run "$b7" "$td7" app 4 "WATCH_BRIDGE_STATE_MAX_AGE=3 WATCH_BRIDGE_STATE_TOUCH=99999")"
+  if grep -q 'ATTENTION' "$log"; then ok "... and without the idle touch it DOES alarm (the defect, held)"; else bad "... and without the idle touch it DOES alarm" "stdout=[$(cat "$log" 2>&1)]"; fi
+
   # Keyed by bridge path, not only by id: a second bridge with the SAME id must not adopt
   # the first one's mark -- it would report that bridge's whole backlog as new.
   local b4; b4="$(new_bridge)"

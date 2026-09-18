@@ -1676,6 +1676,9 @@ if [[ "${WATCH_BRIDGE_STATE:-1}" != "0" ]]; then
   find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'watch-bridge-seen-*' -mmin +1440 -delete 2>/dev/null || true
 fi
 state_max_age="${WATCH_BRIDGE_STATE_MAX_AGE:-3600}"
+# How often the mark proves it is still alive while nothing arrives (reasoning at the loop).
+state_touch_every="${WATCH_BRIDGE_STATE_TOUCH:-60}"
+state_touched=0
 
 # The mark is unusable: this is the only situation in which a re-arm can still swallow
 # something -- it falls back to baseline, so whatever arrived during the pause is old to it.
@@ -1768,6 +1771,26 @@ while true; do
   baseline=0
   # Only write on change: the mark changes rarely, and one write per cycle would be
   # work without a return.
-  if (( state_dirty )); then state_save; fi
+  if (( state_dirty )); then
+    state_save; state_touched=$(date -u +%s)
+  else
+    # ... but the mtime still has to move. At the next arm it answers "how long was there no
+    # watcher here?" -- and if it only advances when a message arrives, it answers "when did
+    # the last message arrive?" instead. On a quiet bridge that is hours, and then EVERY
+    # re-arm reports a gap that never existed. Measured in production right after the
+    # not-adopted notice was added: four of five marks on the machine were 3800s old while
+    # their watchers had been running the whole time -- each of those sessions would have
+    # been told to run a full scan for nothing. A false alarm in normal operation costs more
+    # than no message at all: it trains you to skip the real one, and the scan it asks for is
+    # the slowest thing this tool does.
+    #
+    # So touch while idle, but not on every cycle: the interval is large against the poll and
+    # small against the age limit.
+    now=$(date -u +%s)
+    if (( now - state_touched >= state_touch_every )); then
+      [[ -n "$state_file" && -e "$state_file" ]] && touch "$state_file" 2>/dev/null
+      state_touched=$now
+    fi
+  fi
   sleep "$poll"
 done

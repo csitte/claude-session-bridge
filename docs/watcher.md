@@ -133,6 +133,17 @@ command. The **adoption** message stays on stderr: it is the normal case and wou
 fire around a dozen times per sitting, and a notification nobody can act on trains people to
 ignore the ones they can.
 
+**The mark keeps proving it is alive while nothing arrives.** It is written only when
+something changes, so on a quiet bridge its mtime would stop moving -- and then it answers
+"when did the last message arrive?" instead of "how long was there no watcher here?", which
+is the question the age limit asks. Every re-arm after a quiet hour would report a gap that
+never existed and ask for a full scan. Measured in production, minutes after the notice above
+went in: four of five marks on the machine were 3800 s old while their watchers had been
+running the whole time. So while idle the watcher touches the mark every
+`WATCH_BRIDGE_STATE_TOUCH` seconds (default 60) -- an interval large against the poll and
+small against the limit. *A false alarm in normal operation costs more than no message at
+all: it trains you to skip the real one.*
+
 Two details that are not arbitrary:
 
 - **The file names, not a timestamp.** A sync client carries the original mtime across a
@@ -150,7 +161,7 @@ reads it as an error goes looking for a long time.
 The honest limit: a duplicate is possible. If a session restarts while the mark is still fresh,
 the push reports the gap message *and* the start scan shows its thread. That is the same trade
 this tool makes elsewhere — visible too much beats invisible too little. Test group `mark`
-(12 cases), including one that holds the defect itself: with the mark off, the gap message is
+(20 cases), including one that holds the defect itself: with the mark off, the gap message is
 lost in silence.
 
 ### A name that arrives before its content

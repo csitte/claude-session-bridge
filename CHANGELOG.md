@@ -29,10 +29,18 @@ commit it names will say why.
   times per sitting. A mark that is present but empty now says so as well, instead of falling
   back to baseline in silence.
 
+  Found minutes later, in production: the mark is only written when something changes, so on
+  a quiet bridge its mtime stops moving and the age limit starts measuring the wrong thing --
+  "when did the last message arrive" instead of "how long was there no watcher". Four of five
+  marks on the machine were 3800 s old with their watchers running the whole time; every one
+  of those sessions would have been told to run a full scan for nothing. While idle the
+  watcher now touches the mark every `WATCH_BRIDGE_STATE_TOUCH` seconds (default 60). A false
+  alarm in normal operation costs more than no message at all.
+
   The suite could not have caught this: its helper merged both channels with `2>&1`, so the
   existing assertion for this message passed while the message sat in the channel nobody
   reads. `mark_run` now keeps stdout and stderr apart and the cases assert the **channel**,
-  not just the words (test group `mark`, 16 cases; both the channel and the empty-mark
+  not just the words (test group `mark`, 20 cases; both the channel and the empty-mark
   fallback seen red by mutation).
 
 ### Changed
