@@ -819,6 +819,27 @@ test_install() {
     && ok "-u keeps additions below the paragraph" \
     || bad "-u keeps additions below the paragraph"
 
+  head_ "installer: the template survives the shell"
+  # The paragraph is a double-quoted bash string, so every backtick in it must be escaped.
+  # One that is not becomes a command substitution: the shell runs the words inside it,
+  # the result is empty, and the written paragraph keeps its sentence shape with the
+  # condition missing -- "Only if it prints  is the gap open". Nothing fails; only
+  # "command not found" on stderr, buried in rollout noise (found by a reader during the
+  # first real rollout, 18.09.2026). The count of backticks written must equal the count in
+  # the template source: a swallowed pair is two fewer.
+  p="$(new_proj bridge-section)"
+  local tpl_ticks pre_ticks post_ticks err
+  tpl_ticks="$(awk '/^block="/{f=1} f{print} f&&/"$/{exit}' "$INSTALLER" | tr -cd '`' | wc -c)"
+  pre_ticks="$(tr -cd '`' < "$p/CLAUDE.md" | wc -c)"
+  err="$(bash "$INSTALLER" app "$p" 2>&1 >/dev/null)"
+  post_ticks="$(tr -cd '`' < "$p/CLAUDE.md" | wc -c)"
+  assert_eq "every backtick of the template reaches the file" "$tpl_ticks" "$((post_ticks - pre_ticks))"
+  if ! grep -q 'command not found' <<<"$err"; then ok "no command substitution ran while rendering"
+  else bad "no command substitution ran while rendering" "$err"; fi
+  grep -qF '`ATTENTION -- the mark ... was not adopted`' "$p/CLAUDE.md" \
+    && ok "the mark condition is written verbatim" \
+    || bad "the mark condition is written verbatim" "$(grep 'Only if it prints' -A1 "$p/CLAUDE.md")"
+
   head_ "installer: CRLF files keep their line endings"
   p="$(new_proj bridge-section)"
   sed -i 's/$/\r/' "$p/CLAUDE.md"

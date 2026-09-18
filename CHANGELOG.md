@@ -15,6 +15,16 @@ commit it names will say why.
 ## Unreleased
 
 ### Fixed
+- **The installer wrote the mark condition with a hole in it.** The paragraph template in
+  `install-watcher.sh` is a double-quoted shell string, so every backtick in it has to be
+  escaped -- and the pair around `ATTENTION -- the mark ... was not adopted` was not. The
+  shell ran the words as a command, the result was empty, and what reached `CLAUDE.md` was
+  *"Only if it prints  is the gap open"*: grammatical, and useless, because the one condition
+  the sentence exists for was gone. Nothing failed; the only trace was `ATTENTION: command not
+  found` on stderr, buried in rollout output. Caught during a dry run before the first
+  rollout, by a reader who diffed the rendered paragraph against the source. Escaped now, and
+  the suite counts the backticks written against the backticks in the template: a swallowed
+  pair is two fewer.
 - **The one watcher message that asks you to do something now reaches you.** When a re-arm
   finds no usable mark -- it is older than `WATCH_BRIDGE_STATE_MAX_AGE`, or empty -- the
   watcher falls back to baseline, and whatever arrived in the gap is old to it. That is the
