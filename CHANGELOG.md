@@ -91,6 +91,18 @@ commit it names will say why.
   no longer changes a versioned file.
 
 ### Fixed
+- **A message that arrives while the watcher is being re-armed is no longer lost.** If whatever
+  runs the watcher puts a deadline on it -- the harness this was written for caps every
+  background watch at 30 minutes -- the watcher is stopped and started again over and over.
+  Everything present at startup is baseline, so a message landing in the gap fell through both
+  nets: no push (to the new watcher it is old) and no start scan (that ran hours ago), in
+  silence. The watcher now writes the files it has seen to a mark
+  (`${TMPDIR:-/tmp}/watch-bridge-seen-<id>-<path-key>`); a fresh mark replaces the baseline, so
+  what arrived in the gap is reported. A mark older than `WATCH_BRIDGE_STATE_MAX_AGE`
+  (default 3600 s) is not used, and the watcher says so and points at `--fold` -- that pause was
+  a session change, not a re-arm. `WATCH_BRIDGE_STATE=0` turns it off. The mark stores names,
+  not a timestamp, because a sync client carries the original mtime across a machine boundary
+  and a "newer than the last run" comparison would discard exactly the messages that crossed it.
 - **A session is now told when it starts without its project instructions.** For a project
   whose `CLAUDE.md` is kept outside its own repository (`instructions=<key>`), four things can
   go wrong: the instructions clone is missing on this machine, the key is not in it, the file

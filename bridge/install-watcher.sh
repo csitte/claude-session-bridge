@@ -125,7 +125,9 @@ else
 fi
 
 block="**Bridge push (watcher):**${sharednote}At session start, **arm first, fold second** — in that order,
-and without checking \`--status\` beforehand: arm the Monitor tool with persistent: true,
+and without checking \`--status\` beforehand: arm the Monitor tool with the longest run time it
+allows (\`timeout_ms: 1800000\`; when the watch expires, arm it again -- the harness puts a deadline
+on every monitor, 30 minutes being the maximum),
 description \"session bridge: new messages for $iddesc\", command with the path that exists
 on this machine:
 \`bash $script_pc $idexpr\` (machine A) or
@@ -283,7 +285,7 @@ fi
 cat <<EOF
 
 Done for '$me'. From the next session start on, the session arms itself.
-To take effect in the running session: arm the Monitor tool, persistent: true,
+To take effect in the running session: arm the Monitor tool, timeout_ms 1800000,
   command:     bash $script $me
   description: session bridge: new messages for $me
 If one is already running for '$me', the new arm steps aside by itself — state:

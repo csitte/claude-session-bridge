@@ -1641,16 +1641,90 @@ declare -A retry
 # Generous by default, because a cold sync client can take minutes to catch up.
 retry_max="${WATCH_BRIDGE_RETRIES:-40}"
 
+# --- The mark: the watcher's state survives a re-arm ---------------------------------
+#
+# If the thing that runs this watcher puts a DEADLINE on it, the watcher is stopped and
+# started again for as long as it is needed. In the setup this was written for, the harness
+# caps every background watch at 30 minutes (asked for 60, got 30 -- measured, not assumed),
+# so in one night the watcher was re-armed twelve times. The script does not end by itself;
+# it is ended.
+#
+# That left a hole. Everything that exists when the watcher starts is baseline (below) and is
+# never reported. A message that lands in the gap between "stopped" and "started again" falls
+# through BOTH nets: no push, because to the new watcher it is old, and no start scan, because
+# that ran hours ago. The gap is usually seconds; if the session is busy, minutes.
+#
+# So the watcher writes the files it has seen into a mark. If a new watcher finds a FRESH
+# mark, that mark REPLACES the baseline: what is in it is old, everything else is new and gets
+# reported. If the mark is older than WATCH_BRIDGE_STATE_MAX_AGE (default 3600 s) it is not
+# used -- then the pause was not a re-arm but a session change or a reboot, and the start scan
+# is the right tool for that. The default is twice the deadline above, so that a late re-arm
+# still benefits.
+#
+# Why the file NAMES and not a timestamp: a sync client carries the ORIGINAL mtime across the
+# machine boundary. A message written on machine A at 01:00 and visible on machine B at 01:02
+# still has mtime 01:00 -- a "mtime > last run" comparison would have discarded it. The name
+# is the only quantity that does not lie.
+#
+# The mark is keyed by id AND bridge path: a test bridge must not read the mark of a live one,
+# and the other way round. WATCH_BRIDGE_STATE=0 turns it all off.
+state_file=""
+if [[ "${WATCH_BRIDGE_STATE:-1}" != "0" ]]; then
+  state_key="$(printf '%s' "$bridge" | cksum | tr -cd '0-9')"
+  state_file="${TMPDIR:-/tmp}/watch-bridge-seen-${me}-${state_key}"
+  # Do not let the marks of dead ids pile up (same as for the inventory cache).
+  find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'watch-bridge-seen-*' -mmin +1440 -delete 2>/dev/null || true
+fi
+state_max_age="${WATCH_BRIDGE_STATE_MAX_AGE:-3600}"
+
+# Load the mark. 0 = adopted (the baseline is then skipped), 1 = not usable.
+state_load() {
+  [[ -n "$state_file" && -r "$state_file" ]] || return 1
+  local now mt age line n=0
+  now=$(date -u +%s)
+  mt=$(date -u -r "$state_file" +%s 2>/dev/null) || return 1
+  [[ -n "$mt" ]] || return 1
+  age=$(( now - mt ))
+  if (( age > state_max_age )); then
+    echo "watch-bridge: the mark for '$me' is ${age}s old (limit ${state_max_age}s) -- not" >&2
+    echo "              adopted. What arrived during the pause is caught by the start scan:" >&2
+    echo "              watch-bridge.sh --fold $me" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    seen["$line"]=1; n=$(( n + 1 ))
+  done < "$state_file"
+  (( n > 0 )) || return 1
+  echo "watch-bridge: mark from ${age}s ago adopted ($n files) -- what arrived in the re-arm" >&2
+  echo "              gap is reported instead of being swallowed as baseline." >&2
+  return 0
+}
+
+# Write the mark: temp + mv, so a watcher starting at the same moment never reads half of it.
+state_save() {
+  [[ -n "$state_file" ]] || return 0
+  local tmp="$state_file.$$"
+  if printf '%s\n' "${!seen[@]}" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$state_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+  else
+    rm -f "$tmp" 2>/dev/null
+  fi
+  return 0
+}
+
 baseline=1
+state_load && baseline=0
 while true; do
+  state_dirty=0
   for f in "$bridge"/threads/*/msgs/*.md; do
     [[ -n "${seen[$f]:-}" ]] && continue
     # Baseline first, and without reading it: whatever exists at startup belongs to
     # the session's start scan, whether or not it happens to be readable right now.
     # Otherwise a cold sync client would report half the bridge as it catches up.
-    if [[ $baseline -eq 1 ]]; then seen["$f"]=1; continue; fi
+    if [[ $baseline -eq 1 ]]; then seen["$f"]=1; state_dirty=1; continue; fi
     slug="$(basename "$(dirname "$(dirname "$f")")")"
-    if [[ "$slug" == _* ]]; then seen["$f"]=1; continue; fi
+    if [[ "$slug" == _* ]]; then seen["$f"]=1; state_dirty=1; continue; fi
     from="$(fm_field from "$f")"
     to="$(fm_field to "$f")"
     # Not one frontmatter field readable => so far there is only the name. Do not
@@ -1660,6 +1734,7 @@ while true; do
       if [[ $n -lt $retry_max ]]; then retry["$f"]=$n; continue; fi
     fi
     seen["$f"]=1
+    state_dirty=1
     [[ "$from" == "$me" ]] && continue
     addressed "$to" || continue
     # Name the co-recipients: the session should know the others got the same
@@ -1674,5 +1749,8 @@ while true; do
          "thread '$slug', from '$from' — $(basename "$f")"
   done
   baseline=0
+  # Only write on change: the mark changes rarely, and one write per cycle would be
+  # work without a return.
+  if (( state_dirty )); then state_save; fi
   sleep "$poll"
 done

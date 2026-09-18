@@ -102,6 +102,42 @@ invisibility as handing off to a session that is not running.
 Whatever is present is reported either way; the warning only says whether the result can be
 trusted yet. For tests, set `SESSION_BRIDGE_DIR` and `WATCH_BRIDGE_SETTLE=0`.
 
+### The mark: the watcher's state survives a re-arm
+
+**If whatever runs the watcher puts a deadline on it, the baseline has a hole.** In the setup
+this tool grew up in, the harness caps every background watch at 30 minutes -- asked for 60,
+got 30, measured rather than assumed -- so the watcher is stopped and started again over and
+over (twelve times in one night). The script has no run time limit of its own; it is ended.
+
+A message that lands in the gap between "stopped" and "started again" then falls through
+**both** nets: no push, because to the new watcher it is old, and no start scan, because that
+ran hours ago. The gap is usually seconds; with a busy session, minutes. It is silent, which
+is what makes it expensive.
+
+So the watcher writes the files it has seen to a mark under
+`${TMPDIR:-/tmp}/watch-bridge-seen-<id>-<path-key>`. A new watcher that finds a **fresh** mark
+lets it **replace** the baseline: what is in it is old, everything else is new and gets
+reported. A mark older than `WATCH_BRIDGE_STATE_MAX_AGE` (default 3600 s, twice the deadline
+above) is not used, and the watcher **says so** and names the fold -- such a pause was not a
+re-arm but a session change or a reboot, and for that the start scan is the right tool.
+`WATCH_BRIDGE_STATE=0` turns it off.
+
+Two details that are not arbitrary:
+
+- **The file names, not a timestamp.** A sync client carries the original mtime across a
+  machine boundary: a message written on machine A at 01:00 and visible on machine B at 01:02
+  still has mtime 01:00, so a "newer than the last run" comparison would have discarded it.
+  The name is the only quantity that does not lie.
+- **Keyed by id *and* bridge path.** Without the path key a test bridge would adopt the mark of
+  a live one and report that bridge's whole backlog as new. Proved by mutation: removing the
+  key turns three cases red.
+
+The honest limit: a duplicate is possible. If a session restarts while the mark is still fresh,
+the push reports the gap message *and* the start scan shows its thread. That is the same trade
+this tool makes elsewhere — visible too much beats invisible too little. Test group `mark`
+(12 cases), including one that holds the defect itself: with the mark off, the gap message is
+lost in silence.
+
 ### A name that arrives before its content
 
 A synced folder can publish the file **name** before its **content** is there. If the watcher
@@ -131,7 +167,9 @@ most surprising constraint of the design, and it has a consequence — see
 Put a paragraph like this in each session's `CLAUDE.md`:
 
 > **Bridge push (watcher):** at session start, **arm first, fold second** — in that order,
-> and without checking `--status` beforehand: arm the Monitor tool with persistent: true,
+> and without checking `--status` beforehand: arm the Monitor tool with the longest run time it
+> allows (`timeout_ms: 1800000`; when the watch expires, arm it again -- the harness puts a deadline
+> on every monitor, 30 minutes being the maximum),
 > description "session bridge: new messages for `<id>`", command:
 > `bash <path>/watch-bridge.sh <id>`. If a watcher already delivers for this id, the new arm
 > steps aside by itself, and a silent remnant is cleared in the process. **Then** run the

@@ -627,6 +627,87 @@ test_watcher() {
 }
 
 # --------------------------------------------------------------------------
+# watcher: the mark across a re-arm
+# --------------------------------------------------------------------------
+
+# One watcher run in its OWN TMPDIR, so the mark cannot leak between cases -- and so a real
+# watcher on the machine running the suite is never touched. Returns the path of the log.
+mark_run() { # $1=bridge $2=tmpdir $3=id $4=seconds $5=extra env assignments (may be empty)
+  local b="$1" td="$2" id="$3" secs="$4" envs="${5:-}"
+  local out="$TMPROOT/mark.$id.$RANDOM"
+  mkdir -p "$td"
+  ( [[ -n "$envs" ]] && eval "export $envs"
+    export TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1
+    bash "$WATCHER" "$id" 1 > "$out" 2>&1 &
+    local pid=$!
+    sleep "$secs"
+    kill "$pid" 2>/dev/null
+    wait "$pid" 2>/dev/null ) >/dev/null 2>&1
+  printf '%s' "$out"
+}
+mark_reported() { # $1=log -> number of reported messages
+  grep -c 'Bridge message' "$1" 2>/dev/null || true
+}
+
+test_mark() {
+  head_ "watcher: the mark closes the re-arm gap"
+
+  local b; b="$(new_bridge)"
+  export SESSION_BRIDGE_DIR="$b"; check_safety
+  local td="$TMPROOT/marktmp.$RANDOM" log
+
+  # Old message: present before the watcher starts, so it belongs to the start scan.
+  post "$b" 2026-01-01T000000Z__other__a1 other app
+  log="$(mark_run "$b" "$td" app 4)"
+  assert_eq "run 1: what was already there stays silent" "0" "$(mark_reported "$log")"
+  if ls "$td"/watch-bridge-seen-app-* >/dev/null 2>&1; then ok "... and a mark was written"; else bad "... and a mark was written" "$(ls -A "$td")"; fi
+
+  # THE GAP: no watcher is running, a message arrives, then the watcher is armed again.
+  # This is what a deadline on the watch produces, over and over.
+  post "$b" 2026-01-02T000000Z__other__a2 other app
+  log="$(mark_run "$b" "$td" app 4)"
+  assert_eq "run 2: the message from the gap IS reported" "1" "$(mark_reported "$log")"
+  if grep -q 'a2' "$log"; then ok "... and it is the right one"; else bad "... and it is the right one" "$(cat "$log")"; fi
+  if grep -q 'mark from' "$log"; then ok "... the run says it adopted a mark"; else bad "... the run says it adopted a mark" "$(cat "$log")"; fi
+
+  # The defect itself, held as a test: without the mark the gap message is swallowed in
+  # silence -- no push (to the new watcher it is old) and no start scan (that ran long ago).
+  # Without this case a regression would look like a passing suite.
+  local b2; b2="$(new_bridge)"
+  local td2="$TMPROOT/marktmp2.$RANDOM"
+  post "$b2" 2026-01-01T000000Z__other__b1 other app
+  log="$(mark_run "$b2" "$td2" app 4 "WATCH_BRIDGE_STATE=0")"
+  assert_eq "mark off, run 1: silent" "0" "$(mark_reported "$log")"
+  post "$b2" 2026-01-02T000000Z__other__b2 other app
+  log="$(mark_run "$b2" "$td2" app 4 "WATCH_BRIDGE_STATE=0")"
+  assert_eq "mark off, run 2: the gap message is LOST (the old behaviour)" "0" "$(mark_reported "$log")"
+
+  # A mark older than the limit is not adopted: then the pause was not a re-arm but a
+  # session change or a reboot, and for that the start scan is the right tool. Silence here
+  # is correct -- but it has to SAY so, otherwise nobody knows which tool to reach for.
+  local b3; b3="$(new_bridge)"
+  local td3="$TMPROOT/marktmp3.$RANDOM"
+  post "$b3" 2026-01-01T000000Z__other__c1 other app
+  log="$(mark_run "$b3" "$td3" app 4)"
+  assert_eq "stale mark, run 1: silent" "0" "$(mark_reported "$log")"
+  post "$b3" 2026-01-02T000000Z__other__c2 other app
+  log="$(mark_run "$b3" "$td3" app 4 "WATCH_BRIDGE_STATE_MAX_AGE=0")"
+  assert_eq "a mark over the age limit is not adopted" "0" "$(mark_reported "$log")"
+  if grep -q 'not' "$log" && grep -q -- '--fold' "$log"; then ok "... and it names the start scan instead"; else bad "... and it names the start scan instead" "$(cat "$log")"; fi
+
+  # Keyed by bridge path, not only by id: a second bridge with the SAME id must not adopt
+  # the first one's mark -- it would report that bridge's whole backlog as new.
+  local b4; b4="$(new_bridge)"
+  post "$b4" 2026-01-01T000000Z__other__d1 other app
+  post "$b4" 2026-01-02T000000Z__other__d2 other app
+  log="$(mark_run "$b4" "$td" app 4)"     # $td already holds the mark of bridge $b
+  assert_eq "another bridge, same id: its own baseline, not the foreign mark" "0" "$(mark_reported "$log")"
+  if ls "$td"/watch-bridge-seen-app-* 2>/dev/null | wc -l | grep -q '2'; then ok "... two marks side by side, one per bridge"; else bad "... two marks side by side, one per bridge" "$(ls "$td")"; fi
+
+  unset SESSION_BRIDGE_DIR
+}
+
+# --------------------------------------------------------------------------
 # installer
 # --------------------------------------------------------------------------
 
@@ -3526,6 +3607,7 @@ STUB
 
 case "${1:-all}" in
   watcher) test_watcher ;;
+  mark) test_mark ;;
   commands) test_commands ;;
   linkcommands) test_linkcommands ;;
   canonicalise) test_canonicalise ;;
@@ -3554,8 +3636,8 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
-  *) echo "usage: run.sh [watcher|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_mark; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"
