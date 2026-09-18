@@ -118,9 +118,20 @@ So the watcher writes the files it has seen to a mark under
 `${TMPDIR:-/tmp}/watch-bridge-seen-<id>-<path-key>`. A new watcher that finds a **fresh** mark
 lets it **replace** the baseline: what is in it is old, everything else is new and gets
 reported. A mark older than `WATCH_BRIDGE_STATE_MAX_AGE` (default 3600 s, twice the deadline
-above) is not used, and the watcher **says so** and names the fold -- such a pause was not a
-re-arm but a session change or a reboot, and for that the start scan is the right tool.
-`WATCH_BRIDGE_STATE=0` turns it off.
+above) is not used -- such a pause was not a re-arm but a session change or a reboot, and for
+that the start scan is the right tool. The same goes for a mark that is there but empty or
+unreadable: there was a predecessor and its state is gone. `WATCH_BRIDGE_STATE=0` turns it off.
+
+**That one message goes to stdout; every other one goes to stderr.** It is the only situation
+in which a re-arm can still swallow something, so it is the only one that demands an action --
+and whether an action reaches anyone is a property of the runner, not a matter of taste. Here
+the harness turns **only stdout lines** into a notification; stderr ends up in a file no
+session reads. The message started out on stderr, which wired the safety net to a dead line:
+measured with a three-hour-old mark, stdout was empty and the new message was swallowed in
+silence. It now reads `ATTENTION -- the mark ... was not adopted` and carries the ready fold
+command. The **adoption** message stays on stderr: it is the normal case and would otherwise
+fire around a dozen times per sitting, and a notification nobody can act on trains people to
+ignore the ones they can.
 
 Two details that are not arbitrary:
 

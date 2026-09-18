@@ -141,7 +141,12 @@ into the tool timeout on a sync folder:
 lists the open threads with \`owner: $iddesc\`; if it prints a WARNING, the sync client is
 still fetching — repeat it later; if it prints ATTENTION, arming did not happen — do it now.
 Whatever already existed when you armed is baseline and arrives through the start scan, so
-the order loses nothing.
+for the **first** arm of a session the order loses nothing.
+**When the watch expires, arm again right away** -- the harness caps every monitor at 30
+minutes; expiry is the normal case, not a fault. A re-arm swallows nothing: the new watcher
+adopts its predecessor's mark and reports what arrived in the gap. **Only if it prints
+`ATTENTION -- the mark ... was not adopted`** is the gap open -- then fold once, the ready
+command is in the message.
 Every notification = a new bridge message for this session → read the file, report it in
 the chat, react according to the bridge protocol. The watcher only reads and complements
 the start scan; write-once is unaffected. **Do not disarm the watcher:** it survives

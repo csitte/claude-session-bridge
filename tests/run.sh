@@ -631,14 +631,20 @@ test_watcher() {
 # --------------------------------------------------------------------------
 
 # One watcher run in its OWN TMPDIR, so the mark cannot leak between cases -- and so a real
-# watcher on the machine running the suite is never touched. Returns the path of the log.
+# watcher on the machine running the suite is never touched. Returns the path of the stdout
+# log; stderr is kept NEXT TO IT as "<log>.err" and never merged.
+#
+# Keeping them apart is not tidiness, it is the point: only stdout becomes a notification in
+# the harness this runs under, so "the watcher says X" is only true if X is on stdout. While
+# this helper merged the two with 2>&1, the stale-mark case below asserted its message and
+# passed -- with the message sitting in the channel nobody reads.
 mark_run() { # $1=bridge $2=tmpdir $3=id $4=seconds $5=extra env assignments (may be empty)
   local b="$1" td="$2" id="$3" secs="$4" envs="${5:-}"
   local out="$TMPROOT/mark.$id.$RANDOM"
   mkdir -p "$td"
   ( [[ -n "$envs" ]] && eval "export $envs"
     export TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1
-    bash "$WATCHER" "$id" 1 > "$out" 2>&1 &
+    bash "$WATCHER" "$id" 1 > "$out" 2> "$out.err" &
     local pid=$!
     sleep "$secs"
     kill "$pid" 2>/dev/null
@@ -668,7 +674,8 @@ test_mark() {
   log="$(mark_run "$b" "$td" app 4)"
   assert_eq "run 2: the message from the gap IS reported" "1" "$(mark_reported "$log")"
   if grep -q 'a2' "$log"; then ok "... and it is the right one"; else bad "... and it is the right one" "$(cat "$log")"; fi
-  if grep -q 'mark from' "$log"; then ok "... the run says it adopted a mark"; else bad "... the run says it adopted a mark" "$(cat "$log")"; fi
+  if grep -q 'mark from' "$log.err"; then ok "... the run says it adopted a mark (on stderr: normal case, no action)"; else bad "... the run says it adopted a mark" "$(cat "$log.err")"; fi
+  if [[ -f "$log" ]] && ! grep -q 'ATTENTION' "$log"; then ok "... and it does NOT shout on the notification channel"; else bad "... and it does NOT shout on the notification channel" "$(cat "$log" 2>&1)"; fi
 
   # The defect itself, held as a test: without the mark the gap message is swallowed in
   # silence -- no push (to the new watcher it is old) and no start scan (that ran long ago).
@@ -693,7 +700,24 @@ test_mark() {
   post "$b3" 2026-01-02T000000Z__other__c2 other app
   log="$(mark_run "$b3" "$td3" app 4 "WATCH_BRIDGE_STATE_MAX_AGE=0")"
   assert_eq "a mark over the age limit is not adopted" "0" "$(mark_reported "$log")"
-  if grep -q 'not' "$log" && grep -q -- '--fold' "$log"; then ok "... and it names the start scan instead"; else bad "... and it names the start scan instead" "$(cat "$log")"; fi
+  # The channel is the assertion. This message is the ONLY one the watcher emits that
+  # demands an action, and a message that demands an action has to reach the session --
+  # here that means stdout. On stderr it was wired to a dead line: silent baseline, and the
+  # advice in a file nobody opens. Asserting only the words is what let that ship.
+  if grep -q 'ATTENTION' "$log" && grep -q -- '--fold' "$log"; then ok "... and it names the start scan ON STDOUT, where it becomes a notification"; else bad "... and it names the start scan ON STDOUT" "stdout=[$(cat "$log")] stderr=[$(cat "$log.err")]"; fi
+  if [[ -f "$log.err" ]] && ! grep -q 'ATTENTION' "$log.err"; then ok "... and not only on stderr"; else bad "... and not only on stderr" "$(cat "$log.err" 2>&1)"; fi
+
+  # A mark that is there but empty is the same loss: a predecessor existed, its state is
+  # gone. Found while testing the stale case -- it used to fall back to baseline in silence.
+  local b5; b5="$(new_bridge)"
+  local td5="$TMPROOT/marktmp5.$RANDOM"
+  post "$b5" 2026-01-01T000000Z__other__e1 other app
+  log="$(mark_run "$b5" "$td5" app 4)"
+  assert_eq "empty mark, run 1: silent" "0" "$(mark_reported "$log")"
+  : > "$td5"/watch-bridge-seen-app-*
+  post "$b5" 2026-01-02T000000Z__other__e2 other app
+  log="$(mark_run "$b5" "$td5" app 4)"
+  if grep -q 'ATTENTION' "$log"; then ok "an empty mark is announced on stdout too, not swallowed"; else bad "an empty mark is announced on stdout too" "stdout=[$(cat "$log")] stderr=[$(cat "$log.err")]"; fi
 
   # Keyed by bridge path, not only by id: a second bridge with the SAME id must not adopt
   # the first one's mark -- it would report that bridge's whole backlog as new.

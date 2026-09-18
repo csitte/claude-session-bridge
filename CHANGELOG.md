@@ -14,6 +14,36 @@ commit it names will say why.
 
 ## Unreleased
 
+### Fixed
+- **The one watcher message that asks you to do something now reaches you.** When a re-arm
+  finds no usable mark -- it is older than `WATCH_BRIDGE_STATE_MAX_AGE`, or empty -- the
+  watcher falls back to baseline, and whatever arrived in the gap is old to it. That is the
+  only case left in which a re-arm still swallows a message, so it is the only one that
+  requires an action from the session: fold once. The notice existed, but it was printed on
+  **stderr**, and the harness this runs under turns only **stdout** lines into a
+  notification -- stderr goes to a file no session reads. Measured with a three-hour-old
+  mark: stdout empty, the new message swallowed, the advice nowhere anyone would see it. The
+  safety net was wired to a dead line. The notice now goes to stdout, reads `ATTENTION -- the
+  mark ... was not adopted` and carries the ready `--fold` command; the *adoption* message
+  stays on stderr, because it is the normal case and would otherwise fire around a dozen
+  times per sitting. A mark that is present but empty now says so as well, instead of falling
+  back to baseline in silence.
+
+  The suite could not have caught this: its helper merged both channels with `2>&1`, so the
+  existing assertion for this message passed while the message sat in the channel nobody
+  reads. `mark_run` now keeps stdout and stderr apart and the cases assert the **channel**,
+  not just the words (test group `mark`, 16 cases; both the channel and the empty-mark
+  fallback seen red by mutation).
+
+### Changed
+- **The arming paragraph that `install-watcher.sh` writes into every `CLAUDE.md` no longer
+  claims that a re-arm loses nothing.** "Whatever already existed when you armed is baseline
+  and arrives through the start scan" is true for the **first** arm of a session, the one the
+  fold follows immediately -- and only for that one. With a deadline on the watch there are
+  many more arms, and none of them is followed by a start scan. The paragraph now says so,
+  names the mark as what covers the gap, and ties the fold to the one condition under which
+  it is needed: the `ATTENTION` line above.
+
 ### Added
 - **`launcher/link-skills.sh` — the profile's skill folder becomes a link to the repository
   copy.** A personal skill is a delivery path for knowledge every session needs without carrying

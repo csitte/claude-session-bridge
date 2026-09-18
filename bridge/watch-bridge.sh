@@ -1677,6 +1677,20 @@ if [[ "${WATCH_BRIDGE_STATE:-1}" != "0" ]]; then
 fi
 state_max_age="${WATCH_BRIDGE_STATE_MAX_AGE:-3600}"
 
+# The mark is unusable: this is the only situation in which a re-arm can still swallow
+# something -- it falls back to baseline, so whatever arrived during the pause is old to it.
+# That is why THIS message goes to stdout while the others go to stderr: the harness only
+# turns stdout lines into a notification, stderr ends up in a file no session reads
+# (measured 2026-09-18 -- the message used to be on stderr and was therefore wired to a
+# dead line). A message that demands an ACTION belongs in the channel that reaches the
+# session; the adoption message stays on stderr because it is the normal case and fires
+# around a dozen times per sitting.
+state_unusable() {
+  echo "watch-bridge: ATTENTION -- the mark for '$me' $1 and was not adopted."
+  echo "              Whatever arrived in the re-arm gap is baseline to this watcher."
+  echo "              Fold once now: watch-bridge.sh --fold $me"
+}
+
 # Load the mark. 0 = adopted (the baseline is then skipped), 1 = not usable.
 state_load() {
   [[ -n "$state_file" && -r "$state_file" ]] || return 1
@@ -1686,16 +1700,19 @@ state_load() {
   [[ -n "$mt" ]] || return 1
   age=$(( now - mt ))
   if (( age > state_max_age )); then
-    echo "watch-bridge: the mark for '$me' is ${age}s old (limit ${state_max_age}s) -- not" >&2
-    echo "              adopted. What arrived during the pause is caught by the start scan:" >&2
-    echo "              watch-bridge.sh --fold $me" >&2
+    state_unusable "is ${age}s old (limit ${state_max_age}s)"
     return 1
   fi
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     seen["$line"]=1; n=$(( n + 1 ))
   done < "$state_file"
-  (( n > 0 )) || return 1
+  if (( n == 0 )); then
+    # The file is there but empty or unreadable: there WAS a predecessor, its state is gone.
+    # Same loss as the stale case, so the same message.
+    state_unusable "is empty or unreadable"
+    return 1
+  fi
   echo "watch-bridge: mark from ${age}s ago adopted ($n files) -- what arrived in the re-arm" >&2
   echo "              gap is reported instead of being swallowed as baseline." >&2
   return 0
