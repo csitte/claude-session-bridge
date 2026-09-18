@@ -14,6 +14,18 @@ commit it names will say why.
 
 ## Unreleased
 
+### Changed
+- **`link-skills.sh` no longer mistakes the harness's skill cache for your work.** Claude Code
+  keeps the skills synced from its web app under `~/.claude/skills/synced/` -- a UUID folder
+  with an empty `.bucket-<uuid>` marker next to it, several MB, renewing itself. The first
+  real rollout ran into it: the guard that protects unsaved work demanded the cache be
+  committed first. It is skipped now and named as skipped; recognised by the marker, not by
+  the name, so a plain folder called `synced` still blocks. After linking, the sync writes
+  into the repository tree -- add `.claude/skills/synced/` to that repository's `.gitignore`.
+  And `--status` on a plain profile folder now says which repository skills are visible anyway
+  (per-skill links or copies), with the count, and that a new skill does not arrive that way
+  by itself; the exit code still measures the junction. Test group `linkskills` 34 -> 42.
+
 ### Fixed
 - **The installer wrote the mark condition with a hole in it.** The paragraph template in
   `install-watcher.sh` is a double-quoted shell string, so every backtick in it has to be

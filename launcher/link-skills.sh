@@ -116,6 +116,32 @@ skills_in() { # $1 = folder -> names of the skills (subfolders with SKILL.md), o
 
 count_skills() { skills_in "$1" | wc -l | tr -d ' '; }
 
+# The harness keeps a cache of its own under <profile>/skills/synced/: the skills synced from
+# the vendor's web app, a UUID folder plus an empty marker file `.bucket-<uuid>` next to it,
+# several MB, renewing itself (seen 18.09.2026: 4.1 MB; on a freshly set up machine the
+# folder was empty because the sync had not run yet -- it appears everywhere). That is
+# neither a skill nor work: the guard below protects what the link would lose, and a cache
+# is not lost, it is fetched again. Recognised by the marker, not by the name `synced` -- the
+# name is the harness's convention, the marker its signature. After linking, the sync writes
+# into the repository tree; add `.claude/skills/synced/` to .gitignore there, or `git add -A`
+# picks it up.
+is_harness_cache() { # $1 = folder -> 0 if a .bucket* marker lies in it
+  [[ -d "$1" ]] || return 1
+  local m
+  for m in "$1"/.bucket*; do [[ -e "$m" ]] && return 0; done
+  return 1
+}
+
+visible_from_repo() { # -> repository skills whose SKILL.md reads identically in the profile
+                      #    (a per-skill link or a copy), one per line. This measures
+                      #    VISIBILITY; `link_kind` measures the junction; the state is both.
+  local name
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    cmp -s "$prof/$name/SKILL.md" "$src/$name/SKILL.md" 2>/dev/null && echo "$name"
+  done < <(skills_in "$src")
+}
+
 kind="$(link_kind "$prof")"
 target=""; [[ "$kind" == link:* ]] && target="${kind#link:}"
 [[ -n "$target" && $iswin == 1 ]] && target="$(cygpath -u "$target" 2>/dev/null || printf '%s' "$target")"
@@ -138,6 +164,23 @@ if (( status_only )); then
   else
     echo "[skills] NOT linked — $prof is a folder of its own ($(count_skills "$prof") skill(s))." >&2
     echo "         Changes to it apply on this machine only." >&2
+    # Without the junction the purpose may still be served: one link per skill, made by hand.
+    # Then the status says WHAT is visible from the repository instead of only "not linked"
+    # -- and what the per-skill way does not do: a new skill in the repository does not
+    # arrive by itself. The exit code stays 10; it measures the junction.
+    if [[ -d "$src" ]]; then
+      vis="$(visible_from_repo | tr '\n' ' ' | sed 's/ $//')"
+      nvis="$(visible_from_repo | wc -l | tr -d ' ')"; nsrc="$(count_skills "$src")"
+      if [[ -n "$vis" ]]; then
+        echo "         Visible from the repository: $vis ($nvis of $nsrc) — as a per-skill link or a copy;" >&2
+        echo "         a new skill in the repository does NOT arrive this way by itself." >&2
+      else
+        echo "         Visible from the repository: none of $nsrc." >&2
+      fi
+    fi
+    if is_harness_cache "$prof/synced"; then
+      echo "         (synced/ is the harness's skill cache, not a skill — does not count.)" >&2
+    fi
   fi
   echo "         Link it: $(basename "$0") ${repo:-<repo-dir>}" >&2
   exit 10
@@ -196,6 +239,17 @@ if [[ "$kind" == "dir" ]]; then
     [[ -n "$rel" ]] || continue
     pf="$prof/$rel"; rf="$src/$rel"
     top="${rel%%/*}"
+    # The harness's skill cache is not work: skip it, say so once.
+    if [[ "$top" != "$rel" ]] && is_harness_cache "$prof/$top"; then
+      case " $reported " in
+        *" $top "*) continue ;;
+        *) reported="$reported $top"
+           echo "[skipped] '$top' is the harness's skill cache (.bucket* marker) — not a skill, not"
+           echo "          work; after linking it reappears inside the repository tree and belongs"
+           echo "          in .gitignore there (.claude/skills/synced/)."
+           continue ;;
+      esac
+    fi
     # If the whole top-level folder is missing over there, say it once instead of per file.
     if [[ "$top" != "$rel" && ! -e "$src/$top" ]]; then
       case " $reported " in

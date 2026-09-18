@@ -434,8 +434,24 @@ a SKILL.md is not a skill, but the link would hide it just the same, and a loose
 even more so. Writing the tests is what found that: the first version looped over valid skills
 only, and anything outside that definition vanished without a warning.
 
+**The harness keeps a cache of its own in that folder, and the guard must not mistake it for
+work.** Under `~/.claude/skills/synced/` Claude Code stores the skills synced from its web
+app: a UUID folder plus an empty marker `.bucket-<uuid>` next to it, several MB, renewing
+itself. The first real rollout hit it: the guard demanded that the cache be committed before
+linking. It is neither a skill nor work — a cache is not lost, it is fetched again — so
+`link-skills.sh` skips it and says so. It is recognised by the **marker**, not by the name:
+a plain folder called `synced` without a `.bucket*` file still blocks, because that is
+something somebody put there. After linking, the sync writes into the repository tree; add
+`.claude/skills/synced/` to the repository's `.gitignore`, or `git add -A` picks it up.
+
+`--status` on a plain profile folder now also says **what is visible from the repository** —
+per-skill links or copies serve the purpose without the junction, and a status that only says
+"not linked" hides that. The exit code stays 10: it measures the junction, and the sentence
+next to it says what the per-skill way does not do — a new skill in the repository does not
+arrive by itself.
+
 A new skill takes effect at the **next** session start, not in running ones. Test group
-`linkskills` (34 cases), mutation-proved: dropping the "file exists only in the profile" guard
+`linkskills` (42 cases), mutation-proved: dropping the "file exists only in the profile" guard
 turns one case red, and letting the history check pass everything turns three red. The
 cross-check through the finished link is only exercised where `chmod` actually denies reading —
 on Windows that case is skipped, so the Linux CI is the only place that proves it.

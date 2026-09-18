@@ -3514,6 +3514,39 @@ test_linkskills() {
   rc=0; out="$(run2_ "$repo")" || rc=$?
   assert_eq "a loose file in the profile blocks: exit 1" "1" "$rc"
 
+  # --- the harness's own skill cache (synced/ with a .bucket* marker) is not work and must
+  # not block. Found at the first rollout on a machine where the sync had run (18.09.2026):
+  # the guard demanded that 4 MB of self-renewing cache be committed first.
+  setup2_; mkdir -p "$cfg/skills/synced/uuid_bucket/docs"
+  : > "$cfg/skills/synced/.bucket-uuid_bucket"
+  printf '{}\n' > "$cfg/skills/synced/uuid_bucket/manifest.json"
+  printf 'cached\n' > "$cfg/skills/synced/uuid_bucket/docs/SKILL.md"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "the harness cache alone does not block: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -q "harness's skill cache"; then ok "... and is named as skipped"; else bad "... and is named as skipped" "$out"; fi
+  if is_link2_ "$cfg/skills"; then ok "... and the link was made"; else bad "... and the link was made" "$out"; fi
+
+  # ... but it must not hide another blocker next to it
+  setup2_; mkdir -p "$cfg/skills/synced/uuid_bucket" "$cfg/skills/own"
+  : > "$cfg/skills/synced/.bucket-uuid_bucket"
+  printf -- '---\nname: own\n---\nmine\n' > "$cfg/skills/own/SKILL.md"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "cache plus a real skill of your own: still exit 1" "1" "$rc"
+
+  # ... and it is the marker that decides, not the name: a plain folder called synced blocks
+  setup2_; mkdir -p "$cfg/skills/synced/notes"; printf 'mine\n' > "$cfg/skills/synced/notes/x.md"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "a folder named synced WITHOUT the marker blocks: exit 1" "1" "$rc"
+
+  # --- --status on a plain folder says what IS visible from the repository (per-skill link or
+  # copy) -- the purpose can be served without the junction, and the exit code still measures
+  # the junction. A copy stands in for the per-skill link here: the tool cannot tell them apart.
+  setup2_; mkdir -p "$cfg/skills"; cp -R "$repo/.claude/skills/alpha" "$cfg/skills/alpha"
+  rc=0; out="$(run2_ --status "$repo")" || rc=$?
+  assert_eq "--status with one skill visible by copy: still exit 10" "10" "$rc"
+  if printf '%s\n' "$out" | grep -q 'Visible from the repository: alpha (1 of 2)'; then ok "... and names what is visible, with the count"; else bad "... and names what is visible, with the count" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'does NOT arrive this way'; then ok "... and what the per-skill way does not do"; else bad "... and what the per-skill way does not do" "$out"; fi
+
   # --- a link that points somewhere else is not ours to move
   setup2_; mkdir -p "$root/elsewhere"; mklink2_ "$cfg/skills" "$root/elsewhere"
   if is_link2_ "$cfg/skills"; then
