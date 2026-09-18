@@ -132,6 +132,10 @@ Two details that are not arbitrary:
   a live one and report that bridge's whole backlog as new. Proved by mutation: removing the
   key turns three cases red.
 
+The expiry notice is the normal case, not a fault. It reads like one -- "expired after 30m with
+no events delivered" -- and on a quiet night it is the ONLY line the watch produces. Whoever
+reads it as an error goes looking for a long time.
+
 The honest limit: a duplicate is possible. If a session restarts while the mark is still fresh,
 the push reports the gap message *and* the start scan shows its thread. That is the same trade
 this tool makes elsewhere — visible too much beats invisible too little. Test group `mark`
