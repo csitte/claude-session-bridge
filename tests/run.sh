@@ -3332,6 +3332,157 @@ test_canonicalise() {
 # before touching anything. The fixture is a real little repo with a real history, because
 # the blob hash -- not the mtime -- decides whether a differing file is a harmless older
 # version or unsaved work.
+test_linkskills() {
+  head_ "link-skills: the profile skill folder becomes a link to the repo copy"
+  local G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
+  local LS="$ROOT/launcher/link-skills.sh"
+  local root repo cfg out rc
+
+  # Same split as the tool: a junction on Windows, a symlink elsewhere -- without it the
+  # "points elsewhere" case would be Windows-only. Deliberately a copy of the helper in
+  # test_linkcommands: the two groups must be able to fail independently.
+  mklink2_() { # $1 = link, $2 = target
+    case "$(uname -s 2>/dev/null || echo)" in
+      MINGW*|MSYS*|CYGWIN*)
+        powershell.exe -NoProfile -NonInteractive -Command \
+          "New-Item -ItemType Junction -Path '$(cygpath -w "$1")' -Target '$(cygpath -w "$2")' | Out-Null" >/dev/null 2>&1 ;;
+      *) ln -s "$2" "$1" ;;
+    esac
+  }
+  # Canonicalise BOTH sides: on Windows the parent may carry an 8.3 short name, and then every
+  # plain folder looks like a link. Only the CI sees that.
+  is_link2_() {
+    local p par
+    [[ -L "$1" ]] && return 0
+    par="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
+    p="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+    [[ "$p" != "$par/$(basename "$1")" ]]
+  }
+
+  # A repo with two skills and two commits of alpha/SKILL.md; the profile does NOT exist yet,
+  # which is the state a freshly set up machine is in.
+  setup2_() {
+    root="$TMPROOT/ls.$RANDOM.$RANDOM"; repo="$root/repo"; cfg="$root/profile"
+    mkdir -p "$repo/.claude/skills/alpha" "$repo/.claude/skills/beta" "$cfg"
+    $G init -q "$repo"
+    printf -- '---\nname: alpha\ndescription: a\n---\nv1\n' > "$repo/.claude/skills/alpha/SKILL.md"
+    printf -- '---\nname: beta\ndescription: b\n---\nb1\n' > "$repo/.claude/skills/beta/SKILL.md"
+    printf 'reference v1\n' > "$repo/.claude/skills/beta/reference.md"
+    ( cd "$repo" && $G add -A && $G commit -qm v1 )
+    printf -- '---\nname: alpha\ndescription: a\n---\nv2\n' > "$repo/.claude/skills/alpha/SKILL.md"
+    ( cd "$repo" && $G add -A && $G commit -qm v2 )
+  }
+  run2_() { CLAUDE_CONFIG_DIR="$cfg" bash "$LS" "$@" 2>&1; }
+
+  # --- no profile folder at all: the state that makes the skill invisible to every session
+  setup2_
+  rc=0; out="$(run2_ --status "$repo")" || rc=$?
+  assert_eq "no profile folder: --status exits 10" "10" "$rc"
+  if printf '%s\n' "$out" | grep -q 'does not exist on this machine'; then ok "... and says the folder is missing"; else bad "... and says the folder is missing" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'NO session'; then ok "... and what that costs: no session has the skills"; else bad "... and what that costs" "$out"; fi
+
+  out="$(run2_ -n "$repo")"
+  if printf '%s\n' "$out" | grep -q 'would create'; then ok "dry run on a missing folder: would create the link"; else bad "dry run on a missing folder" "$out"; fi
+  if [[ -e "$cfg/skills" ]]; then bad "dry run creates nothing"; else ok "dry run creates nothing"; fi
+
+  out="$(run2_ "$repo")"; rc=$?
+  assert_eq "link: exit 0" "0" "$rc"
+  if is_link2_ "$cfg/skills"; then ok "... the profile folder is a link now"; else bad "... the profile folder is a link now" "$out"; fi
+  assert_eq "... and reading through it gives the repo file" "v2" "$(tail -1 "$cfg/skills/alpha/SKILL.md")"
+  rc=0; run2_ --status "$repo" >/dev/null || rc=$?
+  assert_eq "--status after linking: exit 0" "0" "$rc"
+  out="$(run2_ "$repo")"
+  if printf '%s\n' "$out" | grep -q 'already linked'; then ok "linking twice is idempotent"; else bad "linking twice is idempotent" "$out"; fi
+
+  out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LS" --unlink 2>&1)"; rc=$?
+  assert_eq "--unlink: exit 0" "0" "$rc"
+  if is_link2_ "$cfg/skills"; then bad "... and the folder is a real folder again"; else ok "... and the folder is a real folder again"; fi
+  assert_eq "... with both skills in it" "2" "$(ls -1 "$cfg/skills" | wc -l | tr -d ' ')"
+  # --unlink must not need the repo: that is the moment you want to undo most.
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LS" --unlink 2>&1)" || rc=$?
+  assert_eq "--unlink without a link: exit 0" "0" "$rc"
+
+  # --- a skill that exists only in the profile: linking would hide it
+  setup2_; mkdir -p "$cfg/skills/own"; printf -- '---\nname: own\n---\nmine\n' > "$cfg/skills/own/SKILL.md"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "a skill only in the profile: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q "exists only in the profile"; then ok "... named"; else bad "... named" "$out"; fi
+  if is_link2_ "$cfg/skills"; then bad "... and nothing was touched"; else ok "... and nothing was touched"; fi
+
+  # --- changed in the profile and in no commit: that is unsaved work
+  setup2_; mkdir -p "$cfg/skills/alpha"; printf 'my own version\n' > "$cfg/skills/alpha/SKILL.md"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "a profile version that is in no commit: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'in NO commit'; then ok "... named"; else bad "... named" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'diff '; then ok "... with the diff command to look at it"; else bad "... with the diff command" "$out"; fi
+
+  # --- the OLDER committed version may pass: its content is in the history, nothing is lost
+  setup2_; mkdir -p "$cfg/skills/alpha"
+  printf -- '---\nname: alpha\ndescription: a\n---\nv1\n' > "$cfg/skills/alpha/SKILL.md"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "an older committed version: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -q 'an older committed version'; then ok "... and is named as such"; else bad "... and is named as such" "$out"; fi
+  assert_eq "... the link brings the newer one up" "v2" "$(tail -1 "$cfg/skills/alpha/SKILL.md")"
+
+  # --- a file only in the profile INSIDE a shared skill. This is what separates a skill from
+  # a command: comparing only SKILL.md would let a reference file disappear.
+  setup2_; mkdir -p "$cfg/skills/beta"
+  cp "$repo/.claude/skills/beta/SKILL.md" "$cfg/skills/beta/"
+  printf 'notes of my own\n' > "$cfg/skills/beta/extra.md"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "an extra file inside a shared skill: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'beta/extra.md exists only in the profile'; then ok "... named with its path"; else bad "... named with its path" "$out"; fi
+
+  # --- a folder without SKILL.md is not a skill -- and would be hidden just the same. Writing
+  # these tests is what found it: the first version of the tool only looped over real skills.
+  setup2_; mkdir -p "$cfg/skills/notaskill"; printf 'just a readme\n' > "$cfg/skills/notaskill/readme.md"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "a folder that is not a skill still blocks: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q "notaskill"; then ok "... named"; else bad "... named" "$out"; fi
+
+  # --- a loose file at the top level blocks too
+  setup2_; mkdir -p "$cfg/skills"; printf 'loose\n' > "$cfg/skills/loose.md"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "a loose file in the profile blocks: exit 1" "1" "$rc"
+
+  # --- a link that points somewhere else is not ours to move
+  setup2_; mkdir -p "$root/elsewhere"; mklink2_ "$cfg/skills" "$root/elsewhere"
+  if is_link2_ "$cfg/skills"; then
+    rc=0; out="$(run2_ "$repo")" || rc=$?
+    assert_eq "a foreign link: exit 1" "1" "$rc"
+    if printf '%s\n' "$out" | grep -q 'already points elsewhere'; then ok "... named, and not touched"; else bad "... named, and not touched" "$out"; fi
+  else
+    ok "a foreign link: skipped (this platform made no link)"
+    ok "... named, and not touched (skipped)"
+  fi
+
+  # --- the cross-check through the link has to be able to FAIL, or it guards nothing. The
+  # mutation run found this one: turning the check into `true` left the group green, because
+  # in every other case the link works. Provoked by making the repo file unreadable, so the
+  # link gets created and reading through it fails -- the tool must roll back and say so.
+  # chmod has no effect as root or on Windows; probe it instead of assuming.
+  setup2_
+  chmod 000 "$repo/.claude/skills/alpha/SKILL.md" 2>/dev/null || true
+  if cat "$repo/.claude/skills/alpha/SKILL.md" >/dev/null 2>&1; then
+    ok "cross-check failure: skipped (this platform ignores chmod)"
+    ok "... and rolls back (skipped)"
+  else
+    rc=0; out="$(run2_ "$repo")" || rc=$?
+    assert_eq "a link that cannot be read through: exit 1" "1" "$rc"
+    if printf '%s\n' "$out" | grep -q 'cross-check through the link failed'; then ok "... and says so, instead of reporting success"; else bad "... and says so" "$out"; fi
+    if is_link2_ "$cfg/skills"; then bad "... and the link is gone again"; else ok "... and the link is gone again"; fi
+  fi
+  chmod 644 "$repo/.claude/skills/alpha/SKILL.md" 2>/dev/null || true
+
+  # --- an empty repo folder would be an empty profile: refuse
+  setup2_; rm -rf "$repo/.claude/skills/alpha" "$repo/.claude/skills/beta"
+  rc=0; out="$(run2_ "$repo")" || rc=$?
+  assert_eq "an empty repo skill folder: exit 1" "1" "$rc"
+  if printf '%s\n' "$out" | grep -q 'would be an empty profile'; then ok "... and says why"; else bad "... and says why" "$out"; fi
+
+  unset -f mklink2_ is_link2_ setup2_ run2_
+}
+
 test_linkcommands() {
   head_ "link-commands: the profile folder becomes a link to the repo copy"
   local G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
@@ -3610,6 +3761,7 @@ case "${1:-all}" in
   mark) test_mark ;;
   commands) test_commands ;;
   linkcommands) test_linkcommands ;;
+  linkskills) test_linkskills ;;
   canonicalise) test_canonicalise ;;
   indexrename) test_indexrename ;;
   movesnotice) test_movesnotice ;;
@@ -3636,8 +3788,8 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
-  *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|canonicalise|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_mark; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

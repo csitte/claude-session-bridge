@@ -408,6 +408,38 @@ outdated case is still detected after the repo file is given the newer mtime.
 `check-commands.sh` is the same check by hand, with one addition — it reports the all-clear.
 During a start run silence is right; when you ask, you want to know that it looked.
 
+### The same hole one step further: skills
+
+A **skill** is the other half of this. It is a delivery path for knowledge every session needs
+without carrying it in every context: only its name and description are loaded, the body is read
+when it applies. That only holds if the skill sits in `~/.claude/skills` on the machine — and
+that folder is in the profile too, so it does not travel either. On a freshly set up machine it
+did not exist at all: the repository held two skills, and the only session that saw them was the
+one started with that repository as an additional directory. For every other session on that
+machine the skill did not exist. Nothing reported it; it surfaced through a question.
+
+`link-skills.sh` does for `~/.claude/skills` what `link-commands.sh` does for the commands, with
+the same guards and the same refusals:
+
+```bash
+bash launcher/link-skills.sh            # link (idempotent)
+bash launcher/link-skills.sh --status   # 0 = linked, 10 = not linked
+bash launcher/link-skills.sh --unlink   # undo: copy the content back into the profile
+```
+
+One difference runs through the whole script: a command is one **file**, a skill is a
+**folder** (`<name>/SKILL.md` plus whatever it ships). Every check therefore works recursively,
+and it checks **everything** in the profile, not only what counts as a skill — a folder without
+a SKILL.md is not a skill, but the link would hide it just the same, and a loose file next to it
+even more so. Writing the tests is what found that: the first version looped over valid skills
+only, and anything outside that definition vanished without a warning.
+
+A new skill takes effect at the **next** session start, not in running ones. Test group
+`linkskills` (34 cases), mutation-proved: dropping the "file exists only in the profile" guard
+turns one case red, and letting the history check pass everything turns three red. The
+cross-check through the finished link is only exercised where `chmod` actually denies reading —
+on Windows that case is skipped, so the Linux CI is the only place that proves it.
+
 ## A running session is not started twice
 
 Neither the launcher nor the session manager used to check whether a project already had a

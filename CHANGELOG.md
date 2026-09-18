@@ -15,6 +15,18 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **`launcher/link-skills.sh` — the profile's skill folder becomes a link to the repository
+  copy.** A personal skill is a delivery path for knowledge every session needs without carrying
+  it in every context: only its name and description are loaded. That only holds if the skill is
+  in `~/.claude/skills` on the machine, and that folder lives in the profile, which does not
+  travel. On a freshly set up machine it did not exist at all -- the repository held two skills,
+  and only the session started with that repository as an additional directory saw them; for
+  every other session they did not exist. Nothing reported it. The tool is `link-commands.sh`
+  for skills, with the same guards: a skill only in the profile, a version in no commit, or a
+  link pointing elsewhere all refuse and touch nothing; an older committed version is allowed
+  through, because its content is in the history. It checks **everything** in the profile, not
+  only what counts as a skill: a folder without a `SKILL.md` would be hidden just the same.
+  `--status` (0 = linked, 10 = not), `-n`, `--unlink`, `CC_SKILLS_REPO`.
 - **The launcher fetches a missing clone instead of skipping the entry
   (`launcher/projects.repos.conf`, see `projects.repos.example.conf`).** Until now a missing
   directory was the only reason to skip a project, and the reason went to stderr where the
