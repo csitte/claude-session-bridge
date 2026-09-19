@@ -15,6 +15,15 @@ commit it names will say why.
 ## Unreleased
 
 ### Changed
+- **Arm with `persistent: true`; the 30-minute cap was `timeout_ms`'s, not the harness's.** The
+  paragraph the installer writes told sessions to arm with `timeout_ms: 1800000` and re-arm on
+  every expiry, because the harness supposedly capped every monitor at 30 minutes and the
+  `persistent` flag supposedly no longer existed. The cap is real for `timeout_ms` alone; the
+  second claim came from one failed arm, never from the schema, and cost every session about
+  eight re-arms a morning. The template now arms with `persistent: true` (plus
+  `timeout_ms: 3600000`), keeps the re-arm rule as the fallback for builds without the flag, and
+  says not to revert without measuring. `docs/watcher.md` follows. Files written by the previous
+  template differ from the new wording; `-u` replaces them.
 - **The installer no longer doubles a paragraph that has no marker.** A hand-written or
   paraphrased arming paragraph carries no `**Bridge push (watcher):**` marker, so idempotence
   could not see it: the installer inserted, correctly, and the file then held two sets of

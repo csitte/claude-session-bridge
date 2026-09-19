@@ -131,9 +131,13 @@ else
 fi
 
 block="**Bridge push (watcher):**${sharednote}At session start, **arm first, fold second** — in that order,
-and without checking \`--status\` beforehand: arm the Monitor tool with the longest run time it
-allows (\`timeout_ms: 1800000\`; when the watch expires, arm it again -- the harness puts a deadline
-on every monitor, 30 minutes being the maximum),
+and without checking \`--status\` beforehand: arm the Monitor tool with \`persistent: true\`
+(and \`timeout_ms: 3600000\` alongside) -- the watch then runs until TaskStop or session end,
+with no re-arming. An earlier version of this paragraph claimed the harness caps every monitor
+at 30 minutes; that was measured with \`timeout_ms\` alone, and the claim that \`persistent\` no
+longer exists came from one failed arm, never from the schema. **Do not revert this without
+measuring on your build.** If a build does not know the flag, the old form is the fallback:
+arm with \`timeout_ms\` and re-arm after every expiry,
 description \"session bridge: new messages for $iddesc\", command with the path that exists
 on this machine:
 \`bash $script_pc $idexpr\` (machine A) or
@@ -148,8 +152,9 @@ lists the open threads with \`owner: $iddesc\`; if it prints a WARNING, the sync
 still fetching — repeat it later; if it prints ATTENTION, arming did not happen — do it now.
 Whatever already existed when you armed is baseline and arrives through the start scan, so
 for the **first** arm of a session the order loses nothing.
-**When the watch expires, arm again right away** -- the harness caps every monitor at 30
-minutes; expiry is the normal case, not a fault. A re-arm swallows nothing: the new watcher
+**If the watch does expire** (only without \`persistent\`, on a build without the flag): arm
+again right away -- there the harness caps at 30 minutes and expiry is the normal case, not a
+fault. A re-arm swallows nothing: the new watcher
 adopts its predecessor's mark and reports what arrived in the gap. **Only if it prints
 \`ATTENTION -- the mark ... was not adopted\`** is the gap open -- then fold once, the ready
 command is in the message.
@@ -316,7 +321,8 @@ fi
 cat <<EOF
 
 Done for '$me'. From the next session start on, the session arms itself.
-To take effect in the running session: arm the Monitor tool, timeout_ms 1800000,
+To take effect in the running session: arm the Monitor tool with persistent: true (plus
+timeout_ms 3600000; on a build without the flag: without persistent, re-arm on expiry),
   command:     bash $script $me
   description: session bridge: new messages for $me
 If one is already running for '$me', the new arm steps aside by itself — state:
