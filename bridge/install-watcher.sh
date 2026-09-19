@@ -132,12 +132,16 @@ fi
 
 block="**Bridge push (watcher):**${sharednote}At session start, **arm first, fold second** — in that order,
 and without checking \`--status\` beforehand: arm the Monitor tool with \`persistent: true\`
-(and \`timeout_ms: 3600000\` alongside) -- the watch then runs until TaskStop or session end,
-with no re-arming. An earlier version of this paragraph claimed the harness caps every monitor
-at 30 minutes; that was measured with \`timeout_ms\` alone, and the claim that \`persistent\` no
-longer exists came from one failed arm, never from the schema. **Do not revert this without
-measuring on your build.** If a build does not know the flag, the old form is the fallback:
-arm with \`timeout_ms\` and re-arm after every expiry,
+and \`timeout_ms: 3600000\` alongside. **Then read the tool's answer -- it is the switch, not
+the flag:** \"persistent — runs until TaskStop or session end\" means the watch runs until
+session end and is not re-armed; \"expires in 30m\" means this build does not know the flag --
+then the fallback applies: \`timeout_ms: 1800000\` and re-arm right after every expiry. Why a
+switch and not a fixed statement: this paragraph once claimed the flag no longer existed, then
+claimed the opposite, both times generalising from one machine. Measured on the same day: one
+build ran 73 minutes without expiry, another had no \`persistent\` in its schema at all --
+different harness builds, not different truths. And the trap that hid it: an unknown field is
+dropped silently despite \`additionalProperties: false\`, so an arm that goes through proves
+nothing; only the answer does. **Do not change this without measuring on your build.**
 description \"session bridge: new messages for $iddesc\", command with the path that exists
 on this machine:
 \`bash $script_pc $idexpr\` (machine A) or
@@ -152,9 +156,9 @@ lists the open threads with \`owner: $iddesc\`; if it prints a WARNING, the sync
 still fetching — repeat it later; if it prints ATTENTION, arming did not happen — do it now.
 Whatever already existed when you armed is baseline and arrives through the start scan, so
 for the **first** arm of a session the order loses nothing.
-**If the watch does expire** (only without \`persistent\`, on a build without the flag): arm
-again right away -- there the harness caps at 30 minutes and expiry is the normal case, not a
-fault. A re-arm swallows nothing: the new watcher
+**If the watch does expire** -- that is, only on the fallback path above, when the answer was
+\"expires in 30m\" -- **arm again right away**; there the harness caps at 30 minutes, and expiry
+is the normal case, not a fault. A re-arm swallows nothing: the new watcher
 adopts its predecessor's mark and reports what arrived in the gap. **Only if it prints
 \`ATTENTION -- the mark ... was not adopted\`** is the gap open -- then fold once, the ready
 command is in the message.
@@ -322,7 +326,8 @@ cat <<EOF
 
 Done for '$me'. From the next session start on, the session arms itself.
 To take effect in the running session: arm the Monitor tool with persistent: true (plus
-timeout_ms 3600000; on a build without the flag: without persistent, re-arm on expiry),
+timeout_ms 3600000; if the answer says "expires in 30m", this build does not know the
+  flag: timeout_ms 1800000 and re-arm after every expiry),
   command:     bash $script $me
   description: session bridge: new messages for $me
 If one is already running for '$me', the new arm steps aside by itself — state:

@@ -108,10 +108,12 @@ trusted yet. For tests, set `SESSION_BRIDGE_DIR` and `WATCH_BRIDGE_SETTLE=0`.
 this tool grew up in, a watch armed with `timeout_ms` alone is capped at 30 minutes -- asked for
 60, got 30, measured rather than assumed -- so for a day the watcher was stopped and started
 again over and over (twelve times in one night). The script has no run time limit of its own;
-it is ended. The cap turned out to be the parameter's, not the harness's: armed with
-`persistent: true` the watch runs until TaskStop or session end (measured three times over,
-2026-09-19, one of them 57 minutes without expiry). The mark stays -- for builds without the
-flag, and for every other way a watch can end.
+it is ended. The cap turned out to be the parameter's, not the harness's -- on builds that know
+the flag: armed with `persistent: true` the watch runs until TaskStop or session end (measured
+three times over, 2026-09-19, one of them 73 minutes without expiry), while a fourth build on the
+same day had no `persistent` in its schema, dropped the field silently, and answered "expires
+in 30m". The answer is the switch; an arm that does not fail proves nothing. The mark stays --
+for those builds, and for every other way a watch can end.
 
 A message that lands in the gap between "stopped" and "started again" then falls through
 **both** nets: no push, because to the new watcher it is old, and no start scan, because that
@@ -205,8 +207,9 @@ Put a paragraph like this in each session's `CLAUDE.md`:
 
 > **Bridge push (watcher):** at session start, **arm first, fold second** — in that order,
 > and without checking `--status` beforehand: arm the Monitor tool with the longest run time it
-> allows: `persistent: true`, with `timeout_ms: 3600000` alongside -- the watch then runs until
-> TaskStop or session end. On a build without the flag, arm with `timeout_ms` and re-arm on expiry,
+> allows: `persistent: true`, with `timeout_ms: 3600000` alongside -- then read the answer:
+> "persistent — runs until…" means no re-arming; "expires in 30m" means this build dropped the
+> flag, so re-arm on every expiry,
 > description "session bridge: new messages for `<id>`", command:
 > `bash <path>/watch-bridge.sh <id>`. If a watcher already delivers for this id, the new arm
 > steps aside by itself, and a silent remnant is cleared in the process. **Then** run the
