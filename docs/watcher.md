@@ -122,6 +122,13 @@ above) is not used -- such a pause was not a re-arm but a session change or a re
 that the start scan is the right tool. The same goes for a mark that is there but empty or
 unreadable: there was a predecessor and its state is gone. `WATCH_BRIDGE_STATE=0` turns it off.
 
+**`/tmp` is shared across the machine.** Under msys, `/tmp` is `%LOCALAPPDATA%\Temp` — the
+same directory for every session on the machine — which is why the mark carries the id
+**and** the path key in its name, and why a *fixed* file name there belongs to every session
+at once. Seen for real: a session's write to `/tmp/msg.txt` was blocked by the permission
+layer, the file existed anyway (another session's), and `git commit -F` took the foreign text
+without complaint. *A blocked write plus someone else's leftover looks exactly like success.*
+
 **That one message goes to stdout; every other one goes to stderr.** It is the only situation
 in which a re-arm can still swallow something, so it is the only one that demands an action --
 and whether an action reaches anyone is a property of the runner, not a matter of taste. Here
@@ -244,6 +251,17 @@ Two rules follow. *"The paragraph is present" is not the same as "the paragraph 
 gets read."* And project-specific notes belong on their own line **below** the block, never
 woven into the template text — otherwise the marker disappears at the next cleanup and the
 next `-u` appends instead of replacing.
+
+**Since 2026-09-19 the installer sees this case itself.** During a rollout across eighteen
+files, one of them carried a hand-written arming paragraph without the marker; the installer
+inserted, correctly, and the file then held two sets of instructions, the stale one on top.
+It was found only because someone grepped for the old wording afterwards. Idempotence hangs
+on the marker, not on the topic — but the one thing a paraphrase cannot leave out is the
+**script name**. So when the installer finds no marker but `watch-bridge.sh` in the file, it
+inserts **nothing**, names the lines and both ways out, and exits with **3**; the allow-rules
+are still checked, they do not depend on the paragraph. `-n` reports the same. A file *with*
+the marker that mentions the script elsewhere is unaffected — the check only runs when the
+marker is missing.
 
 ### Permissions are part of the rollout, not a prerequisite
 

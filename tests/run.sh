@@ -819,6 +819,43 @@ test_install() {
     && ok "-u keeps additions below the paragraph" \
     || bad "-u keeps additions below the paragraph"
 
+  head_ "installer: a paragraph without the marker is reported, not doubled"
+  # A hand-written arming paragraph has no marker, so idempotence cannot see it: during a
+  # real rollout the installer inserted -- correctly -- and the file then held two sets of
+  # instructions, the stale one on top (found by grep afterwards, 18.09.2026). The one thing
+  # a paraphrase cannot leave out is the script name.
+  p="$(new_proj bridge-section)"
+  printf '\nAt start, arm the monitor with `bash /x/watch-bridge.sh app`.\n' >> "$p/CLAUDE.md"
+  before="$(md5sum < "$p/CLAUDE.md")"
+  out="$(bash "$INSTALLER" app "$p" 2>&1)"; rc=$?
+  assert_eq "no marker but the script name: exit 3" "3" "$rc"
+  if [[ "$before" == "$(md5sum < "$p/CLAUDE.md")" ]]; then ok "the file is left untouched"
+  else bad "the file is left untouched"; fi
+  assert_eq "no second paragraph" "0" "$(grep -c 'Bridge push (watcher)' "$p/CLAUDE.md")"
+  printf '%s\n' "$out" | grep -q 'WITHOUT the marker' \
+    && ok "the message names the cause" || bad "the message names the cause" "$out"
+  printf '%s\n' "$out" | grep -qi 'watcher\.md' \
+    && ok "the message names the way out" || bad "the message names the way out" "$out"
+  if printf '%s\n' "$out" | grep -q 'Done for'; then bad "no 'Done' after a refusal" "$out"
+  else ok "no 'Done' after a refusal"; fi
+  bash "$INSTALLER" -u app "$p" >/dev/null 2>&1
+  assert_eq "-u does not slip past it" "3" "$?"
+  bash "$INSTALLER" -n app "$p" >/dev/null 2>&1
+  assert_eq "-n reports the same" "3" "$?"
+  # The documented way out: one line carrying marker and watcher.md, then -u.
+  sed -i 's|^At start, arm .*$|**Bridge push (watcher):** placeholder watcher.md|' "$p/CLAUDE.md"
+  bash "$INSTALLER" -u app "$p" >/dev/null 2>&1
+  assert_eq "placeholder line + -u: exit 0" "0" "$?"
+  assert_eq "placeholder line + -u: exactly one paragraph" "1" "$(grep -c 'Bridge push (watcher)' "$p/CLAUDE.md")"
+  if grep -q placeholder "$p/CLAUDE.md"; then bad "placeholder replaced"; else ok "placeholder replaced"; fi
+  # A file WITH the marker that also mentions the script elsewhere is not affected.
+  p="$(new_proj bridge-section)"
+  bash "$INSTALLER" app "$p" >/dev/null 2>&1
+  printf '\nSee also `watch-bridge.sh --status`.\n' >> "$p/CLAUDE.md"
+  bash "$INSTALLER" app "$p" 2>&1 | grep -q 'is current' \
+    && ok "with the marker present, extra mentions do not trigger it" \
+    || bad "with the marker present, extra mentions do not trigger it"
+
   head_ "installer: the template survives the shell"
   # The paragraph is a double-quoted bash string, so every backtick in it must be escaped.
   # One that is not becomes a command substitution: the shell runs the words inside it,

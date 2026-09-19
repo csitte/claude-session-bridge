@@ -13,6 +13,11 @@
 # If the paragraph is already there but outdated, the script says so and changes
 # nothing; -u/--update then replaces it with the current wording.
 #
+# If `watch-bridge.sh` is already in the file but the marker is NOT (a hand-written or
+# paraphrased paragraph), the script does not insert: it reports the lines and exits
+# with 3 -- otherwise the file would hold two sets of instructions, the stale one on
+# top. Way out: the placeholder line, see docs/watcher.md.
+#
 # -s/--shared writes `$(head -1 .session-id)` in place of the fixed id — for several
 # checkouts of ONE repository that share a committed CLAUDE.md. A file that already
 # uses the shared form is RECOGNISED as such; -u alone never writes the fixed id
@@ -23,6 +28,7 @@
 
 set -u
 
+rc=0
 dry=0
 force=0
 update=0
@@ -34,7 +40,7 @@ while true; do
     -u|--update)  update=1; shift ;;
     -s|--shared)  shared=1; shift ;;
     -h|--help)
-      sed -n '3,18p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,24p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) break ;;
   esac
@@ -196,6 +202,21 @@ if [[ -n "$b_start" ]]; then
     mv "$tmp" "$md"
     echo "CLAUDE.md   : arming paragraph updated (lines $b_start-$b_end replaced)."
   fi
+elif grep -qF 'watch-bridge.sh' "$md"; then
+  # A hand-written or paraphrased paragraph has no marker, so the idempotence check
+  # above cannot see it -- and inserting would leave two sets of instructions in the
+  # file, the stale one on top (seen in a rollout across eighteen files, 18.09.2026;
+  # found by grep afterwards, not by this script). The one thing a paraphrase cannot
+  # leave out is the script name, so that is what we key on. The allow-rules below
+  # still run; they do not depend on the paragraph. Both ways out: docs/watcher.md.
+  lines="$(grep -n -F 'watch-bridge.sh' "$md" | cut -d: -f1 | tr '\n' ' ')"
+  echo "CLAUDE.md   : a bridge paragraph is present but WITHOUT the marker '**Bridge push (watcher):**'"
+  echo "              ('watch-bridge.sh' on line ${lines% }). NOT inserted: the file would"
+  echo "              then hold two sets of instructions, the stale one on top."
+  echo "              Way out: replace the old paragraph with ONE line containing the marker"
+  echo "              and the word watcher.md, then run -u -- the block lands where the old"
+  echo "              one was. (Or delete the old paragraph and run again without -u.)"
+  rc=3
 else
   # Target position: end of an existing bridge section, otherwise end of file.
   hdr="$(grep -n -m1 -iE '^#{1,6}[[:space:]].*bridge' "$md" | cut -d: -f1)"
@@ -287,6 +308,11 @@ SITE BLOCK near the top of install-watcher.sh and re-run with -u.
 EOF
 fi
 
+if [[ $rc -ne 0 ]]; then
+  echo
+  echo "NOT done for '$me': the arming paragraph was not inserted (see above). Allow-rules were checked."
+  exit $rc
+fi
 cat <<EOF
 
 Done for '$me'. From the next session start on, the session arms itself.

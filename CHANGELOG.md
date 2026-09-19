@@ -15,6 +15,16 @@ commit it names will say why.
 ## Unreleased
 
 ### Changed
+- **The installer no longer doubles a paragraph that has no marker.** A hand-written or
+  paraphrased arming paragraph carries no `**Bridge push (watcher):**` marker, so idempotence
+  could not see it: the installer inserted, correctly, and the file then held two sets of
+  instructions, the stale one on top — found by grep after a rollout across eighteen files,
+  not by the tool. The one thing a paraphrase cannot leave out is the script name: if
+  `watch-bridge.sh` is in the file but the marker is not, the installer now inserts nothing,
+  names the lines and both ways out (placeholder line + `-u`, or delete and re-run), and
+  exits with 3. Allow-rules are still checked; `-n` reports the same. `docs/watcher.md` also
+  notes that msys `/tmp` is shared across the machine, which is why the mark carries id and
+  path key in its name.
 - **`link-skills.sh` no longer mistakes the harness's skill cache for your work.** Claude Code
   keeps the skills synced from its web app under `~/.claude/skills/synced/` -- a UUID folder
   with an empty `.bucket-<uuid>` marker next to it, several MB, renewing itself. The first
