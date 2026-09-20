@@ -1769,6 +1769,19 @@ while true; do
          "thread '$slug', from '$from' — $(basename "$f")"
   done
   baseline=0
+  # CAREFUL, THIS ORDER *IS* THE SAFETY NET. The `echo` above must come before `state_save`.
+  # A watcher whose monitor was killed keeps running while the bridge is quiet — it only
+  # touches the mark. When a message finally arrives, the `echo` hits a pipe with no reader,
+  # so the watcher DIES before recording the file as seen; the next arm sees it as new and
+  # delivers it. The cost is delay, never a lost message. Measured with a FIFO whose reader
+  # was killed: watcher survives the idle phase, dies on the message, file NOT in the mark;
+  # control run with a live reader: delivered and recorded.
+  # Two innocent-looking changes would remove this protection SILENTLY:
+  #   (1) moving `state_save` before the `echo` — the message would count as seen although it
+  #       never arrived, and the fresh mark also suppresses the gap warning.
+  #   (2) redirecting stdout to a FILE instead of a pipe (launcher, logging, diagnostics) —
+  #       then the `echo` into the void succeeds, the watcher does not die, and (1) follows.
+  # Check with `ls -l /proc/<pid>/fd`: fd 1 must be a pipe.
   # Only write on change: the mark changes rarely, and one write per cycle would be
   # work without a return.
   if (( state_dirty )); then

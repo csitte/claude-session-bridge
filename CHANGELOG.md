@@ -15,6 +15,27 @@ commit it names will say why.
 ## Unreleased
 
 ### Changed
+- **Corrected `docs/watcher.md` on `persistent: true`: the flag is not in the schema we
+  measured, and the earlier evidence for it did not hold.** Yesterday's text said the 30-minute
+  cap belonged to `timeout_ms` and that builds knowing the flag run until TaskStop, citing
+  three watches that outlived it. Re-measured against the **schema** rather than a run time:
+  three sessions on one machine, same binary, each listing only `command`, `description`,
+  `timeout_ms` and `ws`, each answering "expires in 30m". The old evidence rested on a status
+  command reporting "a watcher is delivering for this id" — a *state*, answering per id, not
+  per session — and on three observations at three different times, which a watch that expired
+  and was re-armed reproduces exactly. The rule that survives: **read the answer, never the
+  field name and never a version number**; arming with the flag still costs nothing.
+- **Documented why the delivery order in `watch-bridge.sh` is the safety net.** No behaviour
+  change — a warning box at the one place that carries it. A watcher whose monitor was killed
+  keeps running while the bridge is quiet (it only touches the mark, which writes nothing to
+  stdout), so its mark stays fresh and looks healthy. When a message finally arrives, the
+  `echo` hits a pipe with no reader, the watcher dies on SIGPIPE **before** `state_save`, and
+  the file stays unmarked — the next arm sees it as new and delivers it. The cost is delay,
+  never a lost message. This was measured, not reasoned: a FIFO whose reader was killed, plus
+  a control run with a live reader. Two innocent-looking changes would remove the protection
+  silently, and both are now named in the code: moving `state_save` before the `echo`, and
+  redirecting the watcher's stdout to a file instead of a pipe. Check with
+  `ls -l /proc/<pid>/fd` — fd 1 must be a pipe.
 - **Arm with `persistent: true`; the 30-minute cap was `timeout_ms`'s, not the harness's.** The
   paragraph the installer writes told sessions to arm with `timeout_ms: 1800000` and re-arm on
   every expiry, because the harness supposedly capped every monitor at 30 minutes and the
