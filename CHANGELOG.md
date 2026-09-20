@@ -14,6 +14,29 @@ commit it names will say why.
 
 ## Unreleased
 
+### Fixed
+- **`link-memory.sh --stamp` no longer vouches for a profile folder that is not linked.** A
+  profile folder is a directory whether or not it is linked, so the `-d` guard said nothing
+  about that: stamping an unlinked folder printed a success line, with a file count taken from
+  the profile folder rather than from the state on the server. Reported from the field, where a
+  session ran its wrap-up against an unlinked folder — the stamp was green, and what warned was
+  the *next* call, `--push`. **So what saved that session was the order of its ritual, not its
+  attention:** whoever only stamps, or whose runbook leaves the push out, gets a wrap-up that
+  looks clean over a memory that never leaves the machine — exactly the state the stamp exists
+  to make visible. It now prints an `ATTENTION` block naming the folder, what that means, and
+  the command to fix it, and marks the stdout line `UNLINKED, vouches for nothing`. **It still
+  exits 0 and still stamps**, deliberately: this branch sits in the saving path, and an abort
+  could stop the ritual before it reaches the push that warns — a false alarm here would block
+  saving. **The state lives in the message, never in the stamp file** — both obvious extensions
+  were built and taken back out: a fourth field lands silently in `count` for anything reading
+  with `read -r host ts count`, and a second line, while invisible to `read`, broke two cases
+  of this suite within the minute because `cut -d' ' -f3 < file` and `wc -w < file` read the
+  whole file. A stamp whose line count varies breaks every reader that does not take it line
+  by line, so it stays one line with three fields whether linked or not. What remains open is
+  the observation that prompted the report: a stamp read later does not say it was written
+  while unlinked. Test group `memory` now asserts both halves, including that the linked case
+  raises no false alarm.
+
 ### Changed
 - **Corrected `docs/watcher.md` on `persistent: true`: the flag is not in the schema we
   measured, and the earlier evidence for it did not hold.** Yesterday's text said the 30-minute

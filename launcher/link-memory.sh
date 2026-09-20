@@ -199,6 +199,26 @@ automemory_guard() {
 # after writing and every start would report a shortfall. Exactly one `date -u` reading.
 if (( stamp )); then
   [[ -d "$mem" ]] || { echo "[stamp] no linked memory for '$slug' -- nothing to stamp."; exit 0; }
+  # A profile folder is a directory whether or not it is linked, so `-d` above says nothing
+  # about that. Until this was reported, this branch stamped an UNLINKED folder with a success
+  # message: stamp green, file count taken from the profile folder rather than from the state
+  # on the server, no hint at all. What warned was the NEXT call, `--push`. So what saved that
+  # session was the ORDER in its wrap-up ritual -- stamp, then push -- not its attention.
+  # Whoever only stamps, or whose runbook leaves the push out, gets a wrap-up that looks clean
+  # and a memory that stays on the machine: exactly the state the stamp exists to make visible.
+  #
+  # WARN, DO NOT ABORT -- a decision, not an oversight: this branch sits in the SAVING path.
+  # If it aborted, the ritual might never reach `--push`, and that is today the only thing
+  # that warns at all. A false alarm here blocks saving, which is worse than a stamp that
+  # says so itself.
+  unlinked=0
+  if [[ ! -L "$mem" ]]; then
+    unlinked=1
+    echo "[ATTENTION] $mem is a profile folder with NO link -- it exists only on this" >&2
+    echo "            machine and travels nowhere: no repository carries it." >&2
+    echo "            The stamp below therefore vouches for NOTHING." >&2
+    echo "            Link it with: $(basename "$0") --git [--name <id>] <project-dir>" >&2
+  fi
   # Counting happens THROUGH the link, and `ls` and `find` differ there:
   #   - `ls -A "$mem"` follows the link and counts correctly. Its only flaw was the exit
   #     code: if nothing remains after filtering (an empty memory, or only the stamp
@@ -219,8 +239,25 @@ if (( stamp )); then
     echo "            The stamp would be a claim; please look at what is there." >&2
     exit 1
   fi
+  # THE FILE STAYS ONE LINE WITH THREE FIELDS -- both obvious extensions were built and taken
+  # back out again:
+  #   - A FOURTH field lands silently in `count` for anything reading with
+  #     `read -r host ts count`, and the numeric comparison after it is broken. Stale reader.
+  #   - A SECOND line is never seen by `read` -- but `cut -d' ' -f3 < file` and `wc -w < file`
+  #     read the WHOLE file. Built, and two cases of this suite went red within the minute:
+  #     `want [0] got [0\nfolder]`. A stamp file whose line count varies breaks every reader
+  #     that does not take it line by line.
+  # The link state therefore lives in the message only, not in the file. What stays open is
+  # the observation that prompted this: whoever reads the stamp later cannot tell it was
+  # written while unlinked. The format has no room for that which does not break a reader.
   printf '%s %s %s\n' "$(hostname)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$n" > "$mem/.last-wrap"
-  echo "[stamp] $mem/.last-wrap: $(cat "$mem/.last-wrap")"
+  if (( unlinked )); then
+    # On stdout as well: the ATTENTION lines above go to stderr, and the whole point of the
+    # report was that a wrap-up looks GREEN that way. Someone reading only stdout should see it.
+    echo "[stamp] $mem/.last-wrap: $(cat "$mem/.last-wrap")  -- UNLINKED, vouches for nothing"
+  else
+    echo "[stamp] $mem/.last-wrap: $(cat "$mem/.last-wrap")"
+  fi
   exit 0
 fi
 

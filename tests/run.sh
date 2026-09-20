@@ -2417,7 +2417,40 @@ test_stamp() {
       cc_memory_state proj "$repo" 2>&1 )
   }
   assert_eq "no stamp -> the launcher says nothing" "" "$(state)"
-  CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo" >/dev/null
+
+  # --- the defect this branch carried: `$mem` is a directory whether or not it is linked, so
+  # stamping an UNLINKED profile folder used to succeed silently. Reported from the field: the
+  # stamp was green, the count was the profile folder's, and what warned was the *next* call,
+  # `--push`. Whoever only stamps gets a wrap-up that looks clean over a memory that stays on
+  # the machine. It warns now -- and still exits 0, because this sits in the saving path and an
+  # abort could stop the ritual before it ever reaches the push that warns.
+  local rc=0
+  out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo" 2>&1)" || rc=$?
+  assert_eq "unlinked: exit stays 0 -- the saving path must not be blocked" "0" "$rc"
+  if printf '%s\n' "$out" | grep -q 'profile folder with NO link'; then
+    ok "unlinked: the stamp says the folder travels nowhere"
+  else bad "unlinked: the stamp says the folder travels nowhere" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'UNLINKED, vouches for nothing'; then
+    ok "... and on stdout too, which is where a green-looking wrap-up is read"
+  else bad "... and on stdout too, which is where a green-looking wrap-up is read" "$out"; fi
+  # The state is in the MESSAGE, never in the file. Writing it as a second line was built and
+  # taken back out: `read` never sees a second line, but `cut -d' ' -f3 < file` and
+  # `wc -w < file` read the whole file, and two cases in this suite went red within the minute
+  # (`want [0] got [0\nfolder]`). A stamp whose line count varies breaks every reader that does
+  # not take it line by line -- so the file stays one line with three fields, linked or not.
+  assert_eq "unlinked: the file stays ONE line" "1" "$(wc -l < "$mem/.last-wrap" | tr -d ' ')"
+  assert_eq "unlinked: and exactly three fields, like every other stamp" "3" \
+    "$(wc -w < "$mem/.last-wrap" | tr -d ' ')"
+  assert_eq "unlinked: the launcher parses it and stays quiet" "" "$(state)"
+
+  # --- from here the normal case, which is what real use looks like: linked. The link is made
+  # with the script itself, so this stays portable (junction on Windows, symlink elsewhere).
+  CLAUDE_CONFIG_DIR="$cfg" bash "$LM" "$repo" >/dev/null 2>&1
+  rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --stamp "$repo" 2>&1)" || rc=$?
+  assert_eq "linked: exit 0" "0" "$rc"
+  if printf '%s\n' "$out" | grep -q 'NO link'; then
+    bad "linked: no false alarm (a false alarm here would block saving)" "$out"
+  else ok "linked: no false alarm (a false alarm here would block saving)"; fi
   assert_eq "the stamp does not count itself" "3" "$(cut -d' ' -f3 < "$mem/.last-wrap")"
   assert_eq "one line, three fields" "3" "$(wc -w < "$mem/.last-wrap" | tr -d ' ')"
   assert_eq "the stamp is UTC in the protocol format" "0" \
