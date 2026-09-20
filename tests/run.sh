@@ -1201,6 +1201,45 @@ test_coverage() {
       bad "paths are matched whole, not as a substring" "$out"
     else ok "paths are matched whole, not as a substring"; fi
 
+    # --- a path claimed by TWO ids: report it, and do not attribute the session ---
+    # The lookup used to take the first hit and answer with the wrong id, silently. It is
+    # the coverage report that is built on that answer, which is why the case lives here.
+    if printf '%s\n' "$out" | grep -q '^NOTE:'; then
+      bad "a clean table says nothing about duplicates (no false alarm)" "$out"
+    else ok "a clean table says nothing about duplicates (no false alarm)"; fi
+
+    local b2 reg2 out2
+    b2="$(new_bridge)"
+    {
+      printf '%s\n' '| Id | Purpose | Path |'
+      printf '%s\n' '|---|---|---|'
+      printf '%s\n' '| `alpha` | shares a path | `/repos/shared` |'
+      printf '%s\n' '| `beta` | shares the same path | `/repos/shared` |'
+      printf '%s\n' '| `gamma` | own path | `/repos/own` |'
+      printf '%s\n' '| `delta` | names one path twice | `/repos/twice` and again `/repos/twice` |'
+    } > "$b2/README.md"
+    reg2="$TMPROOT/cfg2.$RANDOM"
+    write_session "$reg2" "$pid" '/repos/shared' 'Ambiguous Window'
+    write_session "$reg2" "$pid" '/repos/own' 'Clear Window'
+    out2="$(SESSION_BRIDGE_DIR="$b2" CLAUDE_CONFIG_DIR="$reg2" bash "$WATCHER" --status 2>/dev/null)"
+    if printf '%s\n' "$out2" | grep -q '^NOTE: 1 path'; then
+      ok "a path claimed by two ids is reported, on stdout"
+    else bad "a path claimed by two ids is reported, on stdout" "$out2"; fi
+    if printf '%s\n' "$out2" | grep -qE '/repos/shared +-> +alpha beta'; then
+      ok "... naming the path and BOTH ids"
+    else bad "... naming the path and BOTH ids" "$out2"; fi
+    # the false-alarm guard: one id naming one path twice is not a conflict
+    if printf '%s\n' "$out2" | grep -q '/repos/twice'; then
+      bad "the same id naming one path twice is not a duplicate" "$out2"
+    else ok "the same id naming one path twice is not a duplicate"; fi
+    # and the point of the whole thing: no guessed attribution
+    if printf '%s\n' "$out2" | grep -qE '^ +(alpha|beta) '; then
+      bad "the ambiguous session is skipped, not attributed to a guessed id" "$out2"
+    else ok "the ambiguous session is skipped, not attributed to a guessed id"; fi
+    if printf '%s\n' "$out2" | grep -q 'gamma'; then
+      ok "... while an unambiguous session is still reported"
+    else bad "... while an unambiguous session is still reported" "$out2"; fi
+
     # Escaped backslashes normalise to the same path as forward slashes.
     rm -rf "$reg"
     write_session "$reg" "$pid" '\\repos\\app' 'Backslash Window'

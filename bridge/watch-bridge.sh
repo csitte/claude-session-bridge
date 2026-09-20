@@ -886,6 +886,29 @@ readme_pathmap() { # $1 = README.md
   }' "$1" | tr -d '\r' | tr -s '/' | sed 's|/$||'
 }
 
+# -> lines "path<TAB>id1 id2 ..." for every path claimed by MORE THAN ONE id.
+#
+# Why this needs a check: `readme_pathmap` cannot tell a path entry from prose -- it takes
+# every backticked expression in column 4 that looks like a path. One participant row carried
+# a half-sentence with the path in backticks, and from then on two ids claimed the same
+# directory. The damage is in exactly ONE direction: the lookup goes PATH -> ID and took the
+# first hit (`exit`), so it answered with the wrong id, silently, and the coverage report is
+# built on that. The other direction (ID -> paths, in the working-directory check) reads all
+# hits and is unaffected.
+#
+# `sort -u` BEFORE counting is the false-alarm guard: if the same id names the same path
+# twice (two backticked spellings in one row) that is not a conflict. Only DIFFERENT ids
+# fighting over one path are reported.
+pathmap_dups() {
+  local br; br="$(bridge_soft)"
+  [[ -n "$br" && -r "$br/README.md" ]] || return 0
+  local map; map="$(readme_pathmap "$br/README.md")"
+  [[ -n "$map" ]] || return 0
+  sort -u <<<"$map" | awk -F'\t' '
+    { ids[$2] = ($2 in ids ? ids[$2] " " $1 : $1); n[$2]++ }
+    END { for (p in n) if (n[p] > 1) print p "\t" ids[p] }' | sort
+}
+
 # No separate powershell.exe call any more: the pids fall out of `watcher_inventory`,
 # which is cached. That halves the number of consoles a `--status` opens -- and every
 # one of them can stay behind as a spinner.
@@ -918,8 +941,16 @@ session_inventory() {
     [[ -n "$pids" ]] && { grep -qx "$pid" <<<"$pids" || continue; }
     cwd=$(grep -oE '"cwd":"[^"]*"' "$f" | head -1 | cut -d'"' -f4 | path_norm)
     [[ -n "$cwd" ]] || continue
-    id=$(awk -F'\t' -v c="$cwd" '$2==c{print $1; exit}' <<<"$map")
-    [[ -n "$id" ]] || continue
+    # DO NOT GUESS. This used to be `{print $1; exit}` -- the first hit won. When two ids
+    # claim the same path that was a silent wrong answer, and the coverage report is built on
+    # it. Same line as for arms whose id cannot be determined: report, never guess. The report
+    # happens in `--status` (`pathmap_dups`); here the entry is simply skipped, because an
+    # inventory that states something it does not know is worse than one that is short.
+    local ids
+    ids=$(awk -F'\t' -v c="$cwd" '$2==c{print $1}' <<<"$map" | sort -u)
+    [[ -n "$ids" ]] || continue
+    [[ $(printf '%s\n' "$ids" | wc -l) -eq 1 ]] || continue
+    id="$ids"
     name=$(grep -oE '"name":"[^"]*"' "$f" | head -1 | cut -d'"' -f4)
     st=$(grep -oE '"status":"[^"]*"' "$f" | head -1 | cut -d'"' -f4)
     echo "$id|${name:-?}|$pid|${st:-?}"
@@ -1082,10 +1113,19 @@ checkout_hint() { # $1 = the id it was called with; prints to stdout
   done <<<"$paths"
   [[ $ok -eq 1 ]] && return 0
 
-  owner="$(awk -F'\t' -v c="$cwd" '$2==c{print $1; exit}' <<<"$map")"
+  # Second PATH -> ID site, found while porting the first one: this was `{print $1; exit}`
+  # as well. The damage is smaller than in the inventory -- it is a suggestion to a human,
+  # not a data source -- but with a duplicated path it names one of two ids and keeps quiet
+  # about the other. That is exactly the kind of answer that ENDS somebody's checking.
+  owner="$(awk -F'\t' -v c="$cwd" '$2==c{print $1}' <<<"$map" | sort -u | paste -sd' ' -)"
   base="${cwd##*/}"
   echo "SUSPECT: id '$me', but we are in '$cwd' — that directory is not registered for '$me'."
-  if [[ -n "$owner" ]]; then
+  if [[ "$owner" == *" "* ]]; then
+    echo "         The participant table maps this one directory to SEVERAL ids: $owner."
+    echo "         Which one is meant is not written down -- that is a defect in the table."
+    echo "         Usually a half-sentence in column 4 is backticked that is prose, not a"
+    echo "         path entry. Until that is fixed we do not guess."
+  elif [[ -n "$owner" ]]; then
     echo "         The participant table maps it to '$owner'. Did you mean '$owner'?"
   else
     echo "         No participant is registered for it. Did you mean '$base'? Otherwise the"
@@ -1141,6 +1181,21 @@ status_report() {
     while IFS='|' read -r id r; do
       [[ -n "${id:-}" ]] && running["$id"]=1
     done <<<"$sess"
+  fi
+
+  # Duplicated paths: ABOVE the table, like every check here -- a warning printed under a
+  # list is a warning nobody reads. On **stdout**, not stderr: the same lesson as the mark
+  # notice, which sat on a channel no session reads. In normal operation this stays silent.
+  local dups; dups="$(pathmap_dups)"
+  if [[ -n "$dups" ]]; then
+    echo "NOTE: $(printf '%s\n' "$dups" | wc -l) path(s) in the participant table belong to SEVERAL ids."
+    echo "      Path -> id cannot be decided there, so the sessions concerned drop out of the"
+    echo "      coverage report instead of being attributed to the wrong id. Usually a"
+    echo "      half-sentence in column 4 is backticked that is prose, not a path entry --"
+    echo "      then remove the backticks."
+    while IFS=$'\t' read -r p pids; do
+      [[ -n "${p:-}" ]] && printf '      %s  ->  %s\n' "$p" "$pids"
+    done <<<"$dups"
   fi
 
   if [[ ${#rows[@]} -eq 0 ]]; then

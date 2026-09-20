@@ -15,6 +15,22 @@ commit it names will say why.
 ## Unreleased
 
 ### Fixed
+- **A path claimed by two participants no longer produces a silently wrong id.**
+  `readme_pathmap` cannot tell a path entry from prose — it takes every backticked expression
+  in column 4 that looks like a path — so one row carrying a half-sentence with a backticked
+  path was enough to make two ids claim the same directory. The lookup went path → id and took
+  the **first hit**, so the session inventory answered with the wrong participant, silently,
+  and the coverage report is built on that answer. It now collects all matching ids and, where
+  there is more than one, **skips the entry rather than guessing** — and `--status` prints a
+  `NOTE` above the table naming the path and every id that claims it, with the likely cause
+  (backticks around prose). The same `print $1; exit` sat in the working-directory check, where
+  it named one of two ids in a warning and kept quiet about the other; it now says the table is
+  ambiguous and names both. Two conditions the reporter keeps: it is **silent in normal
+  operation** — the same id naming one path twice is not a conflict, only different ids
+  fighting over one path are — and it prints on **stdout**, because a warning on a channel
+  nobody reads is a safety line wired to nothing. Test group `coverage` grew five cases,
+  including the no-false-alarm guard and the proof that an unambiguous session is still
+  reported.
 - **`link-memory.sh --stamp` no longer vouches for a profile folder that is not linked.** A
   profile folder is a directory whether or not it is linked, so the `-d` guard said nothing
   about that: stamping an unlinked folder printed a success line, with a file count taken from
