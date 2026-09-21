@@ -632,6 +632,108 @@ numbers_report() {
 # do not disturb each other) and expires by its TTL; there is DELIBERATELY no EXIT trap
 # to remove it -- `--fold` and `--new-thread` set their own EXIT traps, and bash keeps
 # only one. Instead every run sweeps up the leftovers of the previous ones.
+# Resolve arms without a determinable id along the msys parent edge.
+#
+# Reads the inventory on stdin, writes it to stdout. Every `unknown` row (a wrapper whose
+# command line carries the id only as `$(head -1 .session-id)`) becomes a `wrapper` row with
+# an id IF the id can be read: the wrapper is the msys parent of its script, and in the
+# script the id stands EXPANDED. The route:
+#   Windows pid of the wrapper  ->  msys pid       (/proc/<pid>/winpid)
+#   msys pid of the wrapper     ->  its children   (/proc/<pid>/ppid)
+#   child                       ->  id             (the argument after `watch-bridge.sh`)
+# None of it is a guess. EXACTLY ONE id below the wrapper is required; with none or with two
+# the row stays `unknown` and everything holds as before (report, touch nothing). At the
+# Windows level this edge does not exist -- see the comment in the inventory.
+#
+# Why it matters: where such an arm is ALWAYS running (two checkouts sharing one CLAUDE.md),
+# the arming path NEVER cleans anything up. That is how 159 stale watchers piled up once.
+#
+# WATCH_BRIDGE_PROC overrides the /proc root (tests); `0` switches the resolving off.
+resolve_unknown_arms() {
+  local proc="${WATCH_BRIDGE_PROC:-/proc}"
+  local -a lines=()
+  local line have=0
+  while IFS= read -r line; do
+    lines+=("$line")
+    [[ "$line" == unknown\|* ]] && have=1
+  done
+  if [[ "$have" -eq 0 || "$proc" == 0 || ! -d "$proc" ]]; then
+    # Reset the id field even when nothing is resolved -- it carries the parent pid.
+    local _k _i _p _a _u _s
+    for line in "${lines[@]}"; do
+      if [[ "$line" == unknown\|* ]]; then
+        IFS='|' read -r _k _i _p _a _u _s <<< "$line"
+        printf 'unknown|-|%s|%s|%s|%s\n' "$_p" "$_a" "$_u" "$_s"
+      else
+        printf '%s\n' "$line"
+      fi
+    done
+    return 0
+  fi
+
+  # The unknown rows carry the WINDOWS parent pid in their id field (otherwise a `-`).
+  # Reason: at the Windows level one arm is TWO bash.exe with the same command line -- the
+  # starter `Git\bin\bash.exe` under claude.exe and below it the actual msys shell
+  # `usr\bin\bash.exe`. /proc knows only the second. That is why `--status` used to report
+  # "2 arms without a determinable id" for ONE arm.
+  local -A upar=()          # Windows pid of an unknown row -> its Windows parent pid
+  local kind id pid age under started
+  for line in "${lines[@]}"; do
+    [[ "$line" == unknown\|* ]] || continue
+    IFS='|' read -r kind id pid age under started <<< "$line"
+    upar[$pid]=$id
+  done
+
+  # Pass 1 over /proc: winpid and ppid only, both through `read` (a builtin). With `cat`
+  # this cost two processes per entry -- measured 12.7 s for one `--status`.
+  # Processes vanish while being read; every access may fail.
+  local -A msys_of=() kids_of=()
+  local d mp wp pp
+  for d in "$proc"/[0-9]*; do
+    mp=${d##*/}; wp=""; pp=""
+    { read -r wp < "$d/winpid"; } 2>/dev/null || continue
+    [[ -n "$wp" && -n "${upar[$wp]+x}" ]] && msys_of[$wp]=$mp
+    { read -r pp < "$d/ppid"; } 2>/dev/null || continue
+    [[ -n "$pp" ]] && kids_of[$pp]="${kids_of[$pp]:-} $mp"
+  done
+
+  # Pass 2: look only at the children of the wrappers in question. The id is the argument
+  # after `watch-bridge.sh`; first character without "-", or `--status`/`--fold` would count.
+  local -A id_of=()         # Windows pid of the wrapper -> id (only if EXACTLY one)
+  local k arg prev rid found
+  for wp in "${!msys_of[@]}"; do
+    found=""
+    for k in ${kids_of[${msys_of[$wp]}]:-}; do
+      prev=""; rid=""
+      [[ -r "$proc/$k/cmdline" ]] || continue
+      while IFS= read -r -d '' arg; do
+        if [[ "$prev" == *watch-bridge.sh ]]; then rid=$arg; break; fi
+        prev=$arg
+      done < "$proc/$k/cmdline"
+      [[ "$rid" =~ ^[A-Za-z0-9._][A-Za-z0-9._-]*$ ]] || continue
+      case " $found " in *" $rid "*) ;; *) found="$found $rid" ;; esac
+    done
+    found=${found# }
+    [[ -n "$found" && "$found" != *" "* ]] && id_of[$wp]=$found
+  done
+  # The starter inherits the id of the msys shell whose Windows parent it is.
+  for wp in "${!id_of[@]}"; do
+    pp=${upar[$wp]:-}
+    [[ -n "$pp" && -n "${upar[$pp]+x}" && -z "${id_of[$pp]:-}" ]] && id_of[$pp]=${id_of[$wp]}
+  done
+
+  for line in "${lines[@]}"; do
+    if [[ "$line" != unknown\|* ]]; then printf '%s\n' "$line"; continue; fi
+    IFS='|' read -r kind id pid age under started <<< "$line"
+    if [[ -n "${id_of[$pid]:-}" ]]; then
+      printf 'wrapper|%s|%s|%s|%s|%s\n' "${id_of[$pid]}" "$pid" "$age" "$under" "$started"
+    else
+      # Id field back to `-`: the parent pid was meant for this function only.
+      printf 'unknown|-|%s|%s|%s|%s\n' "$pid" "$age" "$under" "$started"
+    fi
+  done
+}
+
 watcher_inventory() {
   command -v powershell.exe >/dev/null 2>&1 || return 0
   local cache="${TMPDIR:-/tmp}/watch-bridge-inv.$$"
@@ -688,6 +790,13 @@ $rxs = 'watch-bridge\.sh\s+\$\(head -1 ([^)]+\.session-id)\)'
 # A first attempt along the children was removed again: it would have looked like a solution
 # and hit nothing.
 #
+# ADDENDUM: that holds for the WINDOWS parent chain, and for that chain only. At the msys
+# level the edge exists: `/proc/<script>/ppid` IS the wrapper, and `/proc/<wrapper>/winpid`
+# is the pid from this inventory. Measured on a live
+# arm: exactly ONE child, command line `watch-bridge.sh <id>`. /proc is out of reach from
+# PowerShell, so `resolve_unknown_arms` does the resolving in bash, AFTER this call. Nothing
+# is guessed even now: without an unambiguous child the row stays `unknown`.
+#
 # So the id is NOT guessed. Such an arm is reported instead of dropped, and the arming path
 # touches nothing while one is running. An arm nobody can attribute is a structural
 # consequence of the shared-checkout form, not carelessness.
@@ -709,7 +818,17 @@ foreach ($p in $all.Values) {
     # report itself.
     if ($kind -eq 'wrapper' -and $p.CommandLine -like '*watch-bridge.sh*' -and $p.CommandLine -notmatch $rxopt) {
       $uage = [int]($now - $p.CreationDate).TotalSeconds
-      'unknown|-|{0}|{1}|0|{2}' -f $p.ProcessId, $uage, $p.CreationDate.ToString('MM-dd HH:mm')
+      # Work out `under-claude` here as well (it used to be a fixed 0): `resolve_unknown_arms`
+      # turns this row into a `wrapper` row once it finds the id through /proc, and then this
+      # field decides about "delivering". The id field carries the WINDOWS parent pid for
+      # that function; it puts the `-` back.
+      $uunder = 0
+      $c = $all[[int]$p.ParentProcessId]; $d = 0
+      while ($c -and $d -lt 6) {
+        if ($c.Name -eq 'claude.exe') { $uunder = 1; break }
+        $c = $all[[int]$c.ParentProcessId]; $d++
+      }
+      'unknown|{4}|{0}|{1}|{2}|{3}' -f $p.ProcessId, $uage, $uunder, $p.CreationDate.ToString('MM-dd HH:mm'), [int]$p.ParentProcessId
     }
     continue
   }
@@ -798,7 +917,7 @@ PS_INV
   WATCH_BRIDGE_SPIN_MINAGE="$spin_minage" WATCH_BRIDGE_SPIN_MINPCT="$spin_minpct" \
   WATCH_BRIDGE_ZOMBIE_MINAGE="$zombie_minage" \
     powershell.exe -NoProfile -NonInteractive -Command "$code" 2>/dev/null \
-    | tr -d '\r' > "$cache.tmp" 2>/dev/null
+    | tr -d '\r' | resolve_unknown_arms > "$cache.tmp" 2>/dev/null
   mv -f "$cache.tmp" "$cache" 2>/dev/null || true
   cat "$cache" 2>/dev/null || true
 }

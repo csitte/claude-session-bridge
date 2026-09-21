@@ -2219,6 +2219,65 @@ STUB
   arm >/dev/null
   assert_eq "control: without it the silent remnant is reaped as before" "-Id 111" "$(cat "$log")"
 
+  # --- resolving along the msys parent edge ---------------------------------------
+  # A fixture /proc: the wrapper (Windows pid 222) is msys pid 9001, and its one child
+  # carries the id expanded. `under-claude` is 1, as the inventory now reports it.
+  mkproc() { # $1=msys pid  $2=winpid  $3=ppid  $4..=argv
+    local d="$W/proc/$1"; mkdir -p "$d"
+    printf '%s\n' "$2" > "$d/winpid"; printf '%s\n' "$3" > "$d/ppid"
+    shift 3; : > "$d/cmdline"; local a; for a in "$@"; do printf '%s\0' "$a" >> "$d/cmdline"; done
+  }
+  rm -rf "$W/proc"; mkdir -p "$W/proc"
+  mkproc 9001 222 1    bash -c "eval 'bash /x/watch-bridge.sh \$(head -1 .session-id)'"
+  mkproc 9002 333 9001 bash /x/watch-bridge.sh shared
+  mk_stub "$(printf 'script|shared|333|400|0|09-01 10:05\nunknown|40|222|400|1|09-01 10:05\nclaudepid|-|40|0|0|')"
+
+  out="$(WATCH_BRIDGE_PROC="$W/proc" wb --status)"
+  if printf '%s\n' "$out" | grep -q 'without a determinable session id'; then
+    bad "resolve: an arm whose one child carries the id is no longer reported as unattributable" "$out"
+  else ok "resolve: an arm whose one child carries the id is no longer reported as unattributable"; fi
+  if printf '%s\n' "$out" | grep -qE '^shared .*delivering'; then ok "resolve: ... and its session counts as delivering"
+  else bad "resolve: ... and its session counts as delivering" "$out"; fi
+
+  # The switch, and the reason the case above can go red: same fixture, resolving off.
+  out="$(WATCH_BRIDGE_PROC=0 wb --status)"
+  if printf '%s\n' "$out" | grep -q 'without a determinable session id'; then ok "resolve: WATCH_BRIDGE_PROC=0 switches it off -- the arm is reported as before"
+  else bad "resolve: WATCH_BRIDGE_PROC=0 switches it off -- the arm is reported as before" "$out"; fi
+  if printf '%s\n' "$out" | grep -qE 'PID 222 '; then ok "resolve: ... with its own pid, not the parent pid carried in the id field"
+  else bad "resolve: ... with its own pid, not the parent pid carried in the id field" "$out"; fi
+
+  # Nothing is guessed: two different ids below one wrapper leave it unattributable.
+  mkproc 9003 334 9001 bash /x/watch-bridge.sh other
+  out="$(WATCH_BRIDGE_PROC="$W/proc" wb --status)"
+  if printf '%s\n' "$out" | grep -q 'without a determinable session id'; then ok "resolve: two ids below one wrapper -- it stays unattributable"
+  else bad "resolve: two ids below one wrapper -- it stays unattributable" "$out"; fi
+  rm -rf "$W/proc/9003"
+
+  # A one-shot call below the wrapper is not an id.
+  rm -rf "$W/proc/9002"; mkproc 9002 333 9001 bash /x/watch-bridge.sh --status
+  out="$(WATCH_BRIDGE_PROC="$W/proc" wb --status)"
+  if printf '%s\n' "$out" | grep -q 'without a determinable session id'; then ok "resolve: an option after the script name is not taken for an id"
+  else bad "resolve: an option after the script name is not taken for an id" "$out"; fi
+  rm -rf "$W/proc/9002"; mkproc 9002 333 9001 bash /x/watch-bridge.sh shared
+
+  # One arm is TWO bash.exe at the Windows level: the starter (221, under claude) and the
+  # msys shell (222, child of 221). /proc knows only 222 -- the starter inherits the id.
+  mk_stub "$(printf 'script|shared|333|400|0|09-01 10:05\nunknown|40|221|400|1|09-01 10:05\nunknown|221|222|400|1|09-01 10:05\nclaudepid|-|40|0|0|')"
+  out="$(WATCH_BRIDGE_PROC="$W/proc" wb --status)"
+  if printf '%s\n' "$out" | grep -q 'without a determinable session id'; then
+    bad "resolve: the starter process inherits the id of the msys shell below it" "$out"
+  else ok "resolve: the starter process inherits the id of the msys shell below it"; fi
+
+  # What this buys: with the foreign arm attributed, a silent remnant of the OWN id is
+  # reaped again -- the arming path used to touch nothing as long as such an arm ran.
+  mk_stub "$(printf 'unknown|40|222|400|1|09-01 10:05\nscript|shared|333|400|0|09-01 10:05\nclaudepid|-|40|0|0|')"
+  : > "$log"
+  WATCH_BRIDGE_PROC="$W/proc" arm >/dev/null
+  assert_eq "resolve: with the arm attributed, the own silent remnant is reaped again" "-Id 111" "$(cat "$log")"
+  : > "$log"
+  WATCH_BRIDGE_PROC=0 arm >/dev/null
+  assert_eq "resolve: control -- unresolved, nothing is touched" "" "$(cat "$log")"
+
   # PowerShell half: the id classification itself, against a synthetic process table.
   if ! has_inventory; then
     printf '  skip no PowerShell -- the id classification cannot be exercised here\n'
@@ -2252,8 +2311,11 @@ PS1
   # The literal id resolves twice (script and wrapper), the path-ful `.session-id` form
   # resolves by reading the file, the path-less one becomes `unknown`, and the one-shot
   # `--status` call is not an arm at all -- otherwise every diagnostic run would report itself.
+  # The `unknown` row leaves PowerShell with its Windows PARENT pid in the id field (40, the
+  # claude.exe) and its real `under-claude` value: `resolve_unknown_arms` needs both and
+  # puts the `-` back before anyone else reads the row.
   assert_eq "classification: literal and path-ful resolve, path-less becomes 'unknown', one-shot is ignored" \
-    "script|app|111|300|0 unknown|-|222|300|0 wrapper|app|112|300|1 wrapper|shared|223|300|1" "$out"
+    "script|app|111|300|0 unknown|40|222|300|1 wrapper|app|112|300|1 wrapper|shared|223|300|1" "$out"
 }
 
 # --------------------------------------------------------------------------

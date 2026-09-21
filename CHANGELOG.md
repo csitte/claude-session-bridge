@@ -15,6 +15,16 @@ commit it names will say why.
 ## Unreleased
 
 ### Fixed
+- **An arm that passes its id as `$(head -1 .session-id)` is attributed again instead of
+  being reported forever.** The wrapper's command line carries that expression unexpanded, and
+  at the Windows level there is no edge from the wrapper to the script that holds the expanded
+  id. At the msys level there is: the wrapper *is* the script's parent (`/proc/<pid>/ppid`),
+  and `/proc/<pid>/winpid` ties it to the inventory. `resolve_unknown_arms` reads the id from
+  there -- exactly one id below the wrapper is required, otherwise the row stays `unknown`, so
+  nothing is guessed. This matters beyond the table: where such an arm is always running (two
+  checkouts sharing one `CLAUDE.md`), the arming path never cleaned anything up. One arm is
+  two `bash.exe` at the Windows level (starter and msys shell); the starter inherits the id.
+  `WATCH_BRIDGE_PROC` overrides the `/proc` root, `0` switches it off. (`bridge/watch-bridge.sh`)
 - **Closing a fleet no longer leaves three stuck `bash.exe` behind for every window.**
   `close-cc-sessions.ps1` went straight to `taskkill /T /F`, which hits mintty alone — msys
   tears the Windows process tree apart — so the shell inside ran on into the launcher's

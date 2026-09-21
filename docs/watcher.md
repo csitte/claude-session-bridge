@@ -752,6 +752,25 @@ is empty and `watch-bridge.sh` answers with its `usage` — **a loud failure ins
 wrong id.** The paragraph says so explicitly: do not fall back to another id, do not guess,
 ask.
 
+**How the inventory attributes such an arm.** The wrapper's command line carries
+`$(head -1 .session-id)` *unexpanded*, and relative — reading that file from the inventory
+would resolve it against the wrong working directory, so the id is never taken from there.
+At the Windows level there is no edge from the wrapper to the script that holds the expanded
+id either: the recorded parent pid belongs to an intermediate process that is long gone. For a
+while such an arm was therefore only *reported* ("without a determinable session id"), and the
+arming path touched nothing while one was running. That last part turned out to be expensive:
+where two checkouts share a `CLAUDE.md`, such an arm is **always** running, so stale watchers
+were never cleaned up — 159 of them piled up on one machine in a day.
+The edge exists one level down. In msys the wrapper **is** the parent of its script
+(`/proc/<script>/ppid`), and `/proc/<wrapper>/winpid` is the pid the inventory lists.
+`resolve_unknown_arms` reads the inventory after the PowerShell call and turns an `unknown` row
+into a `wrapper` row when **exactly one** id stands below the wrapper; with none or two it
+stays `unknown`. Nothing is guessed — the id is read from the process that carries it expanded.
+One arm is two `bash.exe` at the Windows level (the `Git\bin` starter and the msys shell below
+it); `/proc` knows only the second, and the starter inherits its id through the Windows parent
+pid. `WATCH_BRIDGE_PROC` overrides the `/proc` root for tests, `0` switches the resolving off;
+on Linux there is no `winpid`, so nothing changes there.
+
 **Addendum: inside the bridge the check keeps quiet.** Called from a `threads/<n>/msgs/`
 folder, the check measured the current working directory, failed to find it in any participant
 row, and concluded the **registry was incomplete** — pointing the reader at the coordinator to
