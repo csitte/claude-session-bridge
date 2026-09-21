@@ -15,6 +15,14 @@ commit it names will say why.
 ## Unreleased
 
 ### Fixed
+- **Starting a single session from the session manager no longer leaves a stray `bash.exe`
+  window behind.** The button ran `bin\bash.exe` in a conhost console; the session's mintty
+  started from there stays attached to that console, and a console only closes with its last
+  attached process — so the minimized window lived exactly as long as the session. The
+  starter is now a mintty (a pty, not a console), the same route `start-cc.cmd` takes, and it
+  closes as soon as `start-one.sh` ends. With `-h error` it stays open only on a real failure
+  (exit 1), so the reason can be read; "already running" is exit 0 and closes.
+  (`launcher/session-manager.ps1`)
 - **A path claimed by two participants no longer produces a silently wrong id.**
   `readme_pathmap` cannot tell a path entry from prose — it takes every backticked expression
   in column 4 that looks like a path — so one row carrying a half-sentence with a backticked

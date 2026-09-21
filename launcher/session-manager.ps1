@@ -45,7 +45,7 @@ Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $ScriptDir = $PSScriptRoot
-$GitBash   = 'C:\Program Files\Git\bin\bash.exe'
+$Mintty    = 'C:\Program Files\Git\usr\bin\mintty.exe'
 $HostName  = ($env:COMPUTERNAME).ToLower()
 $ConfPath  = Join-Path $ScriptDir "projects.$HostName.conf"
 # Autostart selection: local, not in the repo. The list stays in the config, only the
@@ -324,8 +324,18 @@ $btnOne.Add_Click({
     # wrapped in "" explicitly, otherwise bash -lc receives only the first word ('cd')
     # and the rest evaporates as positional parameters.
     $bashCmd = 'cd ''' + $posixDir + ''' && ./start-one.sh ''' + $name + ''''
-    Start-Process -FilePath $GitBash -WindowStyle Minimized `
-        -ArgumentList @('-lc', ('"' + $bashCmd + '"'))
+    # The starter is a mintty, NOT a console. This used to run bin\bash.exe in a conhost
+    # console; the session's mintty that cc_launch starts from there stays attached to that
+    # console, and a console only closes with its last attached process - so a stray
+    # "bash.exe" window lived as long as the session did (measured: a conhost window with a
+    # dead bash parent next to the session's mintty of the same minute). A mintty starter
+    # has a pty instead of a console and closes as soon as start-one.sh ends - the same
+    # route start-cc.cmd takes. '-h error': on a real failure (exit 1) the window stays so
+    # the reason can be read; "already running" is exit 0 and closes.
+    Start-Process -FilePath $Mintty `
+        -ArgumentList @('-w', 'min', '-o', 'ConfirmExit=no', '-h', 'error',
+                        '--Title', ('"Start ' + $name + '"'),
+                        '-e', '/usr/bin/bash', '-lc', ('"' + $bashCmd + '"'))
     $status.Text = "  Starting '$name' ..."
 })
 
