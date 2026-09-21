@@ -15,6 +15,15 @@ commit it names will say why.
 ## Unreleased
 
 ### Fixed
+- **Closing a fleet no longer leaves three stuck `bash.exe` behind for every window.**
+  `close-cc-sessions.ps1` went straight to `taskkill /T /F`, which hits mintty alone — msys
+  tears the Windows process tree apart — so the shell inside ran on into the launcher's
+  `exec bash` on a dead pty and hung in its first prompt, forever. The script now closes
+  gently first (`taskkill` without `/F` is the click on the X; measured: nothing left behind),
+  forces only what still stands after ten seconds, and removes what a forced close leaves
+  (bare command line, dead parent, created since the script started). New switches
+  `-Pattern` (test against probe windows only) and `-RemnantsOnly -Since`. See
+  `docs/launcher.md`, "Closing a fleet". (`launcher/close-cc-sessions.ps1`)
 - **Starting a single session from the session manager no longer leaves a stray `bash.exe`
   window behind.** The button ran `bin\bash.exe` in a conhost console; the session's mintty
   started from there stays attached to that console, and a console only closes with its last

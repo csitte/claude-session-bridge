@@ -526,11 +526,30 @@ afresh on every start.
 
 ## Closing a fleet
 
-`close-cc-sessions.ps1` kills the session windows and then collects leftover watcher
+`close-cc-sessions.ps1` closes the session windows and then collects leftover watcher
 processes — sparing any whose wrapper still hangs under a live session, so hand-started
 sessions are not disturbed. As a third step it measures the orphaned `conhost.exe` consoles
 over a three-second delta and kills the ones that spin: killing the windows is exactly the
 moment that leak is born (see [watcher.md](watcher.md#a-third-line-orphaned-consoles--reap)).
+
+**It closes gently first and forces only what does not respond.** `taskkill` without `/F`
+sends the window a `WM_CLOSE` — the click on its X. mintty passes that on as `SIGHUP`, claude
+and the shell end on their own, and nothing is left behind. The script used to go straight to
+`/T /F`, and that hit mintty *alone*: msys tears the Windows process tree apart, so `/T` never
+reaches the shell inside. The shell then ran on into the launcher's `exec bash` on a dead pty
+and got stuck computing its first prompt — **three `bash.exe` per closed window, every time**
+(we found 85 after four days; hardly any load, so it only surfaced when memory ran short).
+A window that ignores the gentle close is forced after ten seconds, and a fourth step removes
+what that leaves: a `bash.exe` with a bare command line, a dead parent, created since the
+script started. The time guard matters — a window in which claude ended on its own and which
+you still have open looks exactly the same at the Windows level, and it predates the run.
+A forced close leaves the chain of three one time and a single shell the next; both go.
+
+`-Pattern <text>` points the script at probe windows only (starter window and watchers are
+left alone), which is how the whole path can be tested without closing a real session.
+`-RemnantsOnly -Since <time>` runs just the fourth step by hand; there a remnant must also
+have a stuck subshell as a child, because a freely chosen `-Since` would otherwise hit the
+live shell of an open window.
 
 This second step is necessary because killing the window does **not** kill the watcher: the
 process tree is already torn (see [watcher.md](watcher.md)), so a tree kill never reaches it.
