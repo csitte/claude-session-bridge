@@ -15,6 +15,19 @@ commit it names will say why.
 ## Unreleased
 
 ### Fixed
+- **The arm paragraph the installer writes no longer hangs its switch on the expiry wording,
+  and it no longer carries a retracted measurement.** Whether a build knows `persistent: true`
+  was to be decided by the answer saying "expires in 30m" — but two sessions on the same
+  morning were told "expires in 30m" and "timeout 1800000ms" for the same case, so half the
+  readers would take the wrong branch, silently, because both branches arm something. The
+  condition is now the **word** `persistent` in the answer; any deadline at all means the
+  fallback. The paragraph also cited 73 minutes without expiry as evidence that a build knew
+  the flag; that rested on three observations at three points in time, which a watch that
+  expired and was re-armed reproduces exactly. It is now marked as retracted, next to what was
+  measured since: across three sessions on two machines the schema does not know the field.
+  Arming with it stays right — it costs nothing and a later build may know it. Three test
+  cases in group `install` guard the paragraph as written, each seen red against a reverted
+  template. (`bridge/install-watcher.sh`)
 - **An arm that passes its id as `$(head -1 .session-id)` is attributed again instead of
   being reported forever.** The wrapper's command line carries that expression unexpanded, and
   at the Windows level there is no edge from the wrapper to the script that holds the expanded

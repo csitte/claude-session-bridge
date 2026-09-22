@@ -133,15 +133,24 @@ fi
 block="**Bridge push (watcher):**${sharednote}At session start, **arm first, fold second** — in that order,
 and without checking \`--status\` beforehand: arm the Monitor tool with \`persistent: true\`
 and \`timeout_ms: 3600000\` alongside. **Then read the tool's answer -- it is the switch, not
-the flag:** \"persistent — runs until TaskStop or session end\" means the watch runs until
-session end and is not re-armed; \"expires in 30m\" means this build does not know the flag --
-then the fallback applies: \`timeout_ms: 1800000\` and re-arm right after every expiry. Why a
-switch and not a fixed statement: this paragraph once claimed the flag no longer existed, then
-claimed the opposite, both times generalising from one machine. Measured on the same day: one
-build ran 73 minutes without expiry, another had no \`persistent\` in its schema at all --
-different harness builds, not different truths. And the trap that hid it: an unknown field is
-dropped silently despite \`additionalProperties: false\`, so an arm that goes through proves
-nothing; only the answer does. **Do not change this without measuring on your build.**
+the flag, and the condition is the word \`persistent\`:** if the answer contains it (\"persistent
+— runs until TaskStop or session end\"), the watch runs until session end and is not re-armed.
+If the answer names **any deadline at all**, this build does not know the flag -- then the
+fallback applies: \`timeout_ms: 1800000\` and re-arm right after every expiry.
+**Do not test for the expiry wording, it differs per build:** one session was told
+\"expires in 30m\" while another, on the same morning, got \"timeout 1800000ms\" for the same
+case. A switch that hangs on a wording is the same over-generalisation once more, just finer.
+Why a switch and not a fixed statement: this paragraph once claimed the flag no longer
+existed, then claimed the opposite, both times generalising from one machine. Measured across
+three sessions on two machines: in the build we have, the schema does **not** know the field,
+the answer is \"expires in 30m\", and watches expire at exactly 30 minutes. Earlier
+counter-evidence (73 and 57 minutes without expiry) is **dead**: it rested on three
+observations at three points in time, and a watch that expired and was re-armed in between
+leaves exactly that trace. Arming with the field stays right all the same -- it costs nothing
+and a later build may know it. And the trap that hid it: an unknown field is dropped silently
+despite \`additionalProperties: false\`, so an arm that goes through proves nothing; only the
+answer does. **Do not change this without measuring on your build** -- decide on the answer,
+never on the field name, never on a version number.
 description \"session bridge: new messages for $iddesc\", command with the path that exists
 on this machine:
 \`bash $script_pc $idexpr\` (machine A) or
@@ -326,8 +335,9 @@ cat <<EOF
 
 Done for '$me'. From the next session start on, the session arms itself.
 To take effect in the running session: arm the Monitor tool with persistent: true (plus
-timeout_ms 3600000; if the answer says "expires in 30m", this build does not know the
-  flag: timeout_ms 1800000 and re-arm after every expiry),
+timeout_ms 3600000; if the word persistent is NOT in the answer, this build does not
+  know the flag: timeout_ms 1800000 and re-arm after every expiry - the expiry wording
+  differs per build, so never test for it),
   command:     bash $script $me
   description: session bridge: new messages for $me
 If one is already running for '$me', the new arm steps aside by itself — state:

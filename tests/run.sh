@@ -877,6 +877,22 @@ test_install() {
     && ok "the mark condition is written verbatim" \
     || bad "the mark condition is written verbatim" "$(grep 'Only if it prints' -A1 "$p/CLAUDE.md")"
 
+  # The switch hangs on the WORD `persistent`, never on the expiry wording. Two sessions on
+  # the same morning were told "expires in 30m" and "timeout 1800000ms" for the same case, so
+  # a paragraph that makes one wording the condition sends half the readers down the wrong
+  # branch -- and it fails silently, because both branches arm something.
+  if grep -q 'the condition is the word' "$p/CLAUDE.md"; then
+    ok "the written paragraph names the word persistent as the condition"
+  else bad "the written paragraph names the word persistent as the condition" "$(grep -n 'switch, not' -A2 "$p/CLAUDE.md")"; fi
+  if grep -q 'differs per build' "$p/CLAUDE.md"; then
+    ok "... and warns not to test for the expiry wording"
+  else bad "... and warns not to test for the expiry wording"; fi
+  # A measurement that was retracted must not travel on in the template: the 73 minutes rested
+  # on three observations at three points in time, which a re-armed watch reproduces exactly.
+  if grep -q 'is \*\*dead\*\*' "$p/CLAUDE.md"; then
+    ok "the retracted 73-minute measurement is marked as dead, not repeated as fact"
+  else bad "the retracted 73-minute measurement is marked as dead, not repeated as fact" "$(grep -n '73' "$p/CLAUDE.md")"; fi
+
   head_ "installer: CRLF files keep their line endings"
   p="$(new_proj bridge-section)"
   sed -i 's/$/\r/' "$p/CLAUDE.md"
