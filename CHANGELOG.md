@@ -25,6 +25,15 @@ commit it names will say why.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
 ### Fixed
+- **A failed `--push` now says why.** Git's own message was thrown at `/dev/null`, so two
+  failures that call for opposite actions printed one identical line: an unreachable server
+  (wait and repeat) and a rejection (fetch first, or you overwrite someone else's work). Both
+  reproduced; both looked the same. The line also now says the state is safe, because the
+  real cost is not the failed push -- it is somebody taking the failure for a broken clone and
+  starting to repair the clone. Occasion: an announced server maintenance window, inside
+  which every wrap-up runs into the first case. Six cases in group `gitmemory`, including the
+  no-false-alarm guard that a successful push stays quiet; two mutants seen red.
+  (`launcher/link-memory.sh`)
 - **An orphaned watcher ends by itself instead of polling for ever.** When a watch expires
   the harness ends the shell, not the script below it, and the script kept running idle --
   two remnants per session and hour. Counted on one machine after eight and a half hours:

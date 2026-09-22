@@ -3606,6 +3606,54 @@ test_gitmemory() {
   if printf '%s\n' "$out" | grep -q 'still points at the OLD folder'; then
     ok "--retire refuses while the link still points at the old folder"
   else bad "--retire refuses while the link still points at the old folder" "$out"; fi
+  # --- a failed push has to say WHY ------------------------------------------
+  # Two failures that call for opposite actions used to print one identical line: an
+  # unreachable server (wait and repeat) and a rejection (fetch first, or you overwrite
+  # someone else's work). The occasion was an announced maintenance window, inside which
+  # every wrap-up hits the first case -- and the danger is not the failure, it is somebody
+  # taking it for a broken clone and repairing the clone.
+  local clone; clone="$(cd "$cfg/projects/$slug/memory" 2>/dev/null && pwd -P)"
+  if [[ -z "$clone" ]]; then
+    printf '  skip the memory clone cannot be located here\n'
+  else
+    local saved; saved="$(git -C "$clone" remote get-url origin)"
+
+    echo three > "$mem/c.md"
+    git -C "$clone" remote set-url origin ssh://nowhere.invalid/x.git
+    rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --push "$repo" 2>&1)" || rc=$?
+    assert_eq "--push with an unreachable remote: exit 1" "1" "$rc"
+    if printf '%s\n' "$out" | grep -q 'git: '; then
+      ok "... and git's own message is carried along"
+    else bad "... and git's own message is carried along" "$out"; fi
+    if printf '%s\n' "$out" | grep -qiE 'resolve|could not read|connect'; then
+      ok "... naming the unreachable host, not just 'push failed'"
+    else bad "... naming the unreachable host, not just 'push failed'" "$out"; fi
+    if printf '%s\n' "$out" | grep -q 'nothing is lost'; then
+      ok "... and it says the state is safe, so nobody repairs the clone"
+    else bad "... and it says the state is safe, so nobody repairs the clone" "$out"; fi
+
+    # The other failure, which needs the opposite action. The point of this case is that the
+    # two must be TOLD APART -- before, both printed the same single line.
+    git -C "$clone" remote set-url origin "$saved"
+    local other="$base/other"; git clone -q "$bare" "$other" >/dev/null 2>&1
+    git -C "$other" -c user.email=t@t -c user.name=t commit -q --allow-empty -m foreign
+    git -C "$other" push -q origin HEAD >/dev/null 2>&1
+    echo four > "$mem/d.md"
+    rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --push "$repo" 2>&1)" || rc=$?
+    assert_eq "--push against a remote that moved on: exit 1" "1" "$rc"
+    if printf '%s\n' "$out" | grep -qiE 'reject|fetch first|non-fast-forward'; then
+      ok "... and the rejection is distinguishable from an unreachable server"
+    else bad "... and the rejection is distinguishable from an unreachable server" "$out"; fi
+
+    # No false alarm on the way that works: a successful push must stay quiet.
+    git -C "$clone" -c user.email=t@t -c user.name=t       pull -q --no-rebase --no-edit origin master >/dev/null 2>&1
+    rc=0; out="$(CLAUDE_CONFIG_DIR="$cfg" bash "$LM" --push "$repo" 2>&1)" || rc=$?
+    assert_eq "--push after catching up: exit 0" "0" "$rc"
+    if ! printf '%s\n' "$out" | grep -q 'git: '; then
+      ok "... and a successful push says nothing about git"
+    else bad "... and a successful push says nothing about git" "$out"; fi
+  fi
+
 }
 
 test_canonicalise() {

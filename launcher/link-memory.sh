@@ -418,10 +418,27 @@ memory_push() {
     echo "[push] committed: $(git -C "$path" log -1 --format=%h\ %s)"
   fi
   br="$(git -C "$path" symbolic-ref --short HEAD 2>/dev/null || echo master)"
-  if git -C "$path" push --quiet -u origin "$br" 2>/dev/null; then
+  # Git's own message is CARRIED ALONG, not thrown at /dev/null. Two cases that call for
+  # opposite actions looked character-for-character identical before:
+  #   server unreachable      -> wait and repeat later
+  #   rejected (fetch first)  -> fetch first, or you overwrite someone else's work
+  # Both reproduced; both produced the same single line. The occasion was concrete: an
+  # announced server maintenance window, inside which every wrap-up runs into the first case
+  # -- and the danger is not the failure but that somebody takes it for a broken clone and
+  # starts repairing the clone.
+  local out rc=0
+  out="$(git -C "$path" push --quiet -u origin "$br" 2>&1)" || rc=$?
+  if (( rc == 0 )); then
     echo "[push] pushed to $(git -C "$path" remote get-url origin) ($br)."
   else
-    echo "[WARNING] push failed -- the state is local only. Catch up with:" >&2
+    echo "[WARNING] push failed -- the state is local only, nothing is lost." >&2
+    # Blank lines out, or the message ends on empty separators; three lines are enough
+    # (on a rejection the first one already carries the `! [rejected]`).
+    if [[ -n "$out" ]]; then
+      printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | head -3 \
+        | sed 's/^/          git: /' >&2
+    fi
+    echo "          Catch up with:" >&2
     echo "          git -C '$path' push -u origin $br" >&2
     return 1
   fi
