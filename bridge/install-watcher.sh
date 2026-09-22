@@ -176,7 +176,8 @@ the chat, react according to the bridge protocol. The watcher only reads and com
 the start scan; write-once is unaffected. **Do not disarm the watcher:** it survives
 \`/clear\` and keeps delivering; a second arm recognises the running one and steps aside.
 Use TaskStop only if delivery must stop *immediately*. Check the state with
-\`bash $script_pc --status $idexpr\`. Operational docs: docs/watcher.md next to the script."
+\`bash $script_pc --status $idexpr\` (machine A) or
+\`bash $script_nb --status $idexpr\` (machine B). Operational docs: docs/watcher.md next to the script."
 
 # ---------- 1. CLAUDE.md ----------
 # Adopt the line endings of the target file. -U is mandatory: without binary mode

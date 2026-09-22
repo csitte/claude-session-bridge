@@ -15,6 +15,10 @@ commit it names will say why.
 ## Unreleased
 
 ### Fixed
+- **The arm paragraph now names both machine paths for `--status`, as it already did for
+  arming and folding.** One line out of three named a single machine, so anyone running the
+  paragraph on the other one had to fix it up by hand -- and the next `-u` took the fix away
+  again. Reported from the field by a session that had done exactly that. (`bridge/install-watcher.sh`)
 - **The arm paragraph the installer writes no longer hangs its switch on the expiry wording,
   and it no longer carries a retracted measurement.** Whether a build knows `persistent: true`
   was to be decided by the answer saying "expires in 30m" — but two sessions on the same
