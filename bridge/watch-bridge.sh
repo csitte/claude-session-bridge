@@ -1767,6 +1767,35 @@ handle_existing() {
     echo "watch-bridge: killed ${#spin[@]} orphaned console(s) with sustained load (PID $slist)" >&2
   fi
 
+  # Stepping aside is only safe while the predecessor KEEPS LIVING -- and at the moment of
+  # the decision this arm cannot know that. Reported from the field: an arm stepped aside
+  # correctly, the predecessor was gone seconds later, and the id stood there with NO
+  # watcher -- no message, no warning. Two messages addressed to that session sat in the
+  # gap and were found nearly two hours late, by accident.
+  #
+  # The inventory cache is NOT the cause: it is keyed on `$$`, so a fresh arm always builds
+  # a fresh one. This is a genuine race -- data from now, predecessor dead a second later.
+  # The window grew when orphaned scripts started ending themselves instead of polling for
+  # ever: before that, the remnant you stepped aside for at least kept delivering.
+  #
+  # So look twice, with a gap. The gap is measured against the cause: an orphaned script
+  # notices its missing shell at the head of its next pass, within `poll` seconds. Only the
+  # arm that was about to exit anyway pays for it.
+  if [[ $delivering -eq 1 ]]; then
+    local handover="${WATCH_BRIDGE_HANDOVER_WAIT:-8}"
+    if [[ "$handover" != 0 ]]; then
+      sleep "$handover"
+      # Fresh inventory: this process's cache is warm by now and would simply repeat the
+      # answer from before -- the very answer under test here.
+      rm -f "${TMPDIR:-/tmp}/watch-bridge-inv.$$" 2>/dev/null
+      if [[ "$(delivery_state "$me")" != delivering ]]; then
+        echo "watch-bridge: the watcher this arm was about to step aside for" \
+             "(PID $script_pid) disappeared within ${handover}s -- this arm takes over." >&2
+        delivering=0
+      fi
+    fi
+  fi
+
   if [[ $delivering -eq 1 ]]; then
     [[ $locked -eq 1 ]] && rmdir "$lock" 2>/dev/null
     # Deliberately stdout: this is the only notification this arm produces, and it

@@ -682,6 +682,88 @@ orphan_kill_shell() { # $1=shell pid -- end the shell ALONE, leaving the child
   kill "$1" 2>/dev/null
 }
 
+# --- stepping aside is only safe while the predecessor lives -------------------------
+# Reported from the field: an arm stepped aside, the predecessor was gone seconds later,
+# and the id stood there with no watcher at all -- silently. Two messages sat in that gap.
+#
+# The stub counts its calls: the first ones show the predecessor, later ones do not. That
+# is the race, without having to kill a real process at the right microsecond.
+handover_stub() { # $1=workdir  $2=counter file
+  cat > "$1/bin/powershell.exe" <<STUB
+#!/usr/bin/env bash
+n=\$(wc -l < '$2' 2>/dev/null | tr -d ' ')
+echo x >> '$2'
+if printf '%s' "\$*" | grep -q 'Stop-Process'; then exit 0; fi
+if [ "\${n:-0}" -lt 1 ]; then
+  echo 'wrapper|app|1001|300|1|09-01 10:00'
+  echo 'script|app|1002|300|0|09-01 10:00'
+fi
+echo 'claudepid|-|40|0|0|'
+STUB
+  chmod +x "$1/bin/powershell.exe"
+}
+
+test_handover() {
+  head_ "watcher: an arm does not step aside for a predecessor that is already dying"
+  local b; b="$(new_bridge)"
+  export SESSION_BRIDGE_DIR="$b"; check_safety
+  local w="$TMPROOT/handover.$RANDOM"
+  mkdir -p "$w/bin" "$w/tmp"
+  local zaehler="$w/calls" out rc
+
+  handover_stub "$w" "$zaehler"
+  local found; found="$(PATH="$w/bin:$PATH" command -v powershell.exe)"
+  if [[ "$found" != "$w/bin/powershell.exe" ]]; then
+    bad "the powershell stub takes precedence on PATH" "found: $found"; return 0
+  fi
+  ok "the powershell stub takes precedence on PATH"
+
+  lauf() { # $1 = handover wait
+    : > "$zaehler"
+    rm -f "$w"/tmp/watch-bridge-seen-* 2>/dev/null
+    ( export PATH="$w/bin:$PATH" TMPDIR="$w/tmp" SESSION_BRIDGE_DIR="$b" \
+             WATCH_BRIDGE_HANDOVER_WAIT="$1"
+      # The suite forces WATCH_BRIDGE_NO_REAP=1 as a safety rail -- and that makes
+      # `handle_existing` return at once, so the branch under test is never reached.
+      # Lifted only here, and only with the stub in place: it swallows every
+      # `Stop-Process`, so no real watcher can be touched. Same pattern as the
+      # unattributable-arm group.
+      unset WATCH_BRIDGE_NO_REAP
+      timeout 25 bash "$WATCHER" app 1 --once 2>&1 )
+  }
+
+  # Without the check -- the behaviour that lost the messages. The arm steps aside and the
+  # id is left unarmed. This half is what makes the other half provable.
+  out="$(lauf 0)"
+  if printf '%s\n' "$out" | grep -q 'already delivering'; then
+    ok "with the check off, the arm steps aside for the dying predecessor (the old bug)"
+  else bad "with the check off, the arm steps aside for the dying predecessor" "$out"; fi
+
+  # With the check: the second look finds the predecessor gone, and the arm takes over.
+  out="$(lauf 2)"
+  if printf '%s\n' "$out" | grep -q 'disappeared within'; then
+    ok "with the check on, the arm notices and takes over"
+  else bad "with the check on, the arm notices and takes over" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'already delivering'; then
+    bad "... and does not also claim the predecessor is still delivering" "$out"
+  else ok "... and does not also claim the predecessor is still delivering"; fi
+
+  # The normal case must not change: a predecessor that KEEPS living is still honoured,
+  # otherwise every re-arm would produce a second watcher and double delivery.
+  cat > "$w/bin/powershell.exe" <<'STUB2'
+#!/usr/bin/env bash
+if printf '%s' "$*" | grep -q 'Stop-Process'; then exit 0; fi
+echo 'wrapper|app|1001|300|1|09-01 10:00'
+echo 'script|app|1002|300|0|09-01 10:00'
+echo 'claudepid|-|40|0|0|'
+STUB2
+  chmod +x "$w/bin/powershell.exe"
+  out="$(lauf 2)"
+  if printf '%s\n' "$out" | grep -q 'already delivering'; then
+    ok "a predecessor that stays alive is still honoured -- no double watcher"
+  else bad "a predecessor that stays alive is still honoured" "$out"; fi
+}
+
 test_orphan() {
   head_ "watcher: an orphaned watcher ends by itself, and --once ends after delivering"
   local b; b="$(new_bridge)"
@@ -4189,6 +4271,7 @@ case "${1:-all}" in
   watcher) test_watcher ;;
   mark) test_mark ;;
   orphan) test_orphan ;;
+  handover) test_handover ;;
   commands) test_commands ;;
   linkcommands) test_linkcommands ;;
   linkskills) test_linkskills ;;
@@ -4218,7 +4301,7 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_orphan; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_mark; test_orphan; test_handover; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 

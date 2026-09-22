@@ -347,6 +347,33 @@ harmless (nobody hears them) but they poll forever. Two independent defences: th
 script collects them after killing the windows, and the arming logic above reaps them. Both
 are needed; either alone has a hole.
 
+### Stepping aside is only safe while the predecessor lives
+
+When an arm finds a watcher already delivering for its id, it steps aside. That is right --
+it is why there is never a double watcher after a `/clear`. But the check answers about
+*now*, and the predecessor may die a second later.
+
+Reported from the field: an arm stepped aside correctly, the predecessor was gone seconds
+later, and the id was left with **no watcher and no signal**. Two messages addressed to that
+session sat in the gap; they surfaced nearly two hours later, and only because somebody
+followed up on the ended stream by chance.
+
+**The inventory cache is not the cause.** It is keyed on the process id, so a fresh arm
+always builds a fresh inventory. This is a real race. What made the window wider is the
+orphan check above: before it, the remnant you stepped aside for kept polling for ever, so
+it still delivered. Now it ends itself — and a stepped-aside arm leaves nothing behind.
+
+So the arm **looks twice**. After deciding to step aside it waits, drops its own inventory
+cache, and asks again; if the predecessor is gone it takes over instead of exiting, and says
+so. The gap is measured against the cause — an orphaned script notices its missing shell at
+the head of its next pass, within one poll interval. `WATCH_BRIDGE_HANDOVER_WAIT` sets it
+(default 8 seconds), `0` disables the second look. The cost falls only on an arm that was
+about to exit anyway.
+
+Test group `handover`. The half that makes the other half provable: with the second look
+disabled, the arm steps aside for the dying predecessor exactly as before — and a predecessor
+that *stays* alive is still honoured, or every re-arm would produce a second watcher.
+
 ### An orphaned watcher ends by itself
 
 When a watch expires, the harness ends the **shell** (`bash -c ...`), not the script below it.

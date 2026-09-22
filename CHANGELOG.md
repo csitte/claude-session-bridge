@@ -25,6 +25,22 @@ commit it names will say why.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
 ### Fixed
+- **An arm no longer steps aside for a predecessor that is already dying.** When a watcher is
+  already delivering for an id, a new arm steps aside -- correct, and the reason there is no
+  double delivery. But it is only safe while the predecessor *keeps* living, and at the moment
+  of the decision the arm cannot know that. Reported from the field: an arm stepped aside, the
+  predecessor was gone seconds later, and the id stood there with **no watcher at all** -- no
+  message, no warning. Two messages addressed to that session sat in the gap and were found
+  nearly two hours late, by accident. The inventory cache is not the cause (it is keyed per
+  process, so a fresh arm always builds a fresh one); this is a genuine race, and its window
+  grew when orphaned scripts started ending themselves instead of polling for ever -- before
+  that, the remnant you stepped aside for at least kept delivering. The arm now looks a second
+  time after a short gap, measured against the cause (an orphan notices its missing shell
+  within one poll interval), and takes over if the predecessor is gone.
+  `WATCH_BRIDGE_HANDOVER_WAIT` sets the gap, `0` disables the second look. Only the arm that
+  was about to exit anyway pays for it. Test group `handover`, five cases, including the
+  no-regression guard that a predecessor which stays alive is still honoured.
+  (`bridge/watch-bridge.sh`)
 - **A failed `--push` now says why.** Git's own message was thrown at `/dev/null`, so two
   failures that call for opposite actions printed one identical line: an unreachable server
   (wait and repeat) and a rejection (fetch first, or you overwrite someone else's work). Both
