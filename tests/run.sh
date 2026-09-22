@@ -655,6 +655,98 @@ mark_reported() { # $1=log -> number of reported messages
   grep -c 'Bridge message' "$1" 2>/dev/null || true
 }
 
+# --- orphan check and --once -------------------------------------------------
+# The case: when a watch expires the harness ends the SHELL, not the script below it. The
+# script keeps polling for ever -- 159 of them piled up on one machine in a day.
+#
+# ⚠ THE TRAP IN THIS SETUP, and it cost a wrong green: `bash -c "one command"` does not fork
+# -- bash execs the command and there is NO shell left, only the script, with PPID 1. The
+# orphan check deliberately does nothing at PPID 1 (see the script), so the whole scenario
+# never arises: killing "the shell" then kills the script itself, the first assertion passes,
+# and it passes for the wrong reason. The trailing `; :` is what forces a real fork. It was
+# the counter-test below -- "with the check off the remnant must SURVIVE" -- that exposed it.
+orphan_start() { # $1=bridge $2=tmpdir $3=id $4=out  -> prints the shell pid
+  local b="$1" td="$2" id="$3" out="$4"
+  mkdir -p "$td"
+  TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 \
+    bash -c "bash '$WATCHER' '$id' 1; :" > "$out" 2> "$out.err" &
+  printf '%s' "$!"
+}
+orphan_script_pid() { # $1=shell pid -> pid of the script below it, or empty
+  ps -ef 2>/dev/null | awk -v pp="$1" '$3==pp {print $2; exit}'
+}
+# A plain `kill` on the shell leaves the child running -- measured on msys (child alive after
+# the shell was gone, both via `kill` and via `taskkill` on its Windows pid) and the ordinary
+# behaviour on Linux. No group signal is involved, so no special case is needed.
+orphan_kill_shell() { # $1=shell pid -- end the shell ALONE, leaving the child
+  kill "$1" 2>/dev/null
+}
+
+test_orphan() {
+  head_ "watcher: an orphaned watcher ends by itself, and --once ends after delivering"
+  local b; b="$(new_bridge)"
+  export SESSION_BRIDGE_DIR="$b"; check_safety
+  local td out shell script rc
+
+  # 1. The orphan check itself.
+  td="$TMPROOT/orphantmp.$RANDOM"; out="$TMPROOT/orphan.$RANDOM"
+  shell="$(orphan_start "$b" "$td" app "$out")"
+  sleep 3
+  script="$(orphan_script_pid "$shell")"
+  if [[ -z "$script" ]]; then
+    printf '  skip the script below the shell cannot be located here\n'
+    kill "$shell" 2>/dev/null
+    return 0
+  fi
+  ok "the watcher script is running below its own shell"
+  orphan_kill_shell "$shell"
+  sleep 5
+  if ! kill -0 "$script" 2>/dev/null; then ok "with the shell gone, the script ends by itself"
+  else bad "with the shell gone, the script ends by itself" "still alive: $script"; kill -9 "$script" 2>/dev/null; fi
+  if grep -q 'the shell' "$out.err" 2>/dev/null; then ok "... and it says why, on stderr"
+  else bad "... and it says why, on stderr" "$(tail -3 "$out.err" 2>&1)"; fi
+
+  # 2. The switch, and the reason the case above can go red: with the check off the remnant
+  #    survives exactly as it used to. Without this half, a check that never fires passes too.
+  td="$TMPROOT/orphantmp2.$RANDOM"; out="$TMPROOT/orphan2.$RANDOM"
+  shell="$(WATCH_BRIDGE_ORPHAN_EXIT=0 orphan_start "$b" "$td" app "$out")"
+  sleep 3
+  script="$(orphan_script_pid "$shell")"
+  orphan_kill_shell "$shell"
+  sleep 5
+  if [[ -n "$script" ]] && kill -0 "$script" 2>/dev/null; then
+    ok "WATCH_BRIDGE_ORPHAN_EXIT=0 turns it off -- the remnant survives as before"
+    kill -9 "$script" 2>/dev/null
+  else bad "WATCH_BRIDGE_ORPHAN_EXIT=0 turns it off -- the remnant survives as before" "script=$script gone"; fi
+
+  # 3. --once ends after the pass that delivered, so a background command tells the session
+  #    by ENDING. The message has to arrive AFTER the start -- anything present at startup is
+  #    baseline and belongs to the start scan, so posting first would test nothing.
+  td="$TMPROOT/oncetmp.$RANDOM"; out="$TMPROOT/once.$RANDOM"; mkdir -p "$td"
+  ( TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 \
+      timeout 20 bash "$WATCHER" app 1 --once > "$out" 2>"$out.err" ) &
+  local oncepid=$!
+  sleep 3
+  post "$b" 2026-03-01T000000Z__other__o1 other app
+  wait "$oncepid"; rc=$?
+  assert_eq "--once: the process ends on its own after delivering" "0" "$rc"
+  assert_eq "--once: and it delivered exactly one message" "1" "$(mark_reported "$out")"
+
+  # 4. Without a message it must NOT end -- otherwise the session would re-arm in a tight
+  #    loop. 124 is the exit code of `timeout`.
+  td="$TMPROOT/oncetmp2.$RANDOM"; out="$TMPROOT/once2.$RANDOM"; mkdir -p "$td"
+  ( TMPDIR="$td" SESSION_BRIDGE_DIR="$(new_bridge)" WATCH_BRIDGE_NO_REAP=1 \
+      timeout 6 bash "$WATCHER" app 1 --once > "$out" 2>"$out.err" )
+  assert_eq "--once: with nothing to deliver it keeps waiting" "124" "$?"
+
+  # 5. --once stands BEHIND the id on purpose: in front of it the arm would look like a
+  #    one-shot call to the inventory, no later arm would step aside, and --status would call
+  #    the session unarmed. The usage has to say so, because that is where it is read.
+  if grep -qF 'watch-bridge.sh <session-id> [poll-seconds] [--once]' "$WATCHER"; then
+    ok "--once is documented behind the id in the usage"
+  else bad "--once is documented behind the id in the usage" "$(grep -n 'usage: watch-bridge' "$WATCHER")"; fi
+}
+
 test_mark() {
   head_ "watcher: the mark closes the re-arm gap"
 
@@ -4048,6 +4140,7 @@ STUB
 case "${1:-all}" in
   watcher) test_watcher ;;
   mark) test_mark ;;
+  orphan) test_orphan ;;
   commands) test_commands ;;
   linkcommands) test_linkcommands ;;
   linkskills) test_linkskills ;;
@@ -4077,7 +4170,7 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_mark; test_orphan; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 

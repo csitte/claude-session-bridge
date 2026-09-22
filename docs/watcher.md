@@ -347,6 +347,63 @@ harmless (nobody hears them) but they poll forever. Two independent defences: th
 script collects them after killing the windows, and the arming logic above reaps them. Both
 are needed; either alone has a hole.
 
+### An orphaned watcher ends by itself
+
+When a watch expires, the harness ends the **shell** (`bash -c ...`), not the script below it.
+The script keeps running idle and keeps polling the bridge. With a watch that expires every
+30 minutes that leaves two remnants per session and hour — counted on one machine after eight
+and a half hours: **159 live scripts across 7 sessions**, each about 1 % of a core, together
+one and a half cores, every one of them polling a network folder. The arming path does not
+clean them up either: it touches nothing while an arm without a determinable id is running,
+and where two checkouts share a `CLAUDE.md` that is the permanent state.
+
+From outside a remnant is hard to tell apart from a healthy watcher; from inside it is easy.
+**The shell is the msys parent of the script.** For a live arm `$PPID` exists, for six
+remnants out of six it did not. (At the *Windows* level the parent chain breaks immediately —
+that finding stands. The msys level carries.) `kill -0` is a builtin, so the check costs no
+process, and it sits at the head of each pass rather than the end: a remnant should not look
+at another message.
+
+- **Checked only if the parent was provably alive at startup.** At `$PPID` 1 or with the
+  parent already gone (a hand start from a foreign process, an exec optimisation in the
+  shell) the old behaviour applies. Otherwise a healthy watcher would end itself on its first
+  pass — the most expensive state there is.
+- `WATCH_BRIDGE_ORPHAN_EXIT=0` turns the check off.
+- **Running watchers carry the old code in memory.** The check takes effect per session from
+  its next arm.
+
+**Terminated processes are no longer counted as watchers either.** WMI keeps a process entry
+alive as long as anyone holds a handle on it, and those corpses were counted as delivering:
+measured 11 of them across 7 of 13 ids while all 13 had exactly one live watcher, so the
+double-arm warning was wrong everywhere — and it asks the reader to intervene. The inventory
+now collects what is *provably terminated* and skips it. Deliberately that way round: if the
+query fails outright the set stays empty and everything holds as before, whereas listing only
+what is confirmed alive would make every watcher invisible on a failure, and then no arm
+would ever step aside again.
+
+### `--once`: arming as a background command instead of a monitor
+
+A monitor turns every line on stdout into a notification, and it expires. A **background
+command** does neither: the session learns only of the process *ending*. `--once` makes the
+watcher end after the pass that delivered something — so the end itself is the signal, and
+the session reads the output, handles the message and arms again.
+
+- **`--once` stands behind the id**, not in front of it. The process inventory recognises an
+  arm by `watch-bridge.sh <id>` and treats `watch-bridge.sh -…` as a one-shot call like
+  `--status`. In front of the id the arm would drop out of the inventory: no later arm would
+  step aside, and `--status` would report the session as unarmed.
+- With an unusable mark it ends after the **baseline** pass instead, so the
+  `ATTENTION — the mark … was not adopted` notice actually reaches the session.
+- ⚠ **The safety net that a monitor gets for free does not apply here.** With a monitor,
+  stdout is a pipe: if the reader is gone, the `echo` kills the watcher *before* it records
+  the message as seen, so nothing is lost. Under a background command stdout may be a
+  **file**, and then the `echo` never fails. What carries the protection here is the orphan
+  check above.
+- Whether this is better than a monitor depends on the machine. Measured on one: the harness
+  ends background commands when memory runs short (about 4 GB free), which cost two arms in
+  an evening — the failure is loud, the session is woken and re-arms, but it is not
+  predictable.
+
 ### A third line: orphaned consoles — `--reap`
 
 Both defences above see **only `bash.exe`**. Next to it there is a second kind of leftover

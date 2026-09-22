@@ -50,7 +50,7 @@ set -u
 
 usage() {
   cat >&2 <<'EOF'
-usage: watch-bridge.sh <session-id> [poll-seconds]
+usage: watch-bridge.sh <session-id> [poll-seconds] [--once]
        watch-bridge.sh --status [session-id]
        watch-bridge.sh --fold <session-id>
        watch-bridge.sh --numbers
@@ -801,8 +801,25 @@ $rxs = 'watch-bridge\.sh\s+\$\(head -1 ([^)]+\.session-id)\)'
 # touches nothing while one is running. An arm nobody can attribute is a structural
 # consequence of the shared-checkout form, not carelessness.
 $rxopt = 'watch-bridge\.sh\s+-'
+# A terminated process is not a watcher. WMI keeps an entry alive as long as anyone holds a
+# handle on it, and those corpses were counted as delivering watchers: measured 11 of them
+# across 7 of 13 ids, while all 13 had exactly one live watcher -- so the DOUBLE-ARM warning
+# was wrong everywhere, and it asks the reader to intervene. Worse, and the reason this is
+# not cosmetic: the arming path uses the same inventory, so an arm could have stepped aside
+# next to a wreck, leaving the session silent.
+# What is collected is what is PROVABLY terminated, not what is alive: if `Get-Process` fails
+# outright the set stays empty and everything holds as before. The other way round -- listing
+# only what is confirmed alive -- a failure would make EVERY watcher invisible, and then no
+# arm would ever step aside again.
+$exited = @{}
+try {
+  Get-Process -Name bash -ErrorAction SilentlyContinue | ForEach-Object {
+    try { if ($_.HasExited) { $exited[[int]$_.Id] = 1 } } catch {}
+  }
+} catch {}
 foreach ($p in $all.Values) {
   if ($p.Name -ne 'bash.exe') { continue }
+  if ($exited.ContainsKey([int]$p.ProcessId)) { continue }
   $kind  = if ($p.CommandLine -like '* -c *') { 'wrapper' } else { 'script' }
   $id = $null
   if ($p.CommandLine -match $rx)  { $id = $Matches[1] }
@@ -1657,7 +1674,18 @@ case "${1:-}" in
 esac
 
 me="$1"
-poll="${2:-5}"
+poll=5
+# `--once` deliberately stands BEHIND the id: the process inventory recognises an arm by
+# `watch-bridge.sh <id>` and treats anything matching `watch-bridge.sh -...` as a one-shot
+# call like `--status`. A `--once` in front of the id would drop out of the inventory -- the
+# next arm would never step aside, and `--status` would report the session as unarmed.
+once=0
+for a in "${@:2}"; do
+  case "$a" in
+    --once) once=1 ;;
+    *)      poll="$a" ;;
+  esac
+done
 
 # --- What is already running: step aside or clean up --------------------------
 # A watcher survives the end of its session structurally (msys tears the process tree
@@ -1907,10 +1935,50 @@ state_save() {
   return 0
 }
 
+# An orphaned watcher ends by itself.
+#
+# When a monitor expires the harness only ends the SHELL (`bash -c ...`), not the script. The
+# script keeps running idle and keeps polling the bridge. With a watch that expires every 30
+# minutes that leaves two remnants per session and hour. Counted on one machine after eight
+# and a half hours: 159 live scripts across 7 sessions, each about 1 % of a core, together
+# one and a half cores -- and every one of them polling. The arming path does not clean them
+# up either, because it touches nothing while an arm without a determinable id is running,
+# and on a machine with two checkouts sharing a CLAUDE.md that is the permanent state.
+#
+# From outside a remnant is hard to tell apart; from inside it is easy: the shell is the msys
+# PARENT of the script. Measured: for a live arm `$PPID` exists, for six remnants out of six
+# it does not. (At the WINDOWS level the parent chain breaks immediately -- that finding
+# stands; the msys level carries.) `kill -0` is a builtin, so the check costs no process.
+#
+# Checked only if the parent was PROVABLY alive at startup. If `$PPID` is 1 or already gone
+# (hand start from a foreign process, an exec optimisation in the shell), the old behaviour
+# applies -- otherwise a healthy watcher would end itself on its first pass, and that is the
+# most expensive state there is. WATCH_BRIDGE_ORPHAN_EXIT=0 turns it off.
+#
+# The check sits BEFORE the pass, not after: a remnant should not look at another message.
+# If the shell dies IN THE MIDDLE of a pass, the safety net below still applies (the `echo`
+# into a reader-less pipe ends the script before `state_save`).
+parent_pid="$PPID"
+parent_watch=0
+if [[ "${WATCH_BRIDGE_ORPHAN_EXIT:-1}" != "0" && "${parent_pid:-0}" -gt 1 ]] \
+   && kill -0 "$parent_pid" 2>/dev/null; then
+  parent_watch=1
+fi
+
 baseline=1
 state_load && baseline=0
+# `--once` with an unusable mark: the ATTENTION notice above asks for an action, and under
+# `--once` stdout only reaches the session when the process ENDS. So end after the baseline
+# pass, so the notice arrives; the session folds and re-arms.
+once_exit_after_baseline=0
+(( once )) && [[ $baseline -eq 1 && -n "$state_file" && -e "$state_file" ]] && once_exit_after_baseline=1
 while true; do
+  if (( parent_watch )) && ! kill -0 "$parent_pid" 2>/dev/null; then
+    echo "watch-bridge: the shell (msys pid $parent_pid) is gone — this watcher for '$me' ends." >&2
+    exit 0
+  fi
   state_dirty=0
+  delivered=0
   for f in "$bridge"/threads/*/msgs/*.md; do
     [[ -n "${seen[$f]:-}" ]] && continue
     # Baseline first, and without reading it: whatever exists at startup belongs to
@@ -1941,6 +2009,7 @@ while true; do
     done
     echo "Bridge message for '$me'${others:+ (also to: $others)}:" \
          "thread '$slug', from '$from' — $(basename "$f")"
+    delivered=1
   done
   baseline=0
   # CAREFUL, THIS ORDER *IS* THE SAFETY NET. The `echo` above must come before `state_save`.
@@ -1978,6 +2047,16 @@ while true; do
       [[ -n "$state_file" && -e "$state_file" ]] && touch "$state_file" 2>/dev/null
       state_touched=$now
     fi
+  fi
+  # `--once`: armed as a BACKGROUND COMMAND, not as a monitor. There stdout is not an event
+  # stream -- the session only learns of the END of the process. So end after the pass that
+  # delivered something; the mark is written by then (order `echo` -> `state_save` as above),
+  # and the next arm adopts it.
+  # CAREFUL: the warning box above applies here with force -- under a background command
+  # stdout may be a FILE, and then the `echo` never fails. What carries the protection here
+  # is the orphan check at the top of the loop, not the reader-less pipe.
+  if (( once )) && (( delivered || once_exit_after_baseline )); then
+    exit 0
   fi
   sleep "$poll"
 done

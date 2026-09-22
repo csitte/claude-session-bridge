@@ -14,7 +14,33 @@ commit it names will say why.
 
 ## Unreleased
 
+### Added
+- **`--once`: arm the watcher as a background command instead of a monitor.** It ends after
+  the pass that delivered something, so the end of the process is the signal; the session
+  reads the output, handles the message and arms again. The flag stands **behind** the id --
+  in front of it the arm would look like a one-shot call to the process inventory, no later
+  arm would step aside, and `--status` would call the session unarmed. Note the safety net a
+  monitor gets for free does not apply: under a background command stdout may be a file, so
+  the `echo` into a dead pipe cannot end the watcher; the orphan check below carries it.
+  See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
+
 ### Fixed
+- **An orphaned watcher ends by itself instead of polling for ever.** When a watch expires
+  the harness ends the shell, not the script below it, and the script kept running idle --
+  two remnants per session and hour. Counted on one machine after eight and a half hours:
+  159 live scripts across 7 sessions, together one and a half cores, all polling. The script
+  now checks at the head of each pass whether its msys parent is still there (`kill -0`, a
+  builtin), and ends if it is gone. Checked only where the parent was provably alive at
+  startup, so a hand-started watcher is never affected; `WATCH_BRIDGE_ORPHAN_EXIT=0` turns it
+  off. Test group `orphan`, including the counter-test that the remnant survives with the
+  check disabled -- which is what exposed a wrong green in the test itself.
+  (`bridge/watch-bridge.sh`)
+- **Terminated processes are no longer counted as watchers.** WMI keeps a process entry alive
+  as long as anyone holds a handle on it, and those corpses were counted as delivering:
+  11 of them across 7 of 13 ids, while all 13 had exactly one live watcher -- so the
+  double-arm warning was wrong everywhere, and it asks the reader to intervene. Worse, the
+  arming path reads the same inventory, so an arm could have stepped aside next to a wreck
+  and left the session silent. (`bridge/watch-bridge.sh`)
 - **The arm paragraph now names both machine paths for `--status`, as it already did for
   arming and folding.** One line out of three named a single machine, so anyone running the
   paragraph on the other one had to fix it up by hand -- and the next `-u` took the fix away
