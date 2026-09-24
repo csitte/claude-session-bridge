@@ -25,6 +25,17 @@ commit it names will say why.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
 ### Fixed
+- **The test suite no longer depends on the machine's global gitignore.** One clone case
+  builds a repository that tracks `memory/` and asserts the launcher links it in repo mode.
+  On a machine whose global ignore file excludes `memory/` -- a sensible guard, so that
+  session memory never lands in a product repository by accident -- `git add -A` skipped the
+  directory, the launcher correctly read "no tracked memory", and the case went red against
+  working code: red there, green in CI, which is the worst of both. The fixture now sets an
+  empty `core.excludesFile` of its own. Note it has to be an empty **file**: Git for Windows
+  rejects `/dev/null` with "cannot use nul as an exclude file". Worth knowing when you chase
+  this yourself -- `git config --get core.excludesFile` answers nothing on such a machine and
+  proves nothing, because Git reads `~/.config/git/ignore` without any setting pointing at
+  it; `git check-ignore -v <path>` is the question that measures it. (`tests/run.sh`)
 - **An arm no longer steps aside for a predecessor that is already dying.** When a watcher is
   already delivering for an id, a new arm steps aside -- correct, and the reason there is no
   double delivery. But it is only safe while the predecessor *keeps* living, and at the moment

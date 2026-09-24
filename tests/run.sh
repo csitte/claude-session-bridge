@@ -4127,8 +4127,19 @@ test_linkcommands() {
 test_clone() {
   head_ "launcher: fetch a missing clone, connect its memory, tell the session when that failed"
   local root="$TMPROOT/clone.$RANDOM"
-  local G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main"
   mkdir -p "$root/scripts" "$root/dst" "$root/bin"
+  # A machine-wide ignore rule for `memory/` is a sensible guard -- session memory must never
+  # land in a product repository by accident -- and it breaks this fixture, which NEEDS a repo
+  # that tracks memory/: `git add -A` skips the directory, the launcher then correctly reads
+  # "no tracked memory" and links in --git mode, and the case goes red against working code.
+  # Red on such a machine, green in CI, is the worst of both. Measured 24.09.2026 on the PC:
+  # `~/.config/git/ignore` holds `memory/` (Git reads that path with no core.excludesFile set,
+  # which is why `git config --get core.excludesFile` answers nothing and proves nothing --
+  # `git check-ignore -v` is the question that measures it).
+  # An EMPTY FILE, not /dev/null: Git for Windows refuses that with
+  # "fatal: cannot use nul as an exclude file".
+  : > "$root/empty-excludes"
+  local G="git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c core.excludesFile=$root/empty-excludes"
   # Two source repositories: one that tracks memory/ (repo mode), one that does not.
   local r
   for r in withmem nomem; do
