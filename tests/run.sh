@@ -764,6 +764,98 @@ STUB2
   else bad "a predecessor that stays alive is still honoured" "$out"; fi
 }
 
+test_hook() {
+  head_ "watcher: the hook, and waking on a hand-over that does not name you in to:"
+  local b; b="$(new_bridge)"
+  export SESSION_BRIDGE_DIR="$b"; check_safety
+  local td out hookout hook rc
+
+  # A hook that records its environment. Nothing else: what the watcher hands over is the
+  # whole contract, and a hook that needs more than `WB_*` would prove the contract wrong.
+  hook="$TMPROOT/hook.$RANDOM.sh"
+  hookout="$TMPROOT/hookout.$RANDOM"
+  # The hook runs in the BACKGROUND -- that is deliberate, or a sender that retries would
+  # hold up the delivery loop. So it can still be writing when the watcher has long since
+  # ended, and a test reading straight after `wait` measures a race instead of behaviour.
+  # Seen on the first run of this group: the assertions failed, the file appeared a moment
+  # later, and the NEXT case then found the previous case's output in it.
+  hook_settle() { local i; for i in 1 2 3 4 5 6 7 8 9 10; do
+                    [ -s "$hookout" ] && return 0; sleep 0.5; done; return 0; }
+  cat > "$hook" <<EOF
+#!/usr/bin/env bash
+{
+  echo "file=\$(basename "\${WB_FILE:-}")"
+  echo "slug=\${WB_SLUG:-}"
+  echo "from=\${WB_FROM:-}"
+  echo "to=\${WB_TO:-}"
+  echo "id=\${WB_ID:-}"
+  echo "reason=\${WB_REASON:-}"
+  echo "owner=\${WB_SETS_OWNER:-}"
+} >> "$hookout"
+echo "this must never reach the watcher's stdout"
+EOF
+
+  # 1. A normal delivery runs the hook and hands it the fields.
+  td="$TMPROOT/hooktmp.$RANDOM"; out="$TMPROOT/hook.$RANDOM"; mkdir -p "$td"
+  ( TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 \
+      WATCH_BRIDGE_ON_MESSAGE="bash '$hook'" \
+      timeout 20 bash "$WATCHER" app 1 --once > "$out" 2>"$out.err" ) &
+  local p=$!
+  sleep 3
+  post "$b" 2026-03-01T000000Z__other__h1 other app
+  wait "$p"; rc=$?
+  hook_settle
+  assert_eq "the hook runs on a normal delivery" "0" "$rc"
+  if grep -q '^reason=to$' "$hookout" 2>/dev/null; then ok "... and the reason is 'to'"
+  else bad "... and the reason is 'to'" "$(cat "$hookout" 2>&1)"; fi
+  if grep -q '^id=app$' "$hookout" 2>/dev/null && grep -q '^from=other$' "$hookout"; then
+    ok "... and it sees the id and the sender"
+  else bad "... and it sees the id and the sender" "$(cat "$hookout" 2>&1)"; fi
+  # The hook's own output must not surface as a bridge message: stdout is the wire a
+  # harness turns into a notification.
+  if ! grep -q 'must never reach' "$out"; then ok "the hook's output stays out of the notification wire"
+  else bad "the hook's output stays out of the notification wire" "$(cat "$out")"; fi
+
+  # 2. A hand-over WITHOUT being named in `to:` must not wake by default. Without this half
+  #    the case below would prove nothing -- it would pass even if the switch did nothing.
+  : > "$hookout"
+  td="$TMPROOT/hooktmp2.$RANDOM"; out="$TMPROOT/hook2.$RANDOM"; mkdir -p "$td"
+  ( TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 \
+      WATCH_BRIDGE_ON_MESSAGE="bash '$hook'" \
+      timeout 8 bash "$WATCHER" app 1 --once > "$out" 2>"$out.err" ) &
+  p=$!
+  sleep 3
+  post_state "$b" 001-test 2026-03-01T000100Z__other__h2 other app OPEN
+  wait "$p"; rc=$?
+  sleep 2          # kein hook_settle: hier ist LEER das erwartete Ergebnis, und ein
+                   # verspaeteter Schreibvorgang soll auffallen, nicht uebersehen werden
+  assert_eq "a hand-over alone does not wake by default (timeout, not delivery)" "124" "$rc"
+  if [[ ! -s "$hookout" ]]; then ok "... and the hook was not called"
+  else bad "... and the hook was not called" "$(cat "$hookout")"; fi
+
+  # 3. With the switch on, the same message wakes -- and says why.
+  : > "$hookout"
+  td="$TMPROOT/hooktmp3.$RANDOM"; out="$TMPROOT/hook3.$RANDOM"; mkdir -p "$td"
+  local b2; b2="$(new_bridge)"
+  ( TMPDIR="$td" SESSION_BRIDGE_DIR="$b2" WATCH_BRIDGE_NO_REAP=1 \
+      WATCH_BRIDGE_WAKE_ON_OWNER=1 WATCH_BRIDGE_ON_MESSAGE="bash '$hook'" \
+      timeout 20 bash "$WATCHER" app 1 --once > "$out" 2>"$out.err" ) &
+  p=$!
+  sleep 3
+  post_state "$b2" 001-test 2026-03-01T000200Z__other__h3 other app OPEN
+  wait "$p"; rc=$?
+  hook_settle
+  assert_eq "WATCH_BRIDGE_WAKE_ON_OWNER=1: the hand-over wakes" "0" "$rc"
+  if grep -q '^reason=owner$' "$hookout" 2>/dev/null; then ok "... with reason 'owner'"
+  else bad "... with reason 'owner'" "$(cat "$hookout" 2>&1)"; fi
+  # The line has to be honest: on a pure hand-over the recipient is NOT in `to:`, so
+  # "also to: someone" would say the opposite of what happened.
+  if grep -q 'as new owner' "$out" 2>/dev/null; then ok "... and the line says it arrived as the new owner"
+  else bad "... and the line says it arrived as the new owner" "$(cat "$out" 2>&1)"; fi
+
+  rm -f "$hook" "$hookout"
+}
+
 test_orphan() {
   head_ "watcher: an orphaned watcher ends by itself, and --once ends after delivering"
   local b; b="$(new_bridge)"
@@ -4282,6 +4374,7 @@ case "${1:-all}" in
   watcher) test_watcher ;;
   mark) test_mark ;;
   orphan) test_orphan ;;
+  hook) test_hook ;;
   handover) test_handover ;;
   commands) test_commands ;;
   linkcommands) test_linkcommands ;;
@@ -4312,7 +4405,7 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_orphan; test_handover; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 

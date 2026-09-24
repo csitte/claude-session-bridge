@@ -1085,6 +1085,68 @@ seconds of the file appearing — in a deliberate busy-session test, under a min
 That is an **observation, not a measured distribution**: we have never instrumented it, and
 you should treat it as an order of magnitude rather than a figure.
 
+## Delivering to a participant that is not a session
+
+The bridge assumes one kind of participant: a running session that arms its own watcher.
+There is a second kind -- an id with **no session at all**, for instance a bot that reads
+the folder through a cloud connector. It gets neither push (it arms nothing) nor fold (it
+runs no start ritual); its messages sit until it looks by itself.
+
+Three parts, and the third one is the expensive one.
+
+**1. The hook.** `WATCH_BRIDGE_ON_MESSAGE=<command>` runs a command on every delivery. It
+receives the message through `WB_*` in its **environment** -- never on the command line,
+because a body full of backticks and quotes there is the quoting trap this protocol has
+already paid for twice. It runs in the **background** (a sender that retries would
+otherwise hold up the loop) and its output goes to `/dev/null` (the watcher's stdout is the
+wire a harness turns into a notification; whatever the hook writes there would reach a
+session as if it were a bridge message).
+
+Deliberately a **command, not a URL**: everything specific to one endpoint stays outside,
+and the addressing rule stays in one place. Available: `WB_FILE`, `WB_SLUG`, `WB_FROM`,
+`WB_TO`, `WB_ID`, `WB_TYPE`, `WB_SETS_OWNER`, `WB_SETS_STATUS`, `WB_REASON`.
+
+**2. `WATCH_BRIDGE_WAKE_ON_OWNER=1`** also wakes on `sets-owner: <id>` **without** being
+named in `to:`. Off by default, and that is not a forgotten switch: for a session it would
+be a change in behaviour. Whoever needs it is the delivery service, and that sets it in its
+own start line. It has to exist because a wake-up that only reads `to:` stays silent in
+exactly the case where somebody hands a thread over correctly -- `sets-owner` set, the name
+not also written into `to:`.
+
+**3. `--service`, and why it is not decoration.** "Is this watcher delivering?" meant
+**"is there a live wrapper under the session binary AND a script of the same id?"**
+throughout the script. For a service the first half is never true by construction. Without
+the flag it therefore counts as a silent remnant: `--status` reports it wrongly, and **the
+next arm cleans it up**. That happened on the very first trial run -- nothing was lost (the
+mark carries over), but every start would have killed and restarted the service, and in
+that gap nobody delivers.
+
+Four places know the third kind now: the process inventory (`kind=service`, recognised by
+the flag in its **own command line**, not by its parent -- who started it has no bearing on
+whether it delivers), `delivery_state`, `status_report` ("delivering (service, no
+session)") and `handle_existing`.
+
+**Running it.** `bash bridge-push.sh <id> [poll]` starts the service; it reads
+`~/.config/session-bridge/<id>.webhook` (`url=`, `key=`) and hands each message to
+`webhook-notify.sh`. Keep that file out of the repository -- it holds a secret, it is read
+and never executed, and the key travels to `curl` in a config file rather than as an
+argument, because arguments are visible in the process list.
+
+To have it start with the machine, use whatever your platform offers (a user service, a
+scheduled task at logon, an entry in your own launcher). One service per config file is the
+simplest rule: the config file is the registration, and no second list can go stale.
+
+**What it does not do:** if no machine runs, nobody wakes. A message filed in that window
+is reported at the next start (the mark prevents it from being swallowed as baseline), and
+until then the recipient's own polling carries it.
+
+**On a notifier based on filesystem events:** measured before building one, a running
+watcher costs about 0.65 % of one core at a 5 s poll, and one pass over ~1,100 messages
+takes 0.13 s. If the recipient's own reaction time is seconds anyway, five seconds vanish
+in it -- and a second process is one more thing that can fail silently, which is the very
+failure mode the service exists to remove. Worth revisiting only if the latency actually
+hurts.
+
 ## Limits
 
 - **Cloud-sync latency** between machines adds to the poll interval. Unmeasured for us;

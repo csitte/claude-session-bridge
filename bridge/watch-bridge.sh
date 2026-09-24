@@ -820,7 +820,14 @@ try {
 foreach ($p in $all.Values) {
   if ($p.Name -ne 'bash.exe') { continue }
   if ($exited.ContainsKey([int]$p.ProcessId)) { continue }
-  $kind  = if ($p.CommandLine -like '* -c *') { 'wrapper' } else { 'script' }
+  # Three kinds, not two. `service` comes FIRST, because a service would otherwise pass
+  # as a `script` and be counted as one half of a pair whose other half (a wrapper under
+  # the session binary) does not exist for it -- which is exactly what made it a "silent
+  # remnant". It is recognised by its own flag in its own command line, not by its parent:
+  # who started it (cmd, a terminal, by hand) has no bearing on whether it delivers, and a
+  # check against the parent would be wrong again at the next start path.
+  $kind  = if ($p.CommandLine -like '*watch-bridge.sh*' -and $p.CommandLine -like '*--service*') { 'service' }
+           elseif ($p.CommandLine -like '* -c *') { 'wrapper' } else { 'script' }
   $id = $null
   if ($p.CommandLine -match $rx)  { $id = $Matches[1] }
   if (-not $id -and $p.CommandLine -match $rxs) {
@@ -949,10 +956,13 @@ delivery_state() { # $1 = id
   local want="$1" kind id pid age under started
   local seen_script=0 delivering=0
   while IFS='|' read -r kind id pid age under started; do
-    [[ "$kind" == script || "$kind" == wrapper ]] || continue
+    [[ "$kind" == script || "$kind" == wrapper || "$kind" == service ]] || continue
     [[ "${id:-}" == "$want" ]] || continue
     [[ "$kind" == script ]] && seen_script=1
     [[ "$kind" == wrapper && "$under" == 1 ]] && delivering=1
+    # A service is both halves in one process: it delivers, and by construction there is
+    # no wrapper under the session binary to wait for.
+    [[ "$kind" == service ]] && { seen_script=1; delivering=1; }
   done < <(watcher_inventory)
   # Delivering means BOTH halves: a live wrapper under claude.exe AND a script of that id.
   # A wrapper whose script has died delivers nothing -- and until 2026-09-14 this answered
@@ -1285,7 +1295,7 @@ checkout_hint() { # $1 = the id it was called with; prints to stdout
 status_report() {
   local filter="${1:-}" grace="${WATCH_BRIDGE_START_GRACE:-90}"
   local kind id pid age under started st r
-  local -A live=() count=() young=()
+  local -A live=() count=() young=() svc=()
   local -a rows=() spinners=() zombies=() unknownarms=()
   while IFS='|' read -r kind id pid age under started; do
     [[ -n "${kind:-}" ]] || continue
@@ -1303,6 +1313,11 @@ status_report() {
     if [[ "$kind" == wrapper ]]; then
       [[ "$under" == 1 ]] && live["$id"]=1
     else
+      # A service carries its own liveness: it gets a row like a script AND counts as
+      # delivering, because the wrapper that would otherwise prove it does not exist for
+      # it. Without this line the only delivery path of an id would stand in the
+      # diagnostics as a silent remnant for good.
+      [[ "$kind" == service ]] && { live["$id"]=1; svc["$id"]=1; }
       rows+=("$id|$pid|$started|${age:-0}")
       count["$id"]=$(( ${count[$id]:-0} + 1 ))
       [[ "${age:-0}" -le "$grace" ]] && young["$id"]=1
@@ -1341,6 +1356,7 @@ status_report() {
     for r in "${rows[@]}"; do
       IFS='|' read -r id pid started age <<<"$r"
       if   [[ "$age" -le "$grace" ]];    then st="starting (${age}s)"
+      elif [[ -n "${svc[$id]:-}" ]];     then st="delivering (service, no session)"
       elif [[ -n "${live[$id]:-}" ]];    then st="delivering"
       elif [[ -z "$sess" ]];             then st="REMNANT (silent)"
       elif [[ -n "${running[$id]:-}" ]]; then st="REMNANT (silent) — session IS RUNNING, unarmed"
@@ -1680,10 +1696,19 @@ poll=5
 # call like `--status`. A `--once` in front of the id would drop out of the inventory -- the
 # next arm would never step aside, and `--status` would report the session as unarmed.
 once=0
+# `--service`: this watcher belongs to NO session, it runs as a service on the machine.
+# The flag is not decoration, it answers a question the whole script only knew in one
+# direction: "is this watcher delivering?" meant "is there a live wrapper under the
+# session binary AND a script of the same id?" everywhere -- and for a service the first
+# half is never true by construction. Without the flag it therefore counts as a silent
+# remnant: `--status` reports it wrongly, and the next arm cleans it up. Both measured
+# before the flag existed. It sits BEHIND the id, for the same reason as `--once`.
+service=0
 for a in "${@:2}"; do
   case "$a" in
-    --once) once=1 ;;
-    *)      poll="$a" ;;
+    --once)    once=1 ;;
+    --service) service=1 ;;
+    *)         poll="$a" ;;
   esac
 done
 
@@ -1734,9 +1759,18 @@ handle_existing() {
       [[ -n "${pid:-}" ]] && spin+=("$pid")
       continue
     fi
-    [[ "$kind" == script || "$kind" == wrapper ]] || continue
+    [[ "$kind" == script || "$kind" == wrapper || "$kind" == service ]] || continue
     [[ "${id:-}" == "$me" ]] || continue
     [[ "${age:-0}" -gt 30 ]] || continue
+    # A running service IS the predecessor to step aside for, and it never belongs in
+    # `stale`. Exactly that happened on the first trial run: the delivery service was
+    # running, the next start took it for a silent remnant and killed it. Nothing was
+    # lost (the mark carries over), but every start would have killed and restarted it,
+    # and in that gap nobody delivers.
+    if [[ "$kind" == service ]]; then
+      script_pid="$pid"; wrapper_live=1
+      continue
+    fi
     [[ "$kind" == wrapper && "$under" == 1 ]] && wrapper_live=1
     [[ "$kind" == script ]] && script_pid="$pid"
     stale+=("$pid")
@@ -1871,6 +1905,43 @@ declare -A retry
 # messages before and after arrived, and the one in between was never reported.
 # Generous by default, because a cold sync client can take minutes to catch up.
 retry_max="${WATCH_BRIDGE_RETRIES:-40}"
+
+# --- The hook: deliver to something that is not a Claude session ---------------------
+#
+# A bridge participant can have an id and no session at all -- a bot reading the folder
+# through a cloud connector, for instance. It gets no push, because "push" here means
+# "wake a running session", and it arms nothing. The hook turns the same event into an
+# arbitrary command.
+#
+# DELIBERATELY A COMMAND, NOT A URL: everything that makes this a delivery to one
+# particular endpoint stays outside the watcher, and the addressing rule (`addressed`,
+# token-exact) stays in ONE place. A second copy in another language is the expensive
+# part of any other design.
+#
+# WHAT THE HOOK SEES: `WB_*` in its ENVIRONMENT, never on the command line -- a message
+# body full of backticks and quotes on a command line is the quoting trap this protocol
+# has paid for twice already.
+#
+# TWO PROPERTIES THAT ARE NOT NEGOTIABLE:
+#   (1) It runs in the BACKGROUND. A sender that retries would otherwise hold up the
+#       loop, and nothing else is delivered while it waits.
+#   (2) Its output goes to /dev/null. This watcher's stdout is the wire a harness turns
+#       into a notification; whatever the hook writes there would reach a session as if
+#       it were a bridge message.
+on_message="${WATCH_BRIDGE_ON_MESSAGE:-}"
+
+# Does a `sets-owner: <me>` wake as well, even without being named in `to:`?
+#
+# OFF BY DEFAULT, and that is not a forgotten switch: for a session it would be a change
+# in behaviour -- it would start receiving messages not addressed to it. Whoever needs it
+# is a delivery service, and that sets it in its own start line, not in documentation
+# somebody would have to read.
+#
+# WHY IT HAS TO EXIST: a wake-up that only reads `to:` stays silent in exactly the case
+# where somebody hands a thread over correctly -- `sets-owner` set, the name not also
+# written into `to:`. That is the common case, and the same finding that made the fold
+# grow a stand-in mode for owners that have no session of their own.
+wake_on_owner="${WATCH_BRIDGE_WAKE_ON_OWNER:-}"
 
 # --- The mark: the watcher's state survives a re-arm ---------------------------------
 #
@@ -2027,7 +2098,16 @@ while true; do
     seen["$f"]=1
     state_dirty=1
     [[ "$from" == "$me" ]] && continue
-    addressed "$to" || continue
+    # The REASON, not just whether. The hook gets it as `WB_REASON`: a sender that does
+    # not know why it was woken cannot tell the recipient either, and being addressed and
+    # being handed the ball are two different situations.
+    reason=""
+    addressed "$to" && reason="to"
+    if [[ -n "$wake_on_owner" ]]; then
+      so="$(fm_field sets-owner "$f")"
+      [[ "$so" == "$me" ]] && reason="${reason:+${reason}+}owner"
+    fi
+    [[ -n "$reason" ]] || continue
     # Name the co-recipients: the session should know the others got the same
     # message — otherwise everyone answers a group message with the same thing.
     # Who holds the ball is still said by `sets-owner`.
@@ -2036,8 +2116,26 @@ while true; do
     for t in ${to//,/ }; do
       [[ "$t" == "$me" ]] || others+="${others:+, }$t"
     done
-    echo "Bridge message for '$me'${others:+ (also to: $others)}:" \
-         "thread '$slug', from '$from' — $(basename "$f")"
+    # Two situations, two sentences. On a pure hand-over `me` is NOT in `to:` -- then
+    # "also to: x" would simply be false: x is addressed, the thread was handed to me.
+    # Whoever reads the line should know why it reached them.
+    if [[ "$reason" == "owner" ]]; then
+      echo "Bridge message for '$me' (as new owner, addressed to: ${to:--}):" \
+           "thread '$slug', from '$from' — $(basename "$f")"
+    else
+      echo "Bridge message for '$me'${others:+ (also to: $others)}:" \
+           "thread '$slug', from '$from' — $(basename "$f")"
+    fi
+    # AFTER the `echo`, BEFORE `state_save` -- the order below is the safety net and the
+    # hook must not push itself between them. Environment instead of command line,
+    # background instead of waiting, output to /dev/null instead of into the notification
+    # wire: the reasons are at `on_message` above.
+    if [[ -n "$on_message" ]]; then
+      WB_FILE="$f" WB_SLUG="$slug" WB_FROM="$from" WB_TO="$to" WB_ID="$me" \
+      WB_TYPE="$(fm_field type "$f")" WB_SETS_OWNER="$(fm_field sets-owner "$f")" \
+      WB_SETS_STATUS="$(fm_field sets-status "$f")" WB_REASON="$reason" \
+        bash -c "$on_message" >/dev/null 2>&1 &
+    fi
     delivered=1
   done
   baseline=0

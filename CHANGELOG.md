@@ -15,6 +15,21 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **Deliver to a participant that is not a session: `WATCH_BRIDGE_ON_MESSAGE`,
+  `WATCH_BRIDGE_WAKE_ON_OWNER`, `--service`, plus `bridge-push.sh` and
+  `webhook-notify.sh`.** The bridge assumed one kind of participant: a running session
+  that arms its own watcher. A bot reading the folder through a cloud connector has an id
+  and no session -- it gets neither push nor fold. The hook turns the same delivery event
+  into an arbitrary command (data through the environment, run in the background, output
+  to `/dev/null`, because stdout is the notification wire), the owner switch also wakes on
+  a hand-over that does not name the id in `to:`, and `--service` tells the process
+  inventory that this watcher belongs to no session. That last one is not decoration:
+  "delivering" meant "a wrapper under the session binary is alive AND a script of that id
+  exists", which is never true for a service -- on the first trial run the next start
+  promptly cleaned up the running one. `bridge-push.sh` wires it together, one per
+  `~/.config/session-bridge/<id>.webhook`; the key reaches curl through a config file, not
+  as an argument. See `docs/watcher.md`. (`bridge/watch-bridge.sh`,
+  `bridge/bridge-push.sh`, `bridge/webhook-notify.sh`)
 - **`--once`: arm the watcher as a background command instead of a monitor.** It ends after
   the pass that delivered something, so the end of the process is the signal; the session
   reads the output, handles the message and arms again. The flag stands **behind** the id --
