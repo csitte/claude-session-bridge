@@ -40,6 +40,14 @@ commit it names will say why.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
 ### Fixed
+- **`close-cc-sessions.ps1` no longer ends the delivery service.** It collects every
+  `watch-bridge.sh` process whose wrapper does not hang under a live session binary -- and
+  for a service that is never true by construction, so every "close all sessions" run killed
+  it. Nothing brought it back: `bridge-push.sh` has no restart loop, it `exec`s the watcher.
+  A participant that is not a session would simply have stopped receiving wake-ups, with no
+  error anywhere. Watchers carrying `--service` are now skipped and reported as staying.
+  Measured against the real process table with a copy of the script whose six kill calls were
+  replaced by output: the old version lists the service for termination, the new one does not.
 - **The test suite no longer depends on the machine's global gitignore.** One clone case
   builds a repository that tracks `memory/` and asserts the launcher links it in repo mode.
   On a machine whose global ignore file excludes `memory/` -- a sensible guard, so that

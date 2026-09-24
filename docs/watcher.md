@@ -1136,6 +1136,23 @@ To have it start with the machine, use whatever your platform offers (a user ser
 scheduled task at logon, an entry in your own launcher). One service per config file is the
 simplest rule: the config file is the registration, and no second list can go stale.
 
+**Whatever closes your sessions must leave it alone.** This is the trap worth naming,
+because it is silent and it undoes the whole service. A cleanup script that ends stray
+watchers will typically ask "does a live session own this one?" -- and for a service the
+answer is no by construction: it hangs under no editor process at all. Ours killed the
+delivery service on every "close all sessions" run until we guarded it, and nothing brought
+it back, because `bridge-push.sh` has no restart loop -- it `exec`s the watcher. The guard
+is one line: skip watchers whose command line carries `--service`. The same marker already
+tells the process inventory that this watcher delivers; a cleanup path that does not know
+the third kind of process is the fifth place that has to learn it.
+
+**Start it after you update it, not before.** If your launcher both refreshes this
+repository and starts the service, do it in that order. Ours did the opposite for one day:
+the service start ran six seconds before the pull that brought the service script, found
+nothing, and returned silently -- which is also the correct behaviour on a machine that
+simply does not have this infrastructure. The two cases look identical from inside the
+function, so the fix belongs in the caller.
+
 **What it does not do:** if no machine runs, nobody wakes. A message filed in that window
 is reported at the next start (the mark prevents it from being swallowed as baseline), and
 until then the recipient's own polling carries it.

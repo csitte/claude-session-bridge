@@ -184,6 +184,22 @@ foreach ($w in ($wb | Where-Object { $_.CommandLine -like '* -c *' })) {
 }
 
 foreach ($w in ($wb | Where-Object { $_.CommandLine -notlike '* -c *' })) {
+    # The third kind of process: the delivery service for a participant that is NOT a
+    # session (see bridge/bridge-push.sh). It carries '--service', and by construction it
+    # hangs under NO claude.exe -- so it falls straight through the $aktiv check above,
+    # which asks for a live wrapper under claude.exe. Without this guard every run of
+    # this script ends the service, and nothing brings it back: bridge-push.sh has no
+    # restart loop, it 'exec's the watcher. The recipient would stop getting wake-ups --
+    # and because it is not a session, nobody would notice.
+    #
+    # WHY IT MAY STAY: it belongs to the MACHINE, not to a session -- 'machine on,
+    # service running' is its promise. This script closes Claude sessions; a service
+    # without a session is not its subject. To stop it, close its own window.
+    if ($w.CommandLine -like '*--service*') {
+        $sid = if ($w.CommandLine -match $rx) { $Matches[1] } else { '(unknown)' }
+        Write-Host ("  - delivery service {0} stays (machine service, no session)" -f $sid)
+        continue
+    }
     $id = if ($w.CommandLine -match $rx) { $Matches[1] } else { '(unknown)' }
     if ($aktiv -contains $id) { continue }
     Write-Host ("  - bridge watcher {0} (PID {1})" -f $id, $w.ProcessId)

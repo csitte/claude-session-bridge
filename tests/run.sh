@@ -853,6 +853,23 @@ EOF
   if grep -q 'as new owner' "$out" 2>/dev/null; then ok "... and the line says it arrived as the new owner"
   else bad "... and the line says it arrived as the new owner" "$(cat "$out" 2>&1)"; fi
 
+  # The delivery service must survive "close all sessions". It carries `--service` and
+  # hangs under no claude.exe, so the live-wrapper check in close-cc-sessions.ps1 does
+  # NOT spare it: without an explicit guard that script kills the one process a
+  # session-less participant depends on, and nothing restarts it (bridge-push.sh has no
+  # restart loop, it execs the watcher). Checked structurally, not by running it -- the
+  # suite runs on Linux too, where a PowerShell script cannot be executed at all; and a
+  # guard that sits AFTER the kill would be no guard, hence the line comparison.
+  local closeps guard kill_
+  closeps="$ROOT/launcher/close-cc-sessions.ps1"
+  guard="$(grep -n "CommandLine -like '\*--service\*'" "$closeps" | head -1 | cut -d: -f1)"
+  kill_="$(grep -n 'taskkill /PID $w.ProcessId /F' "$closeps" | head -1 | cut -d: -f1)"
+  if [[ -n "$guard" && -n "$kill_" && "$guard" -lt "$kill_" ]]; then
+    ok "close-cc-sessions spares a --service watcher before it would kill it"
+  else
+    bad "close-cc-sessions spares a --service watcher before it would kill it" "guard=$guard kill=$kill_"
+  fi
+
   rm -f "$hook" "$hookout"
 }
 
