@@ -39,6 +39,17 @@ commit it names will say why.
   the `echo` into a dead pipe cannot end the watcher; the orphan check below carries it.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
+### Changed
+- **The arm paragraph now asks for silence about *every* arm, not just re-arms.** The rule
+  used to name the re-arm only. Sessions therefore kept announcing the arm at session start
+  -- and, because the paragraph asks them to read the tool's answer and pick a path, they
+  announced which path the switch took as well. Same empty line as before, in a place no one
+  had ruled out: with one line per session per batch start, the noise the rule was written
+  against came back through the other door. The template now covers the first arm, every
+  re-arm and the outcome of the switch, and states positively what is worth reporting: a
+  delivered message, a mark that was not adopted, an arm that did not happen, a script
+  failure. Existing installs need `install-watcher.sh -u` to pick this up.
+
 ### Fixed
 - **`close-cc-sessions.ps1` no longer ends the delivery service.** It collects every
   `watch-bridge.sh` process whose wrapper does not hang under a live session binary -- and

@@ -136,7 +136,8 @@ and \`timeout_ms: 3600000\` alongside. **Then read the tool's answer -- it is th
 the flag, and the condition is the word \`persistent\`:** if the answer contains it (\"persistent
 — runs until TaskStop or session end\"), the watch runs until session end and is not re-armed.
 If the answer names **any deadline at all**, this build does not know the flag -- then the
-fallback applies: \`timeout_ms: 1800000\` and re-arm right after every expiry.
+fallback applies: \`timeout_ms: 1800000\` and re-arm right after every expiry. Which way the
+switch goes is **not narrated** -- see the silence rule below.
 **Do not test for the expiry wording, it differs per build:** one session was told
 \"expires in 30m\" while another, on the same morning, got \"timeout 1800000ms\" for the same
 case. A switch that hangs on a wording is the same over-generalisation once more, just finer.
@@ -171,10 +172,15 @@ is the normal case, not a fault. A re-arm swallows nothing: the new watcher
 adopts its predecessor's mark and reports what arrived in the gap. **Only if it prints
 \`ATTENTION -- the mark ... was not adopted\`** is the gap open -- then fold once, the ready
 command is in the message.
-⚠ **Do not narrate the re-arm in the chat.** It is a process without a result, and with a
-watch expiring every 30 minutes that is two lines per hour and session; on one morning it
-came to 54 empty lines from three sessions, and the person reading them lost the overview.
-Re-arm silently. **And never claim \"nothing arrived\":** the harness expiry notice only says
+⚠ **Do not narrate any arm in the chat -- not even the first one.** Arming is ritual: a
+process without a result. This covers the arm at session start, every re-arm after an expiry
+and the outcome of the switch above -- which way it went is a finding about the build, not a
+message to your human. With a watch expiring every 30 minutes that is two lines per hour and
+session; on one morning it came to 54 empty lines from three sessions, and the person reading
+them lost the overview. Arm silently and carry on.
+**Report only what asks for an action:** a delivered bridge message,
+\`ATTENTION -- the mark ... was not adopted\`, an arm that did not happen at all, or a failure
+of the script. **And never claim \"nothing arrived\":** the harness expiry notice only says
 that *its* monitor saw nothing -- a dead watcher produces it exactly like a live one. If you
 need that statement, get it from \`--status\` -- but **before** re-arming. Afterwards it
 answers about the **successor**, which is alive by construction; read in the natural order
