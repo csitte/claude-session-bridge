@@ -893,6 +893,19 @@ noise — the same reasoning as for the ownerless-thread note, which only appear
 action follows. An id in the code instead of a variable would be wrong for every other
 deployment.
 
+**The installer keeps this line, and it took a near-miss to get there.** The variable lives
+in front of the fold command inside the arm paragraph -- and the paragraph is exactly what
+`install-watcher.sh -u` replaces. The template did not know the variable, so the update would
+have removed it. Nobody would have seen that: the fold does not fail, it simply stops
+reporting the threads held for that participant, and those are the threads with the longest
+waiting times by construction. It was caught by reading a **dry run** before the real one.
+The fix follows the rule already used for the shared `.session-id` form: **recognise the
+variant on the file, not on the flag.** A plain `-u` finds the assignment, keeps it and says
+so; `-v/--stand-in <list>` sets it the first time. A session without a stand-in gains nothing.
+One detail worth copying: the assignment belongs **before** `bash`. `VAR=x bash script` is a
+per-call assignment, `bash VAR=x script` makes `VAR=x` the script name -- it was wrong for one
+round during the build, and only reading the dry-run output caught it.
+
 Printed are thread, **waiting time** and the last writer, oldest first. The waiting time is
 the age of the **handover** (`sets-owner`), not of the last message — otherwise a thread
 looks fresher every time somebody comments on it without acting on it.

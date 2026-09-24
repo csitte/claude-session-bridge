@@ -1222,6 +1222,50 @@ test_install() {
     ok "the shared paragraph is idempotent"
   else bad "the shared paragraph is idempotent" "$out"; fi
 
+  head_ "installer: a stand-in list in the fold survives -u"
+  d3="$TMPROOT/standin.$RANDOM"; mkdir -p "$d3"
+  printf '# P
+
+## Bridge
+
+x
+' > "$d3/CLAUDE.md"
+  bash "$INSTALLER" -f -v alice,bot app "$d3" >/dev/null 2>&1
+  if grep -qF 'WATCH_BRIDGE_VERTRITT=alice,bot bash' "$d3/CLAUDE.md"; then
+    ok "-v puts the assignment in front of bash, not behind it"
+  else bad "-v puts the assignment in front of bash, not behind it"        "$(grep -n 'fold' "$d3/CLAUDE.md" | head -4)"; fi
+  if [[ "$(grep -c 'WATCH_BRIDGE_VERTRITT=alice,bot bash' "$d3/CLAUDE.md")" == "2" ]]; then
+    ok "-v covers both machine paths"
+  else bad "-v covers both machine paths"        "$(grep -c 'WATCH_BRIDGE_VERTRITT=alice,bot bash' "$d3/CLAUDE.md")"; fi
+
+  # The point: a plain -u must not silently drop it. Losing it is invisible -- the fold
+  # simply stops reporting the threads held for a participant that has no session.
+  out="$(bash "$INSTALLER" -f -u app "$d3" 2>&1)"
+  if printf '%s
+' "$out" | grep -q "stands in for 'alice,bot'"; then
+    ok "-u without -v recognises the stand-in list"
+  else bad "-u without -v recognises the stand-in list" "$out"; fi
+  if grep -qF 'WATCH_BRIDGE_VERTRITT=alice,bot bash' "$d3/CLAUDE.md"; then
+    ok "-u without -v keeps the stand-in list"
+  else bad "-u without -v keeps the stand-in list" "$(grep -n 'fold' "$d3/CLAUDE.md" | head -4)"; fi
+  if printf '%s
+' "$out" | grep -q 'is current — unchanged'; then
+    ok "the stand-in paragraph is idempotent"
+  else bad "the stand-in paragraph is idempotent" "$out"; fi
+
+  # And the counter-check: a session without a stand-in must not gain the variable.
+  d4="$TMPROOT/nostandin.$RANDOM"; mkdir -p "$d4"
+  printf '# P
+
+## Bridge
+
+x
+' > "$d4/CLAUDE.md"
+  bash "$INSTALLER" -f app "$d4" >/dev/null 2>&1
+  if grep -q 'WATCH_BRIDGE_VERTRITT' "$d4/CLAUDE.md"; then
+    bad "a session without a stand-in gains nothing" "$(grep -n 'WATCH_BRIDGE_VERTRITT' "$d4/CLAUDE.md")"
+  else ok "a session without a stand-in gains nothing"; fi
+
   # Converting an existing fixed paragraph, and the fixed form staying idempotent.
   d2="$TMPROOT/fixed.$RANDOM"; mkdir -p "$d2"
   printf '# P\n\n## Bridge\n\nx\n' > "$d2/CLAUDE.md"

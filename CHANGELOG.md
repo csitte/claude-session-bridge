@@ -39,6 +39,16 @@ commit it names will say why.
   the `echo` into a dead pipe cannot end the watcher; the orphan check below carries it.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
+### Added
+- **`install-watcher.sh` keeps (and can set) a stand-in list in the fold command: `-v/--stand-in`.**
+  A session that covers a participant *without* a session puts `WATCH_BRIDGE_VERTRITT=<list>`
+  in front of its fold command; that is the only place the variable is read, arming ignores
+  it. The template did not know it, so `-u` would have **removed** it -- and losing it is
+  invisible: the fold simply stops reporting the threads held for that participant, with no
+  error and no empty output. It is now recognised **on the file**, like the shared
+  `.session-id` variant, so a plain `-u` keeps it and says so; `-v` sets it for the first
+  time. A session without a stand-in gains nothing, so this needs no second roll-out.
+
 ### Changed
 - **The arm paragraph now asks for silence about *every* arm, not just re-arms.** The rule
   used to name the re-arm only. Sessions therefore kept announcing the arm at session start

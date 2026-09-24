@@ -33,12 +33,14 @@ dry=0
 force=0
 update=0
 shared=0
+standin=""
 while true; do
   case "${1:-}" in
     -n|--dry-run) dry=1; shift ;;
     -f|--force)   force=1; shift ;;
     -u|--update)  update=1; shift ;;
     -s|--shared)  shared=1; shift ;;
+    -v|--stand-in) standin="${2:?-v/--stand-in needs a list, e.g. alice,bot}"; shift 2 ;;
     -h|--help)
       sed -n '3,24p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -111,6 +113,22 @@ if [[ $shared -eq 0 && -f "$md" ]]; then
   fi
 fi
 
+# --- Does this session stand in for someone in the fold? ---------------------
+# Someone who covers a participant WITHOUT a session sets `WATCH_BRIDGE_VERTRITT` in front of
+# the fold command - it is read there and nowhere else; arming ignores it. The template did
+# not know the variable, so a `-u` would have REMOVED it, and the fold would silently stop
+# reporting the threads held for that participant. It is recognised on the FILE, like the
+# shared variant, not on the flag: a `-u` without `-v` must never clear a stand-in list.
+if [[ -z "$standin" && -f "$md" ]]; then
+  v="$(awk '/\*\*Bridge push \(watcher\):\*\*/,/watcher\.md/' "$md"        | grep -oE 'WATCH_BRIDGE_VERTRITT=[A-Za-z0-9_,.-]+' | head -1)"
+  if [[ -n "$v" ]]; then
+    standin="${v#WATCH_BRIDGE_VERTRITT=}"
+    echo "install-watcher: existing paragraph stands in for '$standin' - keeping it."
+  fi
+fi
+foldpre=""
+[[ -n "$standin" ]] && foldpre="WATCH_BRIDGE_VERTRITT=$standin "
+
 if [[ $shared -eq 1 ]]; then
   idexpr='$(head -1 .session-id)'
   iddesc='<id from .session-id>'
@@ -160,8 +178,8 @@ If a watcher already delivers for this id, the new arm steps aside by itself, an
 remnant is cleared in the process — which is why arming is unconditionally right. **Then**
 run the bridge start scan in one pass — not a loop of your own over the files, that runs
 into the tool timeout on a sync folder:
-\`bash $script_pc --fold $idexpr\` (machine A) or
-\`bash $script_nb --fold $idexpr\` (machine B)
+\`${foldpre}bash $script_pc --fold $idexpr\` (machine A) or
+\`${foldpre}bash $script_nb --fold $idexpr\` (machine B)
 lists the open threads with \`owner: $iddesc\`; if it prints a WARNING, the sync client is
 still fetching — repeat it later; if it prints ATTENTION, arming did not happen — do it now.
 Whatever already existed when you armed is baseline and arrives through the start scan, so
