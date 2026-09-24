@@ -171,6 +171,14 @@ is the normal case, not a fault. A re-arm swallows nothing: the new watcher
 adopts its predecessor's mark and reports what arrived in the gap. **Only if it prints
 \`ATTENTION -- the mark ... was not adopted\`** is the gap open -- then fold once, the ready
 command is in the message.
+⚠ **Do not narrate the re-arm in the chat.** It is a process without a result, and with a
+watch expiring every 30 minutes that is two lines per hour and session; on one morning it
+came to 54 empty lines from three sessions, and the person reading them lost the overview.
+Re-arm silently. **And never claim \"nothing arrived\":** the harness expiry notice only says
+that *its* monitor saw nothing -- a dead watcher produces it exactly like a live one. If you
+need that statement, get it from \`--status\` -- but **before** re-arming. Afterwards it
+answers about the **successor**, which is alive by construction; read in the natural order
+(expiry, arm, check, \"delivering\") it proves nothing about the gap.
 Every notification = a new bridge message for this session → read the file, report it in
 the chat, react according to the bridge protocol. The watcher only reads and complements
 the start scan; write-once is unaffected. **Do not disarm the watcher:** it survives

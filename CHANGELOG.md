@@ -149,6 +149,15 @@ commit it names will say why.
   raises no false alarm.
 
 ### Changed
+- **The arming paragraph the installer writes now says: do not narrate the re-arm.** A watch
+  that expires every 30 minutes turns a chatty session into two lines per hour, and on one
+  morning that came to 54 empty lines from three sessions -- the person reading them lost the
+  overview, which is the opposite of what a delivery channel is for. The same paragraph also
+  warns against the claim *"nothing arrived"* after an expiry: the harness notice says only
+  that **its** monitor saw nothing, and a dead watcher produces it exactly like a live one. If
+  you need that statement, take it from `--status` **before** re-arming -- afterwards it
+  answers about the successor, which is alive by construction.
+  (`bridge/install-watcher.sh`)
 - **Corrected `docs/watcher.md` on `persistent: true`: the flag is not in the schema we
   measured, and the earlier evidence for it did not hold.** Yesterday's text said the 30-minute
   cap belonged to `timeout_ms` and that builds knowing the flag run until TaskStop, citing
