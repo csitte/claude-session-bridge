@@ -40,6 +40,24 @@ commit it names will say why.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
 ### Fixed
+- **`close-cc-sessions.ps1` now checks whether a kill actually worked.** Every forcing
+  call ended in `taskkill ... | Out-Null`. That swallows stdout *alone*: an error from
+  `taskkill` travels on stderr, walks past the script onto the screen, and the exit code
+  was never read. So a kill that failed looked exactly like one that worked, and two lines
+  under the error the script still printed "Done. You can shut the machine down now." The
+  case that surfaced it was harmless -- a stale bridge watcher, more than a day old, that
+  `taskkill` refused to terminate ("There is no running instance of the task") and that
+  was still in the process table afterwards; a reboot clears those anyway. For a watcher
+  that really keeps running it would mean double delivery with nothing said about it.
+  The five forcing calls (window remnant, window after the ten-second grace, starter
+  window, bridge watcher, orphaned console) now go through `Stop-Target`, which looks
+  again for up to three seconds and collects what stays. The ordinary case is silent --
+  the line above already names what is being closed -- and the green "Done." is printed
+  only when nothing is left over; otherwise the list stands where it used to be. The check
+  asks `Win32_Process`, not `Get-Process`: for that very process `Get-Process -Id` found
+  nothing while `Win32_Process` and msys `ps` both listed it, and `Win32_Process` is the
+  table the script reads its own targets from -- whatever stays in it comes back on the
+  next run.
 - **`session-manager.cmd` no longer leaves an empty window behind.** `start` opens a
   window with `cmd /K` for a batch file: the command runs, the window **stays**, showing
   a bare prompt. Anything that launches the wrapper through `start` therefore left a

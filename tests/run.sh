@@ -860,14 +860,39 @@ EOF
   # restart loop, it execs the watcher). Checked structurally, not by running it -- the
   # suite runs on Linux too, where a PowerShell script cannot be executed at all; and a
   # guard that sits AFTER the kill would be no guard, hence the line comparison.
-  local closeps guard kill_
+  local closeps guard kill_ forced
   closeps="$ROOT/launcher/close-cc-sessions.ps1"
   guard="$(grep -n "CommandLine -like '\*--service\*'" "$closeps" | head -1 | cut -d: -f1)"
-  kill_="$(grep -n 'taskkill /PID $w.ProcessId /F' "$closeps" | head -1 | cut -d: -f1)"
+  kill_="$(grep -n 'Stop-Target -Target $w.ProcessId' "$closeps" | head -1 | cut -d: -f1)"
   if [[ -n "$guard" && -n "$kill_" && "$guard" -lt "$kill_" ]]; then
     ok "close-cc-sessions spares a --service watcher before it would kill it"
   else
     bad "close-cc-sessions spares a --service watcher before it would kill it" "guard=$guard kill=$kill_"
+  fi
+
+  # The kill used to read 'taskkill /PID $w.ProcessId /F' here. It now goes through
+  # Stop-Target, and this line had to follow -- a structural test greps for a spelling, so
+  # every rename of the thing it greps for is a new input for it. Left as an exact match on
+  # the current spelling on purpose: a pattern loose enough to accept both forms would stay
+  # green if someone put the unchecked kill back.
+  #
+  # Why the kill moved into a function at all: every forcing call used to end in
+  # '| Out-Null'. That swallows stdout ALONE -- the error from taskkill travels on stderr,
+  # walks past the script onto the screen, and the exit code was never read. A kill that
+  # failed looked exactly like one that worked, and the script still printed "Done." while
+  # the process was still in the table. Stop-Target looks again afterwards.
+  forced="$(grep -c 'taskkill /PID .*/F | Out-Null' "$closeps" || true)"
+  if [[ "$forced" == "0" ]]; then
+    ok "no forced kill is piped to Out-Null any more"
+  else
+    bad "no forced kill is piped to Out-Null any more" "still $forced occurrence(s)"
+  fi
+
+  # ... and what survived the kill is named again at the end, instead of a bare "Done."
+  if grep -q 'script:Failures.Count -gt 0' "$closeps" && grep -q 'could NOT be terminated' "$closeps"; then
+    ok "what could not be terminated is collected and repeated at the end"
+  else
+    bad "what could not be terminated is collected and repeated at the end" "$(grep -n 'Failures' "$closeps" | head -3)"
   fi
 
   rm -f "$hook" "$hookout"

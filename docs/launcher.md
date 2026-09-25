@@ -545,6 +545,18 @@ script started. The time guard matters — a window in which claude ended on its
 you still have open looks exactly the same at the Windows level, and it predates the run.
 A forced close leaves the chain of three one time and a single shell the next; both go.
 
+**Every forcing kill checks its own result.** It did not use to: each one ended in
+`taskkill ... | Out-Null`, which swallows stdout alone. The error from `taskkill` travels on
+stderr, walks past the script onto the screen, and nobody read the exit code -- so a kill that
+failed was indistinguishable, *for the script*, from one that worked, and "Done." followed two
+lines under the error. `Stop-Target` now looks again for up to three seconds and collects
+whatever stays; the summary at the end replaces the green line when the list is not empty. It
+asks `Win32_Process` rather than `Get-Process`, because those two can disagree -- on the
+process that surfaced this, `Get-Process -Id` found nothing while `Win32_Process` and msys `ps`
+both listed it -- and because `Win32_Process` is the table this script builds its own target
+list from: what stays in it turns up again on the next run. Success stays quiet; the line above
+the kill already names what is being closed.
+
 `-Pattern <text>` points the script at probe windows only (starter window and watchers are
 left alone), which is how the whole path can be tested without closing a real session.
 `-RemnantsOnly -Since <time>` runs just the fourth step by hand; there a remnant must also

@@ -25,6 +25,59 @@ param(
     [string]$Pattern = 'remote-control'
 )
 
+# A kill that CHECKS its own result.
+#
+# Every kill call here used to end in '| Out-Null'. That swallows stdout only: an error from
+# taskkill travels on stderr, walks past the script onto the screen, and the exit code was
+# never read. A failed kill therefore looked exactly like a successful one, and the script
+# still printed "Done." Observed in practice with a stale bridge watcher that taskkill refused
+# to terminate ("There is no running instance of the task") and that was still in the process
+# table afterwards -- for a watcher that really keeps running, that means double delivery
+# without a word about it.
+#
+# The check asks Win32_Process, NOT Get-Process: for that very process 'Get-Process -Id' found
+# nothing while Win32_Process and msys 'ps' both listed it. Win32_Process is also the table this
+# script reads its targets from -- whatever stays in it shows up again on the next run. A check
+# that queries a different table than the one that matters is checking a stand-in.
+#
+# The ordinary case stays quiet: if the process is gone (or was already gone), the function says
+# NOTHING -- the line above it already names what is being closed. Only what fails gets loud,
+# and the summary at the end of the script repeats it.
+$script:Failures = @()
+
+function Test-ProcessThere([int]$target) {
+    return $null -ne (Get-CimInstance Win32_Process -Filter "ProcessId=$target" -ErrorAction SilentlyContinue)
+}
+
+# $Target, not $Pid: $PID is PowerShell's own process id and cannot be assigned.
+function Stop-Target {
+    param([int]$Target, [string]$What = 'process', [switch]$WithTree)
+    if (-not (Test-ProcessThere $Target)) { return }
+    if ($WithTree) { $rawOut = & taskkill /PID $Target /T /F 2>&1 }
+    else           { $rawOut = & taskkill /PID $Target /F 2>&1 }
+    # Whatever a native program writes to stderr, PowerShell wraps in an ErrorRecord. Printing
+    # that yields six lines of call site, CategoryInfo and FullyQualifiedErrorId -- the two lines
+    # taskkill actually said would drown in it. Only the text matters here.
+    $out = @($rawOut | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
+    })
+    # Termination is not instantaneous: look again for up to three seconds, every 200 ms.
+    $until = (Get-Date).AddSeconds(3)
+    do {
+        Start-Sleep -Milliseconds 200
+        $there = Test-ProcessThere $Target
+    } while ($there -and (Get-Date) -lt $until)
+    if (-not $there) { return }
+    Write-Host ("    COULD NOT BE TERMINATED: {0}, PID {1}" -f $What, $Target) -ForegroundColor Red
+    $msg = ($out -join "`n").Trim()
+    if ($msg) {
+        foreach ($z in ($msg -split "`r?`n")) {
+            if ($z.Trim()) { Write-Host ("      {0}" -f $z.Trim()) -ForegroundColor Red }
+        }
+    }
+    $script:Failures += ("{0} (PID {1})" -f $What, $Target)
+}
+
 # Fourth line: window remnants.
 #
 # The launcher starts every window as  bash -lc "... claude ...; exec bash"  (the
@@ -79,7 +132,7 @@ function Remove-WindowRemnants([datetime]$since, [bool]$childRequired) {
             if ($child.Count -eq 0) { continue }
         }
         Write-Host ("  - window remnant (bash PID {0}, created {1:HH:mm:ss})" -f $p.ProcessId, $p.CreationDate)
-        taskkill /PID $p.ProcessId /T /F | Out-Null
+        Stop-Target -Target $p.ProcessId -What "window remnant" -WithTree
     }
 }
 
@@ -129,7 +182,7 @@ foreach ($p in $left) {
     # Whoever still stands after ten seconds is forced. That leaves window remnants; the
     # fourth line at the end removes them.
     Write-Host ("  - PID {0} does not respond, forcing" -f $p.ProcessId)
-    taskkill /PID $p.ProcessId /T /F | Out-Null
+    Stop-Target -Target $p.ProcessId -What "window" -WithTree
 }
 
 # -Pattern is a test switch: with a pattern of your own the script hits probe windows only.
@@ -151,7 +204,7 @@ if ($windowsOnly) { $launcher = @() }
 
 foreach ($l in $launcher) {
     Write-Host ("  - starter window (PID {0})" -f $l.Id)
-    taskkill /PID $l.Id /T /F | Out-Null
+    Stop-Target -Target $l.Id -What "starter window" -WithTree
 }
 
 # Collect the bridge push watchers (watch-bridge.sh).
@@ -203,7 +256,7 @@ foreach ($w in ($wb | Where-Object { $_.CommandLine -notlike '* -c *' })) {
     $id = if ($w.CommandLine -match $rx) { $Matches[1] } else { '(unknown)' }
     if ($aktiv -contains $id) { continue }
     Write-Host ("  - bridge watcher {0} (PID {1})" -f $id, $w.ProcessId)
-    taskkill /PID $w.ProcessId /F | Out-Null
+    Stop-Target -Target $w.ProcessId -What ("bridge watcher " + $id)
 }
 
 # Third line: orphaned ConPTY consoles (see docs/watcher.md, "A third line").
@@ -236,7 +289,7 @@ if ($cands.Count -gt 0) {
         $pct = 100 * ($gp.TotalProcessorTime.TotalSeconds - $cpu0[[int]$c.ProcessId]) / $el
         if ($pct -lt 5) { continue }
         Write-Host ("  - orphaned console with sustained load (PID {0}, ~{1:N0} % of a core)" -f $c.ProcessId, $pct)
-        Stop-Process -Id $c.ProcessId -Force -ErrorAction SilentlyContinue
+        Stop-Target -Target $c.ProcessId -What "orphaned console"
     }
 }
 
@@ -245,4 +298,12 @@ if ($cands.Count -gt 0) {
 # chain appear within the same second as the taskkill.
 Remove-WindowRemnants $scriptStart $false
 
-Write-Host "Done. You can shut the machine down now." -ForegroundColor Green
+if ($script:Failures.Count -gt 0) {
+    Write-Host ""
+    Write-Host ("WARNING: {0} process(es) could NOT be terminated:" -f $script:Failures.Count) -ForegroundColor Red
+    foreach ($f in $script:Failures) { Write-Host ("  - {0}" -f $f) -ForegroundColor Red }
+    Write-Host "They are still in the process table. A reboot takes them with it." -ForegroundColor Red
+    Write-Host "Done -- except for the lines above." -ForegroundColor Yellow
+} else {
+    Write-Host "Done. You can shut the machine down now." -ForegroundColor Green
+}
