@@ -39,6 +39,18 @@ commit it names will say why.
   the `echo` into a dead pipe cannot end the watcher; the orphan check below carries it.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
+### Fixed
+- **`session-manager.cmd` no longer leaves an empty window behind.** `start` opens a
+  window with `cmd /K` for a batch file: the command runs, the window **stays**, showing
+  a bare prompt. Anything that launches the wrapper through `start` therefore left a
+  shell behind -- and on the machine where this was found, two of those leftovers
+  carried the *title of a service that was running in a different window*. A husk that
+  looks like the service is worse than no window at all: going by the window list
+  miscounts in both directions. The wrapper now ends in `exit` rather than `exit /b`;
+  `exit /b` only returns from the batch under `/K` and leaves the prompt. Measured with
+  two probe wrappers over the same call path: the old form leaves exactly one window,
+  the new one none.
+
 ### Added
 - **`install-watcher.sh` keeps (and can set) a stand-in list in the fold command: `-v/--stand-in`.**
   A session that covers a participant *without* a session puts `WATCH_BRIDGE_VERTRITT=<list>`
