@@ -40,6 +40,23 @@ commit it names will say why.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
 ### Fixed
+- **A half-filled webhook config no longer writes the key into its own log.** The failure
+  line read `${key:+key ok}${key:-key missing}`: a ternary was meant, but what bash does
+  when the key *is* set is append its value. A config with a `key=` and no `url=`
+  therefore put the whole secret into `<id>.webhook.log`, which sits next to the config
+  file -- the file that is kept out of the repository for exactly that reason. The message
+  now names which half is missing and nothing else.
+- **The config check moved into the file's reader, and it checks the form that actually
+  fails.** `bridge-push.sh` used to grep the file itself while `webhook-notify.sh` parsed
+  it, so the two could disagree -- and they did: the start check asked whether something is
+  there, the reader whether it is usable. A value wrapped in quotes passed the first and
+  then failed with HTTP 000, a service that runs and never arrives. `bridge-push.sh` now
+  calls `webhook-notify.sh --check` (new) instead. Which forms are refused was measured
+  against an echo receiver rather than assumed, and the assumption was wrong: a `CR` at
+  the end of a line does not break delivery and neither do trailing spaces -- both are
+  what a Windows editor writes, and refusing them would refuse a config that works.
+  Spaces around the `=` already surfaced loudly. Quotes are the only silent one, so they
+  are the only thing rejected.
 - **`close-cc-sessions.ps1` now checks whether a kill actually worked.** Every forcing
   call ended in `taskkill ... | Out-Null`. That swallows stdout *alone*: an error from
   `taskkill` travels on stderr, walks past the script onto the screen, and the exit code

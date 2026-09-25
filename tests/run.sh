@@ -895,6 +895,67 @@ EOF
     bad "what could not be terminated is collected and repeated at the end" "$(grep -n 'Failures' "$closeps" | head -3)"
   fi
 
+  # --- the config file: what its reader accepts, and what it must never log -------------
+  #
+  # Measured against an echo receiver before this was written, because the first guess was
+  # wrong: a CR at the end of a line does NOT break delivery (the reader strips it), and
+  # neither do trailing spaces. The one mistyping that passes a presence check and then
+  # fails silently is a value wrapped in quotes -- so that is what is rejected, and the
+  # forms that work are deliberately NOT rejected: a false alarm here refuses to start a
+  # service that would have worked.
+  local wn cfg checkout_ secret
+  wn="$ROOT/bridge/webhook-notify.sh"
+  secret="crsr_do_not_log_this_0123456789"
+
+  cfg="$TMPROOT/conf.ok.$RANDOM.webhook"
+  printf 'url=https://example.invalid/hook
+key=%s
+' "$secret" > "$cfg"
+  if bash "$wn" --check "$cfg" >/dev/null 2>&1; then ok "--check accepts a well-formed config"
+  else bad "--check accepts a well-formed config" "$(bash "$wn" --check "$cfg" 2>&1)"; fi
+
+  cfg="$TMPROOT/conf.cr.$RANDOM.webhook"
+  printf 'url=https://example.invalid/hook\r\nkey=%s\r\n' "$secret" > "$cfg"
+  if bash "$wn" --check "$cfg" >/dev/null 2>&1; then ok "... and CRLF line endings are not an error"
+  else bad "... and CRLF line endings are not an error" "$(bash "$wn" --check "$cfg" 2>&1)"; fi
+
+  cfg="$TMPROOT/conf.quoted.$RANDOM.webhook"
+  printf 'url="https://example.invalid/hook"
+key=%s
+' "$secret" > "$cfg"
+  checkout_="$(bash "$wn" --check "$cfg" 2>&1)"; rc=$?
+  if [[ "$rc" == "78" ]] && printf '%s' "$checkout_" | grep -qi 'quotes'; then
+    ok "... but a value wrapped in quotes is refused, and the message says why"
+  else bad "... but a value wrapped in quotes is refused, and the message says why" "rc=$rc $checkout_"; fi
+
+  # The security-relevant one. The old line read `${key:+key ok}${key:-key missing}` -- a
+  # ternary was meant, but what it does when the key IS set is append its value. A config
+  # with a key and no url wrote the whole secret into the log next to it.
+  cfg="$TMPROOT/conf.nourl.$RANDOM.webhook"
+  printf 'key=%s
+' "$secret" > "$cfg"
+  checkout_="$(WEBHOOK_NOTIFY_LOG="$cfg.log" WB_FILE="$cfg" bash "$wn" "$cfg" 2>&1)"
+  if printf '%s' "$checkout_" | grep -qF "$secret" || { [ -f "$cfg.log" ] && grep -qF "$secret" "$cfg.log"; }; then
+    bad "a half-filled config never puts the key in the message or the log" "the secret was written out"
+  else ok "a half-filled config never puts the key in the message or the log"; fi
+  if printf '%s' "$checkout_" | grep -qi 'url missing'; then ok "... and it still says which half is missing"
+  else bad "... and it still says which half is missing" "$checkout_"; fi
+
+  # bridge-push.sh must not start on an unusable config: a service that runs and never
+  # delivers looks healthy from the outside.
+  cfg="$TMPROOT/conf.bad.$RANDOM.webhook"
+  printf 'url="https://example.invalid/hook"
+key=%s
+' "$secret" > "$cfg"
+  # `timeout` is not belt and braces: if the guard is gone, this call does not fail -- it
+  # STARTS, and bridge-push.sh is a daemon that polls forever. The first mutation run of
+  # this case hung instead of going red, and a check that hangs is worse than one that
+  # fails: it looks like a slow suite. With the guard in place the call exits at once.
+  checkout_="$(BRIDGE_PUSH_CONF="$cfg" BRIDGE_PUSH_LOG="$cfg.svc.log" timeout 10 bash "$ROOT/bridge/bridge-push.sh" probe 2>&1)"; rc=$?
+  if [[ "$rc" == "78" ]] && printf '%s' "$checkout_" | grep -q 'NOT started'; then
+    ok "bridge-push refuses to start on an unusable config"
+  else bad "bridge-push refuses to start on an unusable config" "rc=$rc $checkout_"; fi
+
   rm -f "$hook" "$hookout"
 }
 

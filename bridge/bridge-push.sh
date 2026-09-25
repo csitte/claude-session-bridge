@@ -36,8 +36,13 @@ if [[ ! -r "$conf" ]]; then
   echo "              The file does NOT belong in a repository." >&2
   exit 78
 fi
-if ! grep -qE '^[[:space:]]*url=[^[:space:]]' "$conf" || ! grep -qE '^[[:space:]]*key=[^[:space:]]' "$conf"; then
-  echo "[bridge-push] incomplete configuration: $conf (url= and key= must be filled in)" >&2
+# The FORM of the config file is checked by its reader, not here: webhook-notify.sh parses
+# it on every delivery anyway. Spelling the rule out a second time in this file makes this
+# the place that is forgotten next time -- and that is exactly what happened: this check
+# asked whether something IS THERE, the reader whether it is USABLE. A value in quotes
+# passed here and then failed with HTTP 000.
+if ! bash "$here/webhook-notify.sh" --check "$conf"; then
+  echo "[bridge-push] service NOT started -- the config file is unusable (lines above)." >&2
   exit 78
 fi
 

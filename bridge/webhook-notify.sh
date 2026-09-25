@@ -20,15 +20,29 @@
 # Keep the file out of the repository. Suggested place: `~/.config/session-bridge/<id>.webhook`.
 set -uo pipefail
 
+# --check <file>: validate the config and deliver nothing. bridge-push.sh calls this at
+# start-up instead of spelling the same rule out a second time.
+checkonly=0
+if [[ "${1:-}" == "--check" ]]; then checkonly=1; shift; fi
+
 conf="${1:-}"
-[[ -n "$conf" ]] || { echo "usage: $(basename "$0") <config-file>" >&2; exit 64; }
+[[ -n "$conf" ]] || { echo "usage: $(basename "$0") [--check] <config-file>" >&2; exit 64; }
 [[ -r "$conf" ]] || { echo "[webhook] config not readable: $conf" >&2; exit 66; }
 
 log="${WEBHOOK_NOTIFY_LOG:-$conf.log}"
 say() { printf '%s  %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$log"; }
 
 # --- read the config: only known keys, trimmed at the edges ------------------------
-url=""; key=""
+# WHAT ACTUALLY GOES WRONG, measured against an echo receiver rather than assumed -- and
+# the assumption was wrong:
+#   CR at end of line    -> ok 200   (stripped below; a file written by a Windows editor
+#                                     is the normal case, not a defect)
+#   trailing spaces      -> ok 200   (trimmed)
+#   spaces around the =  -> surfaces as "url missing", i.e. loudly
+#   value in "..."       -> HTTP 000, curl never leaves the machine -- and the presence
+#                           check was GREEN for it. Of all the ways to mistype this file
+#                           that is the only one that fails silently.
+url=""; key=""; problems=()
 while IFS= read -r line || [[ -n "$line" ]]; do
   line="${line%$'\r'}"                       # CRLF: a human types this file
   [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -40,13 +54,27 @@ done < "$conf"
 url="${url#"${url%%[![:space:]]*}"}"; url="${url%"${url##*[![:space:]]}"}"
 key="${key#"${key%%[![:space:]]*}"}"; key="${key%"${key##*[![:space:]]}"}"
 
-if [[ -z "$url" || -z "$key" ]]; then
+[[ -n "$url" ]] || problems+=("url missing or empty")
+[[ -n "$key" ]] || problems+=("key missing or empty")
+# Quotes are not part of the format: this file is read, never evaluated by a shell, so
+# they stay inside the value and travel into the address or the header.
+case "$url" in '"'*|"'"*) problems+=('url is wrapped in quotes -- those belong to the value, not to the format') ;; esac
+case "$key" in '"'*|"'"*) problems+=('key is wrapped in quotes -- those belong to the value, not to the format') ;; esac
+
+if (( ${#problems[@]} > 0 )); then
   # Fail loudly rather than do nothing quietly: a half-filled config looks exactly like
   # "nothing arrived" in production -- the failure mode this whole path exists to avoid.
-  say "ERROR incomplete config ($conf): ${url:+url ok}${url:-url missing}, ${key:+key ok}${key:-key missing}"
-  echo "[webhook] incomplete config: $conf" >&2
+  #
+  # AND NEVER LOG THE VALUE. This line used to read `${key:+key ok}${key:-key missing}`:
+  # a ternary was meant, what was written is "if the key is set, append ITS VALUE". A
+  # config with a key and no url therefore wrote the whole secret into the log -- and the
+  # log sits next to the config file, which is kept out of the repository for that very
+  # reason.
+  for pr in "${problems[@]}"; do echo "[webhook] $conf: $pr" >&2; done
+  (( checkonly == 0 )) && say "ERROR unusable config ($conf): ${problems[*]}"
   exit 78
 fi
+(( checkonly == 1 )) && exit 0
 
 file="${WB_FILE:-}"
 [[ -r "$file" ]] || { say "ERROR message not readable: ${file:-<empty>}"; exit 66; }

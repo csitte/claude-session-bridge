@@ -1149,6 +1149,27 @@ To have it start with the machine, use whatever your platform offers (a user ser
 scheduled task at logon, an entry in your own launcher). One service per config file is the
 simplest rule: the config file is the registration, and no second list can go stale.
 
+**What the config file is checked for -- and what it deliberately is not.** The rule lives in
+one place, `webhook-notify.sh`, which parses the file on every delivery anyway; `bridge-push.sh`
+asks it with `--check` at start-up rather than spelling the same rule out a second time. That
+split is not tidiness: the two used to disagree. The start check asked whether something *is
+there*, the reader whether it is *usable*, and a value wrapped in quotes passed the first and
+then failed with HTTP 000 -- a service that runs and never arrives, which is the exact failure
+this layer exists to prevent.
+
+The checks were chosen by measuring a real receiver, not by guessing, and the first guess was
+wrong: a `CR` at the end of a line does **not** break delivery (the reader strips it), and
+neither do trailing spaces. Both are what a Windows editor produces, and rejecting them would
+refuse to start a service that would have worked. Spaces around the `=` already surface loudly
+as "url missing". So exactly one form is refused: a value in quotes.
+
+**And the failure message must never contain the value.** Ours read
+`${key:+key ok}${key:-key missing}` -- a ternary was intended; what bash does when the key *is*
+set is append its value. A config with a key and no url therefore wrote the whole secret into
+the log file that sits next to it, the file kept out of the repository for precisely that
+reason. The line now names which half is missing and nothing else, and a test asserts the
+secret appears in neither the message nor the log.
+
 **Whatever closes your sessions must leave it alone.** This is the trap worth naming,
 because it is silent and it undoes the whole service. A cleanup script that ends stray
 watchers will typically ask "does a live session own this one?" -- and for a service the
