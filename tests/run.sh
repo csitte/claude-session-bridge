@@ -200,6 +200,47 @@ test_watcher() {
     "140-mailwork.md" \
     "$(watch_run "$b" mail-work posts 1)"
 
+  # Nearly addressed: `to: app+app-b` is ONE token to `addressed`, so it hits nobody -- no
+  # push, and the start scan folds on owner, not on `to:`. That used to be entirely silent;
+  # in our own bridge eight messages were addressed that way inside 48 hours, one of them
+  # lying unread for three hours. The watcher of the id that was MEANT is the one process that
+  # can notice, so it says so -- and it must NOT look like a delivery: the hook stays unrun.
+  #
+  # Raw output, not watch_run: the note names the file too, so a filename harvest cannot tell
+  # the two apart. The point of this case is the wording.
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  local nmout nmpid
+  nmout="$TMPROOT/nearmiss.$RANDOM"
+  SESSION_BRIDGE_DIR="$b" bash "$WATCHER" app 1 > "$nmout" 2>/dev/null &
+  nmpid=$!
+  sleep 2
+  post "$b" 300-plus other "app+app-b"
+  wait_for_lines "$nmout" 1 8
+  sleep 0.5
+  kill "$nmpid" 2>/dev/null; wait "$nmpid" 2>/dev/null
+  if grep -q "nearly addressed to 'app'" "$nmout" && grep -q 'NOT delivered' "$nmout"; then
+    ok "to: app+app-b is reported as a near miss instead of vanishing"
+  else bad "to: app+app-b is reported as a near miss instead of vanishing" "$(cat "$nmout")"; fi
+  if grep -q "Bridge message for 'app'" "$nmout"; then
+    bad "... and it is not dressed up as a delivery" "$(cat "$nmout")"
+  else ok "... and it is not dressed up as a delivery"; fi
+  if grep -q 'to: app+app-b' "$nmout"; then ok "... and it quotes the offending line"
+  else bad "... and it quotes the offending line" "$(cat "$nmout")"; fi
+
+  # A `+` that has nothing to do with this id stays silent -- otherwise every session on the
+  # bridge would warn about every plus-addressed message, and a warning everybody gets is one
+  # nobody acts on.
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  nmout="$TMPROOT/nearmiss2.$RANDOM"
+  SESSION_BRIDGE_DIR="$b" bash "$WATCHER" app 1 > "$nmout" 2>/dev/null &
+  nmpid=$!
+  sleep 2
+  post "$b" 310-other-plus other "mail+mail-work"
+  sleep 3
+  kill "$nmpid" 2>/dev/null; wait "$nmpid" 2>/dev/null
+  if [[ ! -s "$nmout" ]]; then ok "a '+' between two other ids leaves this watcher silent"
+  else bad "a '+' between two other ids leaves this watcher silent" "$(cat "$nmout")"; fi
+
   head_ "watcher: co-recipients in the notification"
   b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
   only_list() { post "$1" 200-group other "app, app-b, mail"; }

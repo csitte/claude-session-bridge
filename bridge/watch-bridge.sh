@@ -1893,6 +1893,41 @@ addressed() { # $1=to-field
   return 1
 }
 
+# Nearly addressed: `to: alice+bob`.
+#
+# `addressed` splits on commas ALONE and compares token-exact -- deliberately, or a message to
+# `gmail-csitte` would also reach `gmail`. A pair joined by `+` is therefore ONE token and hits
+# nobody: no push, and the start scan folds on `owner`, not on `to:`. The message sits correctly
+# in its thread and still reaches no one -- the quietest failure this protocol has. One such
+# message lay unread for three hours until a human asked about it.
+#
+# MEASURED over every `to:` line in our own bridge (threads/ and archive): 2,697 single
+# recipients, 557 comma lists, 8 with a `+`. All eight came from one sender, all within 48
+# hours, and every one of them named two real participant ids -- there was not a single case
+# where a `+` meant anything else.
+#
+# WHY NOT MAKE `+` A SECOND SEPARATOR (the obvious fix, and the one the reporter proposed):
+# the same thing would then have two valid spellings. The protocol prescribes the comma, and
+# 557 comma lists run on it without a single failure; a second accepted form makes a third one
+# easier, and the next trap looks different again. So nothing is delivered here. What happens
+# instead is that the situation is named -- on stdout, i.e. as a notification, because it asks
+# for an action: read the thread, ask the sender for the comma form.
+#
+# THE LIMIT, named: a delivery service with no session (`--service`) writes its stdout to a log
+# file nobody reads, so for it this stays quiet. Its cover is the recipient's own polling.
+near_miss() { # $1=to-field
+  local t p
+  # shellcheck disable=SC2086  # word splitting is the point
+  for t in ${1//,/ }; do
+    [[ "$t" == *+* ]] || continue
+    # shellcheck disable=SC2086
+    for p in ${t//+/ }; do
+      [[ "$p" == "$me" ]] && return 0
+    done
+  done
+  return 1
+}
+
 shopt -s nullglob
 declare -A seen
 declare -A retry
@@ -2079,6 +2114,12 @@ while true; do
   fi
   state_dirty=0
   delivered=0
+  # A flag of its own for "reported, not delivered". It must NOT be called `delivered` -- nothing
+  # was, and the hook deliberately does not run. It must trigger the same exit though: in
+  # `--once` mode stdout reaches the session only when the process ENDS, so a warning without an
+  # exit would sit in the output file and be read at the next real delivery -- exactly as quiet
+  # as the failure it reports.
+  reported=0
   for f in "$bridge"/threads/*/msgs/*.md; do
     [[ -n "${seen[$f]:-}" ]] && continue
     # Baseline first, and without reading it: whatever exists at startup belongs to
@@ -2107,7 +2148,16 @@ while true; do
       so="$(fm_field sets-owner "$f")"
       [[ "$so" == "$me" ]] && reason="${reason:+${reason}+}owner"
     fi
-    [[ -n "$reason" ]] || continue
+    if [[ -z "$reason" ]]; then
+      # Not addressed -- but perhaps meant? Reasoning at `near_miss`.
+      if near_miss "$to"; then
+        echo "NOTE -- nearly addressed to '$me', NOT delivered: thread '$slug', from '$from' -- $(basename "$f")"
+        echo "        to: $to   --   only commas separate, and '$me' sits inside a token with a '+'."
+        echo "        The message is in the thread. Ask the sender for 'to: a, b' next time."
+        reported=1
+      fi
+      continue
+    fi
     # Name the co-recipients: the session should know the others got the same
     # message — otherwise everyone answers a group message with the same thing.
     # Who holds the ball is still said by `sets-owner`.
@@ -2182,7 +2232,7 @@ while true; do
   # CAREFUL: the warning box above applies here with force -- under a background command
   # stdout may be a FILE, and then the `echo` never fails. What carries the protection here
   # is the orphan check at the top of the loop, not the reader-less pipe.
-  if (( once )) && (( delivered || once_exit_after_baseline )); then
+  if (( once )) && (( delivered || reported || once_exit_after_baseline )); then
     exit 0
   fi
   sleep "$poll"

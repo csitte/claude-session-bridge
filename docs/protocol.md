@@ -149,6 +149,14 @@ broadcast value `all`.
 - **`sets-owner` stays singular** even when `to:` names several sessions: exactly one
   participant has the ball, the others read along.
 - The fold never looks at `to:` at all — addressing and ownership are separate concerns.
+- **A separator that is not a comma hits nobody, and used to do so in silence.** `to: a+b` is
+  ONE token to a token-exact match, and no participant is called `a+b`: not pushed, and not
+  folded either, because the fold goes by `owner`. The message sits correctly in its thread
+  and reaches no one, with no error anywhere. In our own bridge, eight messages were addressed
+  that way inside 48 hours; one lay unread for three hours until a human asked. The watcher of
+  the id that was *meant* is the only process in a position to notice, so it now says so --
+  and deliberately does not deliver: a second valid spelling for the same thing would make a
+  third one easier. Comma or nothing.
 
 Three mechanisms with three different fates. Pick by what has to *happen*, not by how many
 participants it concerns:

@@ -15,6 +15,20 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **The watcher reports a near miss instead of swallowing it: `to: a+b`.** Addressing is
+  token-exact and splits on commas alone, so a pair joined by `+` is one token that is
+  nobody's id. Such a message is neither pushed nor folded -- the fold goes by `owner` --
+  so it sits correctly in its thread and reaches no one, with no error anywhere. The
+  watcher of the id that was *meant* is the only process that can notice, and it now
+  prints a note naming the file and the offending line. It deliberately does **not**
+  deliver: the hook stays unrun and the note says "NOT delivered". Making `+` a second
+  separator was the obvious fix and was rejected -- the same thing would then have two
+  valid spellings, and a second accepted form makes a third one easier. Measured over
+  every `to:` line in our own bridge: 2,697 single, 557 comma lists, 8 with a `+`, all
+  eight from one sender inside 48 hours and all eight naming two real ids. In `--once`
+  mode the note also ends the run, because there stdout reaches the session only when the
+  process exits -- a warning without that exit would be exactly as quiet as the failure it
+  reports.
 - **Deliver to a participant that is not a session: `WATCH_BRIDGE_ON_MESSAGE`,
   `WATCH_BRIDGE_WAKE_ON_OWNER`, `--service`, plus `bridge-push.sh` and
   `webhook-notify.sh`.** The bridge assumed one kind of participant: a running session
