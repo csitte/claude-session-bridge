@@ -54,6 +54,14 @@ commit it names will say why.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
 ### Fixed
+- **The filename rule now says which separator goes and which stays.** `docs/protocol.md`
+  called the message name a "UTC basic timestamp" -- and in ISO 8601 the *basic* format is
+  exactly the one without dashes, which is the malformed name the paragraph right below it
+  warns about. It now says dashes kept, colons dropped, and points at the recipe (`tr -d :`)
+  instead of leaving the reader to build a `date -u` format string. The old wording cost two
+  malformed names inside one hour in our own bridge on 2026-09-26: one participant
+  hand-rolled `+%Y%m%dT%H%M%SZ`, and the next copied the compact form out of the filename of
+  the message it was answering -- the fold named both, and the repair was an `mv` each time.
 - **A half-filled webhook config no longer writes the key into its own log.** The failure
   line read `${key:+key ok}${key:-key missing}`: a ternary was meant, but what bash does
   when the key *is* set is append its value. A config with a `key=` and no `url=`

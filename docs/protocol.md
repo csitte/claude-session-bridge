@@ -42,9 +42,9 @@ If you weaken this rule you must also replace the transport. It is the load-bear
 
 ## Message file
 
-Filename: `YYYY-MM-DDTHHMMSSZ__<from>__<rand>.md` — UTC basic timestamp (no colons, so it is
-safe on NTFS), author id, and a short random suffix so two simultaneous writers cannot
-collide. Lexical sort equals chronological order.
+Filename: `YYYY-MM-DDTHHMMSSZ__<from>__<rand>.md` — a UTC timestamp with the dashes of the
+date kept and the colons of the time dropped (NTFS-safe), author id, and a short random
+suffix so two simultaneous writers cannot collide. Lexical sort equals chronological order.
 
 > **The name is what sorts — a malformed one wins or loses every fold, permanently.** A
 > compact stamp without dashes (`20260826T162510Z__…`) sorts lexically *after* every
@@ -55,6 +55,11 @@ collide. Lexical sort equals chronological order.
 > The same scan names a **well-formed name with a wrong value**: a stamp that lies more than
 > five minutes after the file's own write time (mtime) — typed, or local time with a `Z` —
 > sorts after everything written up to that stamp and wins every fold until then. Same repair.
+> **Build the name with the recipe below**, whose `tr -d :` keeps the dashes and drops only
+> the colons; hand-rolling `date -u +%Y%m%dT%H%M%SZ` is how the compact form gets in. That
+> happened twice inside one hour on 2026-09-26 in our own bridge: one participant
+> hand-rolled the stamp, and the next one copied the malformed name out of the message it
+> was answering. The wrong example travels further than the rule next to it.
 
 ```markdown
 ---
