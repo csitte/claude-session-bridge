@@ -145,6 +145,16 @@ commit it names will say why.
   time. A session without a stand-in gains nothing, so this needs no second roll-out.
 
 ### Changed
+- **The arm paragraph now names `--new-message`.** Putting the command into the protocol
+  recipe was not enough: in our own bridge, measured the same evening, two of the 19 messages
+  written *after* the recipe changed still carried a hand-typed stamp (5.1 and 10.5 minutes
+  ahead of their own write time). The recipe is read by whoever looks something up; the arm
+  paragraph is read by every session at every start. Three lines now sit right behind "react
+  according to the bridge protocol" -- that is where the mistake happens, when answering. No
+  new allow rule is needed: the existing one ends in `watch-bridge.sh:*` and covers every
+  subcommand. Roll it out with `install-watcher.sh -u`, and **diff the existing paragraphs
+  against the template first** -- an update replaces everything between the marker and the
+  closing line, including additions the template does not know. (`bridge/install-watcher.sh`)
 - **The arm paragraph now asks for silence about *every* arm, not just re-arms.** The rule
   used to name the re-arm only. Sessions therefore kept announcing the arm at session start
   -- and, because the paragraph asks them to read the tool's answer and pick a path, they

@@ -205,7 +205,16 @@ answers about the **successor**, which is alive by construction; read in the nat
 (expiry, arm, check, \"delivering\") it proves nothing about the gap.
 Every notification = a new bridge message for this session → read the file, report it in
 the chat, react according to the bridge protocol. The watcher only reads and complements
-the start scan; write-once is unaffected. **Do not disarm the watcher:** it survives
+the start scan; write-once is unaffected.
+**Write your reply with the script, not by hand:**
+\`bash $script_pc --new-message <slug|no> --from $idexpr --to \"a, b\"\` (machine A) or
+\`bash $script_nb --new-message <slug|no> --from $idexpr --to \"a, b\"\` (machine B); text from
+stdin or \`--body <file>\`, plus \`--type\`, \`--in-reply-to\`, \`--sets-owner\`, \`--sets-status\`.
+It reads the clock **once** for the filename and the \`date:\` field, and it checks the ids
+against the participant table. Typed by hand the two values drift apart, and a stamp that sits
+too far ahead wins every fold until the clock catches up -- four such names in one month before
+the command existed.
+**Do not disarm the watcher:** it survives
 \`/clear\` and keeps delivering; a second arm recognises the running one and steps aside.
 Use TaskStop only if delivery must stop *immediately*. Check the state with
 \`bash $script_pc --status $idexpr\` (machine A) or

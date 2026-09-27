@@ -281,6 +281,23 @@ are still checked, they do not depend on the paragraph. `-n` reports the same. A
 the marker that mentions the script elsewhere is unaffected — the check only runs when the
 marker is missing.
 
+### Before a `-u` rollout, diff the existing paragraphs
+
+`-u` replaces everything between the marker and the closing line. Whatever a session added
+*inside* the block -- its own warning, a variable in front of the fold command -- is gone,
+silently, and you notice only when something stops working. The dry run does not close this
+gap: it prints the new text, not what the new text displaces.
+
+So before the run, extract each file's current paragraph and diff it against the template
+your **current** script produces. Two kinds of finding show up, and we had both on the same
+day: a file still carrying a template version from a week earlier, although the rollout that
+should have updated it counted as complete; and a file carrying genuine additions inside the
+block, which were moved **below** the closing line first, word for word. Project-specific
+notes belong there anyway -- `-u` does not reach past that line.
+
+Afterwards, count. **The tool's output proves the run, not the state:** check how many files
+actually carry the new wording. A rollout reported as done is not evidence that it happened.
+
 ### Permissions are part of the rollout, not a prerequisite
 
 Rolling this out to eight sessions, the permission classifier blocked the arm command in
