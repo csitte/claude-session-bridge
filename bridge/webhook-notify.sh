@@ -86,7 +86,15 @@ file="${WB_FILE:-}"
 # takes the console code page and mangles non-ASCII.
 payload="$(mktemp)" || exit 70
 headers="$(mktemp)" || { rm -f "$payload"; exit 70; }
-trap 'rm -f "$payload" "$headers"' EXIT
+# The RESPONSE BODY is read along since 2026-09-27, and the reason is a measurement: an
+# exhausted usage quota at the recipient looks exactly like a healthy run from here. The
+# endpoint accepts the job with HTTP 200 and answers {"success":true,"runUuid":"..."}, and
+# that nothing runs behind it appears in no response. So the quota is NOT detected here --
+# it is detected in the silence that follows (deliveries weighed against the participant's
+# own messages). The body still belongs in the log: the run id is the only trail to the run
+# itself, and on failure the body carries the cause that the status code only hints at.
+response="$(mktemp)" || { rm -f "$payload" "$headers"; exit 70; }
+trap 'rm -f "$payload" "$headers" "$response"' EXIT
 
 if ! python -X utf8 -c '
 import json, os, sys
@@ -125,28 +133,47 @@ fi
 chmod 600 "$headers" 2>/dev/null
 
 send() {
-  curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+  : > "$response"
+  curl --silent --show-error --output "$response" --write-out '%{http_code}' \
        --max-time 20 --request POST --config "$headers" \
        --data-binary "@$payload" "$url" 2>>"$log"
+}
+
+# The run id from the response, empty if there is none. No secret involved: the body comes
+# FROM the endpoint, the key only goes out.
+run_id() {
+  sed -n 's/.*"runUuid"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9-]\{8,\}\)".*/\1/p' \
+      "$response" 2>/dev/null | head -1
+}
+
+# The body as ONE capped line. An error body can be a whole HTML page, and a newline in it
+# would break the shape of the log -- which is what a reader uses to tell successful
+# deliveries apart.
+short_response() {
+  tr '\r\n\t' '   ' < "$response" 2>/dev/null | tr -s ' ' | cut -c1-400
 }
 
 short="$(basename "$file")"
 code="$(send)"
 if [[ "$code" == 2* ]]; then
-  say "ok $code $short (${WB_REASON:-?}) -> ${WB_ID:-?}"
+  run="$(run_id)"
+  say "ok $code $short (${WB_REASON:-?}) -> ${WB_ID:-?}${run:+ run=$run}"
   exit 0
 fi
+errbody="$(short_response)"
 
 # Exactly ONE retry. More would not be a better service but a queue nobody drains: what
 # fails twice here is picked up by the recipient's own polling -- that is the cover, not
 # this call. Set the gap with WEBHOOK_NOTIFY_RETRY.
-say "attempt 1 failed (HTTP ${code:-?}) $short -- retrying in ${WEBHOOK_NOTIFY_RETRY:-45}s"
+say "attempt 1 failed (HTTP ${code:-?}) $short -- retrying in ${WEBHOOK_NOTIFY_RETRY:-45}s${errbody:+ response: $errbody}"
 sleep "${WEBHOOK_NOTIFY_RETRY:-45}"
 code="$(send)"
 if [[ "$code" == 2* ]]; then
-  say "ok-after-retry $code $short (${WB_REASON:-?}) -> ${WB_ID:-?}"
+  run="$(run_id)"
+  say "ok-after-retry $code $short (${WB_REASON:-?}) -> ${WB_ID:-?}${run:+ run=$run}"
   exit 0
 fi
+errbody="$(short_response)"
 
-say "ERROR failed twice (HTTP ${code:-?}) $short -- the recipient will see it on its own next poll"
+say "ERROR failed twice (HTTP ${code:-?}) $short -- the recipient will see it on its own next poll${errbody:+ response: $errbody}"
 exit 1

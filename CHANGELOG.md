@@ -15,6 +15,12 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **`webhook-notify.sh` logs the endpoint's response.** On success the run id
+  (`run=<uuid>`) if the answer carries one, on failure the endpoint's own message,
+  capped to one line and 400 characters. The reason is a measurement: an exhausted
+  usage quota at the recipient answers `HTTP 200` with `{"success":true,"runUuid":...}`
+  like a healthy run, so the status code alone cannot tell a working recipient from a
+  dead one. `docs/watcher.md` says where that detection does belong.
 - **`watch-bridge.sh --new-message` writes a message so nobody hand-builds the name.** One
   `date -u` for filename and `date:` field, front matter from the options (`--from`, `--to`,
   `--type`, `--in-reply-to`, `--sets-owner`, `--sets-status`, `--cc`), the text from stdin or

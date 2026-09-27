@@ -1149,6 +1149,26 @@ To have it start with the machine, use whatever your platform offers (a user ser
 scheduled task at logon, an entry in your own launcher). One service per config file is the
 simplest rule: the config file is the registration, and no second list can go stale.
 
+**A 200 proves acceptance, not execution -- so the response body is logged.** Measured at a
+real endpoint on 2026-09-27, while the recipient's usage quota was exhausted: every call
+came back `HTTP 200` with `{"success":true,"runUuid":"..."}` and the recipient did nothing.
+Eight deliveries that day, all logged as `ok 200`, and not one reaction. The status code is a
+proxy for "the recipient works" and it is blind.
+
+The log line therefore carries the run id (`run=<uuid>`) on success and the endpoint's own
+message on failure, capped to one line and 400 characters -- an HTML error page would break
+the shape of the log. The run id is the only trail to the run itself; most endpoints of this
+kind have a query for it that needs different credentials than the trigger, so keeping the id
+is what leaves that door open at all.
+
+**Detecting the dead recipient is a different measurement, and it is not in this script.** A
+participant without a session answers by writing into the same bridge, so the signal is
+silence: deliveries that arrived, weighed against the participant's own messages. Two
+unanswered deliveries older than two hours is a sound threshold -- measured over 100
+deliveries, such recipients answer within 30 s to 30 min, and a single unanswered delivery is
+normal (an `fyi` needs no reply). Whatever watches your fleet is the right place for that; it
+needs the delivery log and the bridge, both of which it already reads.
+
 **What the config file is checked for -- and what it deliberately is not.** The rule lives in
 one place, `webhook-notify.sh`, which parses the file on every delivery anyway; `bridge-push.sh`
 asks it with `--check` at start-up rather than spelling the same rule out a second time. That

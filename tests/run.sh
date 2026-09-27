@@ -997,7 +997,81 @@ key=%s
     ok "bridge-push refuses to start on an unusable config"
   else bad "bridge-push refuses to start on an unusable config" "rc=$rc $checkout_"; fi
 
-  rm -f "$hook" "$hookout"
+  # --- the response body: the run id, and the cause of a failure ----------------------
+  #
+  # Measured at the real endpoint on 2026-09-27, while the recipient's usage quota was
+  # exhausted: it answered HTTP 200 and {"success":true,"runUuid":"..."} for every single
+  # call, and the bot did nothing. So the status code is a proxy for "the recipient works"
+  # and it is blind. What the body is good for is the other two things: the run id is the
+  # only trail to the run itself (the endpoint has its own query for it), and on a failure
+  # the body carries the cause that the code only hints at.
+  local rport rbody rsrv rcfg rmsg
+  rport="$TMPROOT/port.$RANDOM"
+  rmsg="$TMPROOT/msg.$RANDOM.md"
+  printf -- '---\nfrom: someone\nto: probe\ntype: fyi\ndate: 2026-09-27T10:00:00Z\n---\n\n# Probe\n\nText.\n' > "$rmsg"
+
+  # A receiver on a port the OS picks -- a fixed port collides in CI, where jobs share a
+  # machine. It serves every request until it is killed.
+  _receiver() {  # $1 = status code, $2 = body, $3 = port file
+    python - "$1" "$2" "$3" <<'PY' &
+import http.server, sys
+code, body, portfile = int(sys.argv[1]), sys.argv[2].encode("utf-8"), sys.argv[3]
+
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(s):
+        s.rfile.read(int(s.headers.get("Content-Length") or 0))
+        s.send_response(code)
+        s.send_header("Content-Length", str(len(body)))
+        s.end_headers()
+        s.wfile.write(body)
+
+    def log_message(s, *a):
+        pass
+
+
+srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+with open(portfile, "w") as f:
+    f.write(str(srv.server_address[1]))
+srv.serve_forever()
+PY
+    rsrv=$!
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do [ -s "$3" ] && return 0; sleep 0.5; done
+    return 1
+  }
+
+  rm -f "$rport"
+  if _receiver 200 '{"success":true,"runUuid":"testrun-12345678"}' "$rport"; then
+    rcfg="$TMPROOT/conf.run.$RANDOM.webhook"
+    printf 'url=http://127.0.0.1:%s/hook\nkey=k\n' "$(cat "$rport")" > "$rcfg"
+    WEBHOOK_NOTIFY_LOG="$rcfg.log" WB_FILE="$rmsg" WB_TO=probe WB_FROM=someone \
+      WB_SLUG=440-x WB_ID=probe WB_REASON=to bash "$wn" "$rcfg" >/dev/null 2>&1
+    if grep -q 'run=testrun-12345678' "$rcfg.log" 2>/dev/null; then
+      ok "a delivery logs the run id from the response"
+    else bad "a delivery logs the run id from the response" "$(cat "$rcfg.log" 2>&1)"; fi
+    kill "$rsrv" 2>/dev/null
+  else
+    printf '  skip no local receiver could be started here\n'
+    kill "$rsrv" 2>/dev/null
+  fi
+
+  rm -f "$rport"
+  if _receiver 400 '{"error":"quota exceeded, resets in 4 days"}' "$rport"; then
+    rcfg="$TMPROOT/conf.err.$RANDOM.webhook"
+    printf 'url=http://127.0.0.1:%s/hook\nkey=k\n' "$(cat "$rport")" > "$rcfg"
+    WEBHOOK_NOTIFY_RETRY=1 WEBHOOK_NOTIFY_LOG="$rcfg.log" WB_FILE="$rmsg" WB_TO=probe \
+      WB_FROM=someone WB_SLUG=440-x WB_ID=probe WB_REASON=to bash "$wn" "$rcfg" >/dev/null 2>&1
+    if grep -q 'quota exceeded' "$rcfg.log" 2>/dev/null; then
+      ok "... and a failure logs the endpoint's own reason, not just the code"
+    else bad "... and a failure logs the endpoint's own reason, not just the code" "$(cat "$rcfg.log" 2>&1)"; fi
+    kill "$rsrv" 2>/dev/null
+  else
+    printf '  skip no local receiver could be started here\n'
+    kill "$rsrv" 2>/dev/null
+  fi
+
+  rm -f "$hook" "$hookout" "$rmsg" "$rport"
 }
 
 test_orphan() {
