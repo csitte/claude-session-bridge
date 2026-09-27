@@ -7,6 +7,10 @@
 #                                               warns at the end if no watcher delivers.
 # watch-bridge.sh --numbers                   — thread numbers used more than once (diagnosis).
 # watch-bridge.sh --new-thread <slug> --title "<title>" [nr]
+# watch-bridge.sh --new-message <slug|nr> --from <id> --to <a,b> [options]   (text from stdin)
+#                                            -- writes a message: ONE clock reading for
+#                                               filename and date:, front matter from the
+#                                               options, ids checked against README.md.
 #                                             — creates threads/<NNN>-<slug>/msgs, writes the
 #                                               cover sheet thread.md (title, created) and prints
 #                                               the folder name; [nr] forces a number (a
@@ -55,6 +59,8 @@ usage: watch-bridge.sh <session-id> [poll-seconds] [--once]
        watch-bridge.sh --fold <session-id>
        watch-bridge.sh --numbers
        watch-bridge.sh --new-thread <slug> --title "<title>" [number]
+       watch-bridge.sh --new-message <slug|nr> --from <id> --to <a,b> [--type t] [--in-reply-to f]
+                       [--sets-owner id] [--sets-status s] [--cc a,b] [--body file]   (text from stdin)
        watch-bridge.sh --reap [--dry-run] [--all]
 EOF
   exit 64
@@ -1680,11 +1686,211 @@ new_thread() { # <slug> --title "<title>" [number, for a deliberate series]
   echo "$num-$slug"
 }
 
+
+# --- --new-message: write a bridge message without hand-building the name ---------------
+#
+# Why it exists: four malformed message names in one month in a live bridge, three of them
+# from the session that had built the name-form check -- every one from a hand-typed stamp
+# (`date -u +%Y%m%dT%H%M%SZ` instead of the recipe, which only drops the colons). A malformed
+# name wins every fold until somebody renames it (one thread stayed OPEN for three days), and
+# a bot copied the wrong form out of an example's `in-reply-to`. Thread numbers had the same
+# pattern, and `--new-thread` ended it: *a rule you have to type out competes with the
+# shortcut and loses*. So the command replaces the recipe, not the warning above it.
+#
+#   watch-bridge.sh --new-message <slug|nr> --from <id> --to <a,b> [--type <t>]
+#                   [--in-reply-to <file>|-] [--sets-owner <id>] [--sets-status <s>]
+#                   [--cc <a,b>] [--body <file>]        (text from stdin otherwise)
+#
+# ONE `date -u`, two renderings: filename and `date:` field come from the same clock reading.
+# Temp file first, then `mv` -- a watcher reading at the same moment never sees half a file.
+# It checks what a command CAN check, and loudly: sender and recipients against the
+# participant table in README.md (no guessing, no silence), `+` in `to:` (reaches nobody),
+# `in-reply-to` against the thread, `sets-status` against the protocol's five values. The
+# body is the caller's; a second front matter inside it is refused. Output: the filename --
+# it is the `in-reply-to` of the next reply.
+
+readme_ids() { # $1 = README.md -> every id of the participant table, one per line
+  # sed, not awk: the awk rule for the participant table exists exactly ONCE
+  # (`readme_pathmap`), and a test keeps its copies identical -- a second awk line with
+  # the same gsub was a finding there at once. Only the id column is wanted here.
+  sed -nE 's/^\| `([a-z0-9][a-z0-9._-]*)` \|.*$/\1/p' "$1" | tr -d '\r'
+}
+
+new_message() {
+  local slug="" from="" to="" type="info" irt="-" owner="" status="" cc="" bodyfile="" force=0
+  local a
+  while [[ $# -gt 0 ]]; do
+    a="$1"; shift
+    case "$a" in
+      --from)          from="${1:-}";     [[ $# -gt 0 ]] && shift ;;
+      --from=*)        from="${a#--from=}" ;;
+      --to)            to="${1:-}";       [[ $# -gt 0 ]] && shift ;;
+      --to=*)          to="${a#--to=}" ;;
+      --type)          type="${1:-}";     [[ $# -gt 0 ]] && shift ;;
+      --type=*)        type="${a#--type=}" ;;
+      --in-reply-to)   irt="${1:-}";      [[ $# -gt 0 ]] && shift ;;
+      --in-reply-to=*) irt="${a#--in-reply-to=}" ;;
+      --sets-owner)    owner="${1:-}";    [[ $# -gt 0 ]] && shift ;;
+      --sets-owner=*)  owner="${a#--sets-owner=}" ;;
+      --sets-status)   status="${1:-}";   [[ $# -gt 0 ]] && shift ;;
+      --sets-status=*) status="${a#--sets-status=}" ;;
+      --cc)            cc="${1:-}";       [[ $# -gt 0 ]] && shift ;;
+      --cc=*)          cc="${a#--cc=}" ;;
+      --body)          bodyfile="${1:-}"; [[ $# -gt 0 ]] && shift ;;
+      --body=*)        bodyfile="${a#--body=}" ;;
+      -f|--force)      force=1 ;;
+      --*)             echo "watch-bridge: unknown argument '$a'." >&2; usage ;;
+      *)
+        if [[ -z "$slug" ]]; then slug="$a"
+        else echo "watch-bridge: too many arguments ('$a') -- recipients go after --to." >&2; usage
+        fi ;;
+    esac
+  done
+  [[ -n "$slug" ]] || { echo "watch-bridge: --new-message needs the thread (slug or number)." >&2; usage; }
+  [[ -n "$from" ]] || { echo "watch-bridge: --from <id> is missing -- the sender is part of the filename, the command cannot know it." >&2; usage; }
+  [[ -n "$to" ]]   || { echo "watch-bridge: --to <a,b> is missing -- without recipients nobody delivers." >&2; usage; }
+  resolve_bridge
+
+  # Thread: the slug verbatim, or a number that matches exactly ONE folder in threads/.
+  # Numbers are how threads are named in conversation; a hit in the archive does not count,
+  # nobody writes there any more.
+  local dir=""
+  case "$slug" in
+    */*) echo "watch-bridge: thread contains '/'." >&2; exit 2 ;;
+  esac
+  if [[ -d "$bridge/threads/$slug/msgs" ]]; then
+    dir="$bridge/threads/$slug"
+  elif [[ "$slug" =~ ^[0-9]+$ ]]; then
+    local nr; nr="$(printf '%03d' "$((10#$slug))")"
+    local d hits=()
+    for d in "$bridge"/threads/"$nr"-*/; do [[ -d "$d" ]] && hits+=("$(basename "$d")"); done
+    if [[ ${#hits[@]} -eq 1 ]]; then
+      dir="$bridge/threads/${hits[0]}"
+    elif [[ ${#hits[@]} -gt 1 ]]; then
+      echo "watch-bridge: number $nr is ambiguous (${hits[*]}) -- name the slug." >&2; exit 2
+    fi
+  fi
+  if [[ -z "$dir" ]]; then
+    echo "watch-bridge: thread '$slug' does not exist in threads/ (the archive does not count -- nothing is written there)." >&2
+    echo "              Create one: watch-bridge.sh --new-thread <slug> --title \"<title>\"" >&2
+    exit 2
+  fi
+  [[ -d "$dir/msgs" ]] || mkdir -p "$dir/msgs" || exit 1
+
+  # Ids: form, and the participant table. The table is the registry -- whoever is not in it
+  # gets no push and falls out of every fold. A typo in `--to` would otherwise be exactly the
+  # silent kind of failure this channel has most often. Without a README (test bridge, another
+  # machine) only the form is checked; `--force` lets unknown ids through -- and says so.
+  local ids="" known=1 t unknown=""
+  if [[ -r "$bridge/README.md" ]]; then
+    ids="$(readme_ids "$bridge/README.md")"
+  else
+    known=0
+  fi
+  id_ok() { [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; }
+  id_known() { [[ $known -eq 0 ]] || grep -qx -- "$1" <<< "$ids"; }
+  if ! id_ok "$from"; then echo "watch-bridge: --from '$from' is not an id (a-z, 0-9, . _ -)." >&2; exit 2; fi
+  if ! id_known "$from"; then
+    if [[ $force -eq 1 ]]; then echo "watch-bridge: NOTE: sender '$from' is not in the participant table (--force)." >&2
+    else echo "watch-bridge: sender '$from' is not in the README's participant table -- a typo? (--force overrides)." >&2; exit 2; fi
+  fi
+  # `to:` is a comma list. `all` is a notice, not a delivery path -- allowed, but named. A `+`
+  # inside a token reaches nobody: refused, not reinterpreted -- otherwise the same thing would
+  # have two spellings.
+  local tolist="" ccnorm=""
+  for t in ${to//,/ }; do
+    [[ -n "$t" ]] || continue
+    if [[ "$t" == *+* ]]; then
+      echo "watch-bridge: '$t' in --to reaches nobody -- the separator is the comma alone: --to '${t//+/, }'." >&2; exit 2
+    fi
+    if [[ "$t" == all ]]; then
+      echo "watch-bridge: NOTE: 'all' is a notice, not a delivery path -- nobody is pushed, nothing is folded." >&2
+    elif ! id_ok "$t"; then
+      echo "watch-bridge: '$t' in --to is not an id." >&2; exit 2
+    elif ! id_known "$t"; then
+      unknown+="${unknown:+, }$t"
+    fi
+    tolist+="${tolist:+, }$t"
+  done
+  [[ -n "$tolist" ]] || { echo "watch-bridge: --to is empty." >&2; exit 2; }
+  if [[ -n "$unknown" ]]; then
+    if [[ $force -eq 1 ]]; then echo "watch-bridge: NOTE: recipients not in the participant table: $unknown (--force)." >&2
+    else echo "watch-bridge: recipients not in the README's participant table: $unknown -- a typo? (--force overrides)." >&2; exit 2; fi
+  fi
+  for t in ${cc//,/ }; do [[ -n "$t" ]] && ccnorm+="${ccnorm:+, }$t"; done
+  if [[ -n "$owner" ]]; then
+    id_ok "$owner" || { echo "watch-bridge: --sets-owner '$owner' is not an id." >&2; exit 2; }
+    if ! id_known "$owner"; then
+      if [[ $force -eq 1 ]]; then echo "watch-bridge: NOTE: --sets-owner '$owner' is not in the participant table (--force)." >&2
+      else echo "watch-bridge: --sets-owner '$owner' is not in the participant table -- a typo? (--force overrides)." >&2; exit 2; fi
+    fi
+  fi
+  case "$status" in
+    ""|OPEN|IN_PROGRESS|NEEDS_INFO|BLOCKED|DONE) ;;
+    *) echo "watch-bridge: --sets-status '$status' -- allowed: OPEN, IN_PROGRESS, NEEDS_INFO, BLOCKED, DONE." >&2; exit 2 ;;
+  esac
+  [[ "$type" =~ ^[a-z][a-z-]*$ ]] || { echo "watch-bridge: --type '$type' -- one lowercase word (task, answer, info, ack, status, request, report)." >&2; exit 2; }
+  # in-reply-to: the filename of the message being answered, in THIS thread. If it is not
+  # there it is usually a retyped name -- the message still goes out (a warning, no abort),
+  # because on another machine the file may still be syncing.
+  if [[ "$irt" != "-" ]]; then
+    irt="$(basename "$irt")"
+    [[ -f "$dir/msgs/$irt" ]] || echo "watch-bridge: NOTE: --in-reply-to '$irt' is not in $(basename "$dir")/msgs -- retyped? (sync may still be pending)." >&2
+  fi
+
+  # Body: a file or stdin. A body that itself starts with `---` would be a second front
+  # matter -- the most common shape when someone passes the whole message instead of the text.
+  local body
+  if [[ -n "$bodyfile" ]]; then
+    [[ -r "$bodyfile" ]] || { echo "watch-bridge: --body '$bodyfile' is not readable." >&2; exit 2; }
+    body="$(cat "$bodyfile"; printf x)"
+  else
+    if [[ -t 0 ]]; then
+      echo "watch-bridge: the text comes from stdin (heredoc) or from --body <file> -- nothing arrived here." >&2; exit 2
+    fi
+    body="$(cat; printf x)"
+  fi
+  body="${body%x}"
+  body="${body//$'\r'/}"
+  if [[ -z "${body//[[:space:]]/}" ]]; then echo "watch-bridge: the text is empty." >&2; exit 2; fi
+  case "$body" in
+    ---*) echo "watch-bridge: the text starts with '---' -- the command writes the front matter; pass the text only." >&2; exit 2 ;;
+  esac
+  [[ "$body" == *$'\n' ]] || body+=$'\n'
+
+  # ONE clock reading, two renderings. Exactly the spot where the recipe was retyped four
+  # times and wrong four times.
+  local ts rnd n
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  rnd="$(openssl rand -hex 2 2>/dev/null)" || rnd=""
+  [[ "$rnd" =~ ^[0-9a-f]{4}$ ]] || rnd="$(printf '%04x' "$((RANDOM % 65536))")"
+  n="$(printf %s "$ts" | tr -d :)__${from}__${rnd}.md"
+  [[ -e "$dir/msgs/$n" ]] && { echo "watch-bridge: '$n' already exists -- please try again." >&2; exit 1; }
+
+  {
+    printf -- '---\n'
+    printf 'from: %s\n' "$from"
+    printf 'to: %s\n' "$tolist"
+    [[ -n "$ccnorm" ]] && printf 'cc: %s\n' "$ccnorm"
+    printf 'type: %s\n' "$type"
+    printf 'date: %s\n' "$ts"
+    printf 'in-reply-to: %s\n' "$irt"
+    [[ -n "$owner" ]]  && printf 'sets-owner: %s\n' "$owner"
+    [[ -n "$status" ]] && printf 'sets-status: %s\n' "$status"
+    printf -- '---\n\n'
+    printf '%s' "$body"
+  } > "$dir/msgs/.$n.tmp" || { echo "watch-bridge: could not write the temp file." >&2; exit 1; }
+  mv "$dir/msgs/.$n.tmp" "$dir/msgs/$n" || { rm -f "$dir/msgs/.$n.tmp"; echo "watch-bridge: mv failed." >&2; exit 1; }
+  # Create first, talk afterwards (the same lesson as --new-thread).
+  echo "$n"
+}
+
 case "${1:-}" in
   --status|-s) status_report "${2:-}"; exit 0 ;;
   --fold|--scan) [[ -n "${2:-}" ]] || usage; fold_report "$2"; exit 0 ;;
   --numbers) numbers_report; exit 0 ;;
   --new-thread) shift; new_thread "$@"; exit 0 ;;
+  --new-message) shift; new_message "$@"; exit 0 ;;
   --reap) shift; reap_spinners "$@"; exit 0 ;;
   ""|-h|--help) usage ;;
 esac

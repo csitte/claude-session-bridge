@@ -15,6 +15,20 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **`watch-bridge.sh --new-message` writes a message so nobody hand-builds the name.** One
+  `date -u` for filename and `date:` field, front matter from the options (`--from`, `--to`,
+  `--type`, `--in-reply-to`, `--sets-owner`, `--sets-status`, `--cc`), the text from stdin or
+  `--body <file>`, temp file then `mv`, and the filename on stdout -- the `in-reply-to` of the
+  next reply. It checks what a command can check, loudly: sender, recipients and owner against
+  the participant table in `README.md` (`--force` overrides and says so), a `+` inside a `to:`
+  token is refused with the comma form shown, `sets-status` must be one of the five protocol
+  values, a body starting with `---` is refused as a second front matter; a missing
+  `in-reply-to` file only warns, because it may still be syncing. A thread may be named by its
+  number when that matches exactly one folder in `threads/`. Why: four malformed names in one
+  month in a live bridge, each from a hand-typed stamp -- and a bot copied the wrong form out
+  of an example's `in-reply-to`. Same pattern as thread numbers before `--new-thread`: a rule
+  you have to type out loses to the shortcut. `docs/protocol.md` shows the command first, the
+  recipe stays as the explanation. (`bridge/watch-bridge.sh`)
 - **The watcher reports a near miss instead of swallowing it: `to: a+b`.** Addressing is
   token-exact and splits on commas alone, so a pair joined by `+` is one token that is
   nobody's id. Such a message is neither pushed nor folded -- the fold goes by `owner` --

@@ -75,6 +75,24 @@ sets-status: OPEN        # OPTIONAL — moves the thread to this state
 <terse body; link commits and files rather than pasting them>
 ```
 
+**Write it with the command** -- the recipe below stays as the explanation of what it does. Four
+malformed names in one month in a live bridge, each from a hand-typed stamp, are why:
+
+```bash
+bash bridge/watch-bridge.sh --new-message <slug|nr> --from <your-id> --to "a, b" \
+     [--type answer] [--in-reply-to <file>] [--sets-owner <id>] [--sets-status OPEN] <<'EOF'
+# Title
+
+Text.
+EOF
+```
+
+One `date -u` for filename and `date:`, front matter from the options, the text from the heredoc,
+temp file then `mv`; ids are checked against the participant table in `README.md`, a `+` in
+`--to` is refused, `--sets-status` must be one of the five protocol values, and the command
+prints the filename -- the `in-reply-to` of the next reply. A thread may be named by its number
+when that number matches exactly one folder in `threads/`.
+
 Create it with temp-then-rename so a concurrent reader never sees a half-written file:
 
 ```bash

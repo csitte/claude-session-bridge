@@ -1557,6 +1557,88 @@ test_new_thread() {
   unset SESSION_BRIDGE_DIR
 }
 
+test_new_message() {
+  head_ "watcher: writing a message without hand-building the name (--new-message)"
+  local b; b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  mkdir -p "$b/threads/440-demo/msgs"
+  # A participant table, in the README's own shape: the command checks ids against it.
+  printf '# README\n\n| Id | Role | Path |\n|---|---|---|\n| `session-a` | one | `/x/a` |\n| `session-b` | two | `/x/b` |\n| `bot-c` | bot | — |\n' > "$b/README.md"
+  post "$b" "2026-01-01T000000Z__session-b__0001" session-b session-a 440-demo
+  local out rc n
+
+  # --- the happy path: one clock reading, front matter from options, body from stdin -------
+  n="$(printf '# Title\n\nBody with `ticks` and $dollar.\n' | bash "$WATCHER" --new-message 440 \
+        --from session-a --to "session-b, bot-c" --type answer \
+        --in-reply-to 2026-01-01T000000Z__session-b__0001.md --sets-owner session-b --sets-status OPEN --cc someone)"
+  rc=$?
+  assert_eq "exit 0 on the happy path" "0" "$rc"
+  if [[ "$n" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z__session-a__[0-9a-f]{4}\.md$ ]]; then
+    ok "the printed name has the protocol's form (dashes kept, colons dropped, 4 hex)"
+  else bad "the printed name has the protocol's form" "$n"; fi
+  local f="$b/threads/440-demo/msgs/$n"
+  assert_eq "a number resolves to the one thread that carries it" "yes" "$([[ -f "$f" ]] && echo yes || echo no)"
+  assert_eq "date: is the same clock reading as the name" "${n%%__*}" \
+    "$(grep '^date:' "$f" | sed 's/^date: //; s/://g')"
+  assert_eq "to: is a comma list, normalised" "to: session-b, bot-c" "$(grep '^to:' "$f")"
+  assert_eq "cc: is written" "cc: someone" "$(grep '^cc:' "$f")"
+  assert_eq "type, in-reply-to, sets-owner, sets-status are written" "4" \
+    "$(grep -cE '^(type: answer|in-reply-to: 2026-01-01T000000Z__session-b__0001\.md|sets-owner: session-b|sets-status: OPEN)$' "$f")"
+  assert_eq "the body follows the closed front matter, untouched" "yes" \
+    "$(grep -qF 'Body with `ticks` and $dollar.' "$f" && [[ "$(sed -n '1p' "$f")" == "---" ]] && echo yes || echo no)"
+  assert_eq "no temp file is left behind" "0" "$(ls -1a "$b/threads/440-demo/msgs" | grep -c '^\.' | awk '{print $1-2}')"
+
+  # --- what it refuses, and that nothing is created then --------------------------------
+  local before; before="$(ls -1 "$b/threads/440-demo/msgs" | wc -l | tr -d ' ')"
+  out="$(echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to "session-b+bot-c" 2>&1)"; rc=$?
+  assert_eq "a + inside a to: token is refused (it reaches nobody)" "2" "$rc"
+  if printf '%s' "$out" | grep -qF -- "--to 'session-b, bot-c'"; then
+    ok "... and the message shows the comma form with the caller's ids"
+  else bad "... and the message shows the comma form" "$out"; fi
+  out="$(echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to nobody 2>&1)"; rc=$?
+  assert_eq "an id missing from the participant table is refused" "2" "$rc"
+  echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to nobody --force >/dev/null 2>&1
+  assert_eq "--force lets an unknown id through" "0" "$?"
+  out="$(echo x | bash "$WATCHER" --new-message 440-demo --from typo-id --to session-b 2>&1)"; rc=$?
+  assert_eq "an unknown sender is refused too" "2" "$rc"
+  printf -- '---\nfrom: x\n---\n' | bash "$WATCHER" --new-message 440-demo --from session-a --to session-b >/dev/null 2>&1
+  assert_eq "a body that starts with --- (a second front matter) is refused" "2" "$?"
+  echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to session-b --sets-status FINISHED >/dev/null 2>&1
+  assert_eq "a status outside the five protocol values is refused" "2" "$?"
+  echo x | bash "$WATCHER" --new-message 440-demo --from session-a >/dev/null 2>&1
+  assert_eq "no --to -> usage, exit 64" "64" "$?"
+  echo x | bash "$WATCHER" --new-message 440-demo --to session-b >/dev/null 2>&1
+  assert_eq "no --from -> usage, exit 64" "64" "$?"
+  echo x | bash "$WATCHER" --new-message 999 --from session-a --to session-b >/dev/null 2>&1
+  assert_eq "a thread that does not exist is refused" "2" "$?"
+  printf '  \n' | bash "$WATCHER" --new-message 440-demo --from session-a --to session-b >/dev/null 2>&1
+  assert_eq "an empty body is refused" "2" "$?"
+  assert_eq "the refusals created exactly the one --force file, nothing else" "$((before + 1))" \
+    "$(ls -1 "$b/threads/440-demo/msgs" | wc -l | tr -d ' ')"
+
+  # --- warnings that do not abort ------------------------------------------------------------
+  out="$(echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to session-b --in-reply-to retyped.md 2>&1 >/dev/null)"; rc=$?
+  assert_eq "a missing in-reply-to file warns but does not abort (sync may be pending)" "0" "$rc"
+  if printf '%s' "$out" | grep -q "retyped.md"; then ok "... and names the file"; else bad "... and names the file" "$out"; fi
+  out="$(echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to all 2>&1 >/dev/null)"; rc=$?
+  assert_eq "to: all is allowed" "0" "$rc"
+  if printf '%s' "$out" | grep -qi "notice"; then ok "... but named as a notice, not a delivery path"; else bad "... but named as a notice" "$out"; fi
+
+  # --- the body may come from a file, and CR is stripped ------------------------------------
+  printf '# From file\r\n\r\nline\r\n' > "$TMPROOT/body.txt"
+  n="$(bash "$WATCHER" --new-message 440-demo --from session-a --to session-b --body "$TMPROOT/body.txt" 2>/dev/null)"
+  # Counted in bytes, not with grep: msys grep matches a CR pattern on every line of a text
+  # file (hits == line count is the tell-tale) -- the first version of this line was red
+  # with 11 hits on a file that had none.
+  assert_eq "--body <file> works and CR is dropped" "0" "$(tr -cd '\r' < "$b/threads/440-demo/msgs/$n" | wc -c | tr -d ' ')"
+
+  # --- without a README, only the form of an id is checked ----------------------------------
+  rm -f "$b/README.md"
+  echo x | bash "$WATCHER" --new-message 440-demo --from anyone --to whoever >/dev/null 2>&1
+  assert_eq "without a participant table, unknown ids are not refused" "0" "$?"
+  echo x | bash "$WATCHER" --new-message 440-demo --from "Bad Id" --to whoever >/dev/null 2>&1
+  assert_eq "... but a malformed id still is" "2" "$?"
+}
+
 test_numbers() {
   head_ "watcher: duplicate thread numbers (--numbers)"
   local b="$TMPROOT/numbers.$RANDOM"
@@ -4564,6 +4646,7 @@ case "${1:-all}" in
   orphan) test_orphan ;;
   hook) test_hook ;;
   handover) test_handover ;;
+  new_message) test_new_message ;;
   commands) test_commands ;;
   linkcommands) test_linkcommands ;;
   linkskills) test_linkskills ;;
@@ -4593,7 +4676,7 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 
