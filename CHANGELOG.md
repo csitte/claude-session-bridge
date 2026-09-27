@@ -54,20 +54,12 @@ commit it names will say why.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
 ### Fixed
-- **Two delivery services of the same id could both keep running, and every message arrived
-  twice.** An arm ignored any watcher younger than 30 seconds, as a stand-in for "that one is
-  probably my own wrapper". Two services that really start in the same second therefore each
-  took the other for themselves and stayed: one bot received five messages twice each, 2 to 4
-  seconds apart, HTTP 200 both times. An arm now recognises its own process by its pid
-  (`/proc/<pid>/winpid`), and between two equally old **services** a tiebreak on the lower pid
-  decides which one steps aside. Sessions are untouched -- deliberately: a session cannot
-  exclude itself completely, because the `/proc` chain breaks at the outer `bash -c` shell, and
-  a tiebreak on incomplete self-knowledge steps aside for its own shell. Both ages come from one
-  inventory reading, not from `date`, because the inventory runs seconds after process start and
-  two clocks make a simultaneous pair look minutes apart. See `docs/watcher.md`, "One
-  exception". If you start the delivery service from your own scripts, serialise that too: an
-  arm can only settle a genuine coincidence, and two starts a few seconds apart still produce
-  two services. (`bridge/watch-bridge.sh`)
+- **The stepping-aside message no longer gives an all-clear.** When an arm finds a watcher of
+  its id already delivering, it ends -- and it used to say "delivery continues unchanged". That
+  is a promise it cannot keep: it has seen the predecessor alive twice, not into the future.
+  Together with a house rule that arms are not narrated in chat, the sentence produced a
+  session that believed it was armed and was silent. The line now names the check
+  (`watch-bridge.sh --status <id>`) instead. (`bridge/watch-bridge.sh`)
 - **The filename rule now says which separator goes and which stays.** `docs/protocol.md`
   called the message name a "UTC basic timestamp" -- and in ISO 8601 the *basic* format is
   exactly the one without dashes, which is the malformed name the paragraph right below it

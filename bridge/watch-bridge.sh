@@ -48,46 +48,6 @@
 
 set -u
 
-# Start time of THIS process. `handle_existing` needs it to tell "older than me" from
-# "started at the same moment as me" -- see there. Set at the very top, because every
-# later place already contains waiting time (the arm lock waits up to 30 s), which would
-# produce a wrong self-age.
-SELF_START="$(date +%s 2>/dev/null || echo 0)"
-
-# self_winpids -- the Windows PIDs of this process and of its own wrappers, one per line.
-#
-# WHY: The inventory carries WINDOWS pids (it comes from Win32_Process); `$$` is the msys
-# pid -- the two numbers have nothing to do with each other. Without the conversion,
-# `handle_existing` cannot tell its own process from a foreign watcher of the same id, and
-# that is exactly what the age buffer this replaces was standing in for.
-#
-# The edge exists only at the msys level, and there it is reliable: `/proc/<pid>/winpid` is
-# the number from the inventory, `/proc/<pid>/ppid` leads to the wrapper (the same edge the
-# orphan check and `resolve_unknown_arms` stand on). The wrappers belong in the set: this
-# arm's own `bash -c` wrapper carries the same id and would otherwise count as a foreign
-# wrapper -- "wrapper without script", although the script IS this process.
-#
-# WATCH_BRIDGE_SELF_WINPID sets the own pid directly; the suite needs that, because it
-# replaces `powershell.exe` with an invented process table this process is not part of.
-self_winpids() {
-  if [[ -n "${WATCH_BRIDGE_SELF_WINPID:-}" ]]; then
-    printf '%s\n' "$WATCH_BRIDGE_SELF_WINPID"; return 0
-  fi
-  # Read with `read <`, NOT with `$(cat ...)`: every command substitution is a process of its
-  # own, and msys charges dearly for it (measured 0.28 s per call). `handle_existing` runs on
-  # EVERY arm, and in the suite the overhead blew a 3 s budget -- the arm was killed before it
-  # could reap.
-  local p="$$" w pp d=0
-  while [[ -n "$p" && "$p" != 0 && $d -lt 6 ]]; do
-    w=""; [[ -r "/proc/$p/winpid" ]] && { read -r w < "/proc/$p/winpid" || w=""; }
-    [[ "$w" =~ ^[0-9]+$ ]] && printf '%s\n' "$w"
-    pp=""; [[ -r "/proc/$p/ppid" ]] && { read -r pp < "/proc/$p/ppid" || pp=""; }
-    [[ "$pp" =~ ^[0-9]+$ ]] || break
-    p="$pp"
-    d=$((d+1))
-  done
-}
-
 usage() {
   cat >&2 <<'EOF'
 usage: watch-bridge.sh <session-id> [poll-seconds] [--once]
@@ -1762,10 +1722,8 @@ done
 #                       gap of the kind that disarming before `/clear` tears open.
 #   silent remnant   -> reap it and take over.
 #
-# WHO COUNTS AS A PREDECESSOR: until 2026-09-26, every arm of the same id older than 30 s
-# -- a buffer meant to keep this arm's own processes out, which also kept out every foreign
-# arm that really did start at the same moment. Now the own process is recognised by its pid
-# (`self_winpids`), and equal age is settled by a tiebreak. The reasoning is at the filter.
+# "Old" means older than 30 s: this arm's own wrapper processes are only seconds old
+# and must not be counted.
 handle_existing() {
   [[ -z "${WATCH_BRIDGE_NO_REAP:-}" ]] || return 0
 
@@ -1786,33 +1744,6 @@ handle_existing() {
     i=$((i+1)); sleep 0.5
   done
 
-  # Who am I in the inventory, and how long have I been running? Both decide below what
-  # counts as a predecessor (see the block above the filter).
-  local -A self=()
-  local sp my_pid="" my_age
-  while read -r sp; do
-    [[ -n "$sp" ]] || continue
-    self["$sp"]=1
-    [[ -n "$my_pid" ]] || my_pid="$sp"   # first line is this process, then its shells
-  done < <(self_winpids)
-
-  # ONE inventory, read twice: first to find the own age, then to decide. The detour is
-  # necessary because both numbers must come from the SAME measurement -- otherwise the
-  # tiebreak compares two clocks. That is exactly what broke the first attempt: `my_age`
-  # from `date` was taken BEFORE the inventory, its `age` values afterwards, and the
-  # systematic skew was the inventory's own runtime (1 to 5 s here, more with lock waiting).
-  # Two services started in the same second thus looked "of different age", and neither
-  # stepped aside.
-  local inv; inv="$(watcher_inventory)"
-  local ikind iid ipid iage iunder istarted
-  my_age=$(( $(date +%s 2>/dev/null || echo 0) - SELF_START ))
-  [[ "$my_age" -ge 0 ]] || my_age=0
-  while IFS='|' read -r ikind iid ipid iage iunder istarted; do
-    [[ "$ikind" == script || "$ikind" == service ]] || continue
-    [[ -n "${self[${ipid:-x}]:-}" ]] || continue
-    my_age="${iage:-0}"; break
-  done <<< "$inv"
-
   local kind id pid age under started
   local delivering=0 script_pid="" unattributable=0 wrapper_live=0
   local -a stale=() spin=()
@@ -1830,52 +1761,7 @@ handle_existing() {
     fi
     [[ "$kind" == script || "$kind" == wrapper || "$kind" == service ]] || continue
     [[ "${id:-}" == "$me" ]] || continue
-
-    # I AM NOT MY OWN PREDECESSOR. Until 2026-09-26 an age buffer stood here (`age > 30`):
-    # anything younger than half a minute counted as "probably belongs to me". That is a
-    # proxy property, and it failed at exactly what it was built for -- two arms that
-    # REALLY start at the same time: on 2026-09-26 a bulk start launched one delivery
-    # service per bot and a second call in the same second launched another; each saw the
-    # other as "young, so it is me" and stayed. One bot then received five messages TWICE
-    # each (counted in its webhook log: 2 to 4 seconds apart, HTTP 200 both times). The arm
-    # lock had serialised correctly -- the age buffer made it pointless.
-    [[ -n "${self[${pid:-x}]:-}" ]] && continue
-
-    # STARTED AT THE SAME MOMENT: exactly ONE of them may step aside. `age` and `my_age`
-    # measure the same thing (runtime in seconds), so they compare directly:
-    #   older than me   -> a real predecessor, this arm steps aside.
-    #   younger than me -> it sees ME as the predecessor and steps aside; ignore it.
-    #   same age        -> one second is not enough resolution, so the lower pid wins.
-    # The tiebreak must be total and identical on both sides, otherwise either both step
-    # aside (delivery off entirely, and silently) or neither does (duplicate delivery).
-    # With no determinable own pid, equal age is ignored -- the same line as with arms
-    # without an id: visible too much beats invisible too little.
-    if [[ "${age:-0}" -gt 30 ]]; then
-      : # an established predecessor -- as before 2026-09-26, unchanged
-    elif [[ "$kind" == service && $service -eq 1 && -n "$my_pid" ]]; then
-      # ONLY HERE is the tiebreak allowed: a service seeing an equally young service of the
-      # same id. The cut is measured, not chosen (2026-09-26):
-      #
-      # A SERVICE knows itself completely. Its shell is `bridge-push.sh <id>`, which has no
-      # `watch-bridge.sh` in its command line and therefore does not appear in this inventory
-      # at all -- so the own pid is the only line that is this process.
-      #
-      # A SESSION does not know itself completely: between it and `claude.exe` there are TWO
-      # `bash -c` shells, and the /proc chain breaks at the first one whose parent is not an
-      # msys process. The self-exclusion is incomplete there, and a tiebreak built on
-      # incomplete self-knowledge steps aside for its own shell. The first attempt did
-      # exactly that: within 20 minutes a session reported four arms stepping aside "in
-      # favour of" changing pids, while --status found no watcher seconds later. For sessions
-      # the 30-second threshold therefore still decides alone.
-      local skew=$(( ${age:-0} - my_age ))
-      [[ "$skew" -lt 0 ]] && skew=$(( -skew ))
-      [[ "$skew" -le 2 ]] || continue
-      # The tiebreak must be total and identical on both sides, otherwise either both step
-      # aside (delivery off entirely, and silently) or neither does (duplicate delivery).
-      [[ "${pid:-0}" -lt "$my_pid" ]] || continue
-    else
-      continue
-    fi
+    [[ "${age:-0}" -gt 30 ]] || continue
     # A running service IS the predecessor to step aside for, and it never belongs in
     # `stale`. Exactly that happened on the first trial run: the delivery service was
     # running, the next start took it for a silent remnant and killed it. Nothing was
@@ -1888,7 +1774,7 @@ handle_existing() {
     [[ "$kind" == wrapper && "$under" == 1 ]] && wrapper_live=1
     [[ "$kind" == script ]] && script_pid="$pid"
     stale+=("$pid")
-  done <<< "$inv"
+  done < <(watcher_inventory)
 
   # "Delivering" here means what it means in --status: a wrapper under claude.exe AND a
   # script of the same id. Until 2026-09-14 the wrapper alone was enough -- and a wrapper
@@ -1902,9 +1788,8 @@ handle_existing() {
   # untouched -- arms without a determinable id are already out via `continue` above, so
   # wrapper_live never sees them.
   #
-  # The age buffer above still covers the startup case (wrapper up, script still coming): a
-  # shell under 30 s is not considered at all, and the tiebreak applies to services only --
-  # a shell is never one.
+  # The 30-second filter above covers the startup case: an arm whose wrapper is up and
+  # whose script is still coming is younger than 30s and is not considered at all.
   [[ $wrapper_live -eq 1 && -n "$script_pid" ]] && delivering=1
 
   # ALWAYS reap spinners -- even if this arm is about to step aside. They have nothing
@@ -1952,8 +1837,15 @@ handle_existing() {
     # No more ${script_pid:-?}: given the condition above the pid cannot be empty here.
     # That "?" was the only visible trace of the bug, and it sat in a sentence that gives
     # the all-clear.
+    # NO ALL-CLEAR ANY MORE (2026-09-26, field report). This line used to end with "delivery
+    # continues unchanged" -- a promise this arm cannot keep: it has seen the predecessor
+    # alive twice (hand-over check), not into the future. Together with a house rule that arms
+    # are not narrated in chat, the sentence produced the very state the push path exists to
+    # prevent: a session that believes it is armed and is silent. One session read four such
+    # step-asides before the repetition made it suspicious -- the message itself gave no cause.
     echo "watch-bridge: a watcher for '$me' is already delivering (PID $script_pid) —" \
-         "this arm ends, delivery continues unchanged."
+         "this arm ends. Whether the predecessor keeps running, only" \
+         "'watch-bridge.sh --status $me' can tell."
     exit 0
   fi
 

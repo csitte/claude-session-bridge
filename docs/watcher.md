@@ -326,32 +326,6 @@ watcher's wrapper up to a live `claude.exe` — not guessed from the script proc
 always looks orphaned (see below). Anything younger than 30 seconds is ignored, because the
 arming process's own wrapper is seconds old.
 
-**One exception: two delivery services started in the same second.** The 30-second buffer is a
-proxy for "this is probably me", and it failed where the real case exists: a bulk start and a
-single start both launch the delivery services, and if they run in the same second, each sees
-"not running" and starts one. Both then treat the other as "young, so it is me" and stay — one
-bot received five messages twice each (counted in its webhook log, 2 to 4 seconds apart, HTTP
-200 both times). So for a **service** (`--service`) that sees an equally young service of the
-same id, a tiebreak decides: the own process is recognised by its pid (`/proc/<pid>/winpid`),
-and of two equally old ones the **lower pid** wins; the other steps aside. Three conditions,
-each from a measured failure:
-
-- **Services only.** A service knows itself completely — its shell (`bridge-push.sh <id>`) has
-  no `watch-bridge.sh` in its command line and never appears in the inventory. A **session**
-  does not: two `bash -c` shells lie between it and `claude.exe`, and the `/proc` chain breaks
-  before the outer one. A first attempt let the tiebreak apply to sessions too, and within 20
-  minutes a session reported four arms stepping aside in favour of changing pids, while
-  `--status` found no watcher seconds later.
-- **Only a genuine coincidence (±2 s).** A service five seconds older may be one that is
-  *dying* — that case belongs to the hand-over check below, not to the tiebreak.
-- **Both ages from one measurement.** The own age comes from the inventory's own line, not from
-  `date`: the inventory runs 1 to 5 s after start, so a real pair reads 8/8 there while the wall
-  clock says 0. With two clocks the pair looks "5 seconds apart" and neither steps aside — which
-  is exactly what the first field test of this fix did: nothing.
-
-The complementary half lives in the launcher: the function that starts the services holds a
-per-id lock, so checking and starting cannot interleave.
-
 Disable with `WATCH_BRIDGE_NO_REAP=1`. **The match is on the id alone**, not on the script
 path or the bridge directory — a hand-run with a real id reaches into that session's live
 watcher even from a different directory. Use a test id when experimenting.

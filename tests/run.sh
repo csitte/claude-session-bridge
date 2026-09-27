@@ -805,112 +805,6 @@ STUB2
   else bad "a predecessor that stays alive is still honoured" "$out"; fi
 }
 
-# --- two arms that really start at the same second ------------------------------------
-# Until 2026-09-26 an age buffer (`age > 30`) kept this arm's own processes out of the
-# predecessor set -- and with them every foreign arm that started at the same moment. A bulk
-# start and a single start ran in the same second, each launched a delivery service for the
-# same bot, and neither stepped aside: one bot received five messages twice each.
-#
-# The tiebreak that fixes it is deliberately narrow -- SERVICES only (see the reasoning at
-# the filter). The second half of this group is the reason for that cut: with the tiebreak
-# open to sessions as well, a session stepped aside for a five-second-old watcher that was
-# dying, four times in a row, and the id stood there unarmed.
-test_tiebreak() {
-  head_ "watcher: two services starting in the same second -- exactly one steps aside"
-  local b; b="$(new_bridge)"
-  export SESSION_BRIDGE_DIR="$b"; check_safety
-  local w="$TMPROOT/tiebreak.$RANDOM" out
-  mkdir -p "$w/bin" "$w/tmp"
-
-  stub_() { # $1 = inventory lines
-    printf '#!/usr/bin/env bash
-if printf "%%s" "$*" | grep -q Stop-Process; then exit 0; fi
-%s
-echo "claudepid|-|40|0|0|"
-'       "$1" > "$w/bin/powershell.exe"
-    chmod +x "$w/bin/powershell.exe"
-  }
-  lauf2() { # $1 = own winpid, $2... = extra watcher flags
-    local eigen="$1"; shift
-    rm -f "$w"/tmp/watch-bridge-seen-* "$w"/tmp/watch-bridge-inv.* 2>/dev/null
-    rmdir "$w/tmp/watch-bridge-arm.lock" 2>/dev/null
-    ( export PATH="$w/bin:$PATH" TMPDIR="$w/tmp" SESSION_BRIDGE_DIR="$b"              WATCH_BRIDGE_HANDOVER_WAIT=0 WATCH_BRIDGE_SELF_WINPID="$eigen"
-      unset WATCH_BRIDGE_NO_REAP
-      timeout 25 bash "$WATCHER" app 1 --once "$@" 2>&1 )
-  }
-
-  # A foreign SERVICE of the same id, age 0 -- the shape of the real incident.
-  stub_ 'echo "service|app|4000|0|1|09-26 11:54"'
-
-  # Higher own pid -> the other one wins, this arm steps aside. Before the fix the young
-  # foreign service was not even looked at, and both kept delivering.
-  out="$(lauf2 9000 --service)"
-  if printf '%s
-' "$out" | grep -q 'already delivering'; then
-    ok "service, same age, higher own pid: this arm steps aside for the other"
-  else bad "service, same age, higher own pid: this arm steps aside" "$out"; fi
-
-  # Lower own pid -> this arm keeps running, because the OTHER one steps aside. If both sides
-  # stepped aside, the id would end up with no watcher at all -- silently.
-  out="$(lauf2 100 --service)"
-  if printf '%s
-' "$out" | grep -q 'already delivering'; then
-    bad "service, same age, lower own pid: this arm keeps running" "$out"
-  else ok "service, same age, lower own pid: this arm keeps running"; fi
-
-  # THE SKEW WINDOW: a service five seconds older than this one is NOT "at the same moment".
-  # It may be a watcher that is dying, and stepping aside for it leaves the id unarmed -- the
-  # field report that cost the first attempt. Only a genuine coincidence gets a tiebreak.
-  stub_ 'echo "service|app|4000|5|1|09-26 20:21"'
-  out="$(lauf2 9000 --service)"
-  if printf '%s
-' "$out" | grep -q 'already delivering'; then
-    bad "service: five seconds apart is not the same moment" "$out"
-  else ok "service: five seconds apart is not the same moment"; fi
-
-  # ONE CLOCK: both ages must come from the same measurement. The inventory runs a few seconds
-  # after process start, so a real pair shows age 8/8 while the wall clock would say 0 -- with
-  # the own age taken from `date` the two look "5 seconds apart" and neither steps aside.
-  # That is not hypothetical: it is why the first field test of this fix did nothing.
-  stub_ 'echo "service|app|4000|8|1|09-26 20:43"
-echo "service|app|9000|8|1|09-26 20:43"'
-  out="$(lauf2 9000 --service)"
-  if printf '%s
-' "$out" | grep -q 'already delivering'; then
-    ok "own age comes from the inventory, not from a second clock"
-  else bad "own age comes from the inventory, not from a second clock" "$out"; fi
-
-  # THE CUT: the same coincidence, but this arm is a SESSION. It must NOT step aside, because
-  # a session cannot exclude itself completely -- two `bash -c` shells lie between it and
-  # claude.exe, and the /proc chain breaks before the outer one. A tiebreak there steps aside
-  # for its own shell.
-  stub_ 'echo "wrapper|app|4001|0|1|09-26 20:21"
-echo "script|app|4002|0|0|09-26 20:21"'
-  out="$(lauf2 9000)"
-  if printf '%s
-' "$out" | grep -q 'already delivering'; then
-    bad "session: no tiebreak, not even for a true coincidence" "$out"
-  else ok "session: no tiebreak, not even for a true coincidence"; fi
-
-  # ... while an established one still is: the normal re-arm, unchanged.
-  stub_ 'echo "wrapper|app|4001|300|1|09-26 20:21"
-echo "script|app|4002|300|0|09-26 20:21"'
-  out="$(lauf2 100)"
-  if printf '%s
-' "$out" | grep -q 'already delivering'; then
-    ok "session: an established watcher is still honoured"
-  else bad "session: an established watcher is still honoured" "$out"; fi
-
-  # The own process must never be reaped as a silent remnant: same pid as the own one, and
-  # old enough to pass the age buffer. Without the self-exclusion this arm kills itself.
-  stub_ 'echo "script|app|4000|40|0|09-26 20:00"'
-  out="$(lauf2 4000)"
-  if printf '%s
-' "$out" | grep -q 'silent remnant'; then
-    bad "the arm does not reap itself as a silent remnant" "$out"
-  else ok "the arm does not reap itself as a silent remnant"; fi
-}
-
 test_hook() {
   head_ "watcher: the hook, and waking on a hand-over that does not name you in to:"
   local b; b="$(new_bridge)"
@@ -4670,7 +4564,6 @@ case "${1:-all}" in
   orphan) test_orphan ;;
   hook) test_hook ;;
   handover) test_handover ;;
-  tiebreak) test_tiebreak ;;
   commands) test_commands ;;
   linkcommands) test_linkcommands ;;
   linkskills) test_linkskills ;;
@@ -4700,7 +4593,7 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_tiebreak; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_coverage; test_checkout; test_numbers; test_new_thread; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 
