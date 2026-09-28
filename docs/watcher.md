@@ -1301,8 +1301,45 @@ in it -- and a second process is one more thing that can fail silently, which is
 failure mode the service exists to remove. Worth revisiting only if the latency actually
 hurts.
 
+## "Rolled out" is a measurement, not a claim: `install-watcher.sh --check`
+
+When the arming paragraph changes, you roll it out with `-u` and count what you touched. We did
+exactly that: 25 files, counter-measured, 25 of 25, no deviations. The same evening, on the
+other machine, **ten of twenty files still carried the previous wording** — and both numbers
+were correct.
+
+**A `-u` writes into a working tree, and working trees do not travel.** What travels is a commit
+in the respective repository, and that commit is made by the session that owns it. A count
+therefore describes one machine. Nothing in the file says which machine it came from, so the
+number reads as if it covered all of them.
+
+`install-watcher.sh --check <id> [project-dir]` makes the state measurable instead: one word,
+one exit code, nothing touched.
+
+```
+CURRENT     app                                              exit 0
+STALE       app  (lines 41-96; install-watcher.sh -u app '…') exit 4
+NO-MARKER   app                                              exit 3
+MISSING     app                                              exit 5
+```
+
+Same template, same delimiting, same comparison as the update — and no allow rules: a tool that
+measures must not also write. Loop it over your participants and you have the state of this
+machine; put it in front of your launcher and each session learns about its own stale paragraph
+at start. If you do that, deliver the finding **where the session reads** (its start prompt, its
+instructions) and not to stderr — the file that would have told it is the stale one.
+
+**What is deliberately not the feature.** The prose of `-n` already answered this ("arming
+paragraph is current" / "differs from the current wording"). Both sentences contain the word
+*current*: a reviewer who classified on it counted five stale files as current. A feature that
+can occur in the opposite verdict is not a feature — hence one word at the start of the line and
+an exit code.
+
 ## Limits
 
+- **A rollout is per machine.** `--check` tells you the state of the machine you are on; it
+  cannot know the others. A paragraph is only settled for good once the session commits and
+  pushes it.
 - **Cloud-sync latency** between machines adds to the poll interval. Unmeasured for us;
   in practice not noticeable.
 - **A session that is not running has no watcher.** Arming happens on the first turn, so any

@@ -73,6 +73,19 @@ commit it names will say why.
   the `echo` into a dead pipe cannot end the watcher; the orphan check below carries it.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
+### Added
+- **`install-watcher.sh --check <id> [project-dir]`** answers one question with one word and
+  an exit code: `CURRENT` (0), `STALE` (4), `NO-MARKER` (3), `MISSING` (5). It compares
+  against the same template, delimits the paragraph the same way and changes nothing -- not
+  the CLAUDE.md, not the allow rules. Why it exists: a rollout writes into a *working tree*,
+  and working trees do not travel. "All 25 files updated" was true for the machine it ran on;
+  on the other machine, ten of twenty files still carried the previous wording, and nothing
+  said so. The state has to be measurable per machine, and in a script -- so a loop over your
+  participants can ask instead of a register claiming to know. Note what is deliberately NOT
+  the feature: the prose of `-n` already said "is current" or "differs from the current
+  wording", and *both* sentences contain the word "current"; classifying on it inverted the
+  result on five files. (`bridge/install-watcher.sh`)
+
 ### Fixed
 - **Four printed hints still told you to arm a Monitor.** The arm form changed to a
   background `--once` command, and the template said so -- but `arm_hint`, the coverage

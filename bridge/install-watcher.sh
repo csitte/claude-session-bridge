@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# install-watcher.sh [-n|--dry-run] [-u|--update] [-f|--force] [-s|--shared] <session-id> [project-dir] —
+# install-watcher.sh [-n|--dry-run] [-c|--check] [-u|--update] [-f|--force] [-s|--shared] <session-id> [project-dir] —
 # wire the bridge push into a project session. Operational docs: docs/watcher.md.
 #
 # Does two things, both idempotent:
@@ -30,6 +30,19 @@ set -u
 
 rc=0
 dry=0
+# --check: ONE machine-readable verdict per file, and nothing touched.
+#
+# The answer already existed -- `-n` says either "paragraph is current" or "differs from the
+# current wording" -- but only as prose, and both sentences contain the word "current". A
+# reviewer classified on that word and inverted the result: five files counted as current
+# while the script was reporting them as stale. A feature that can occur in the opposite
+# verdict is not a feature. Hence one word at the start of the line plus an exit code; the
+# comparison itself stays the single one that already exists.
+#
+# Why this matters at all: a rollout writes into a WORKING TREE, and working trees do not
+# travel. A count of "all N files updated" is true for the machine it ran on. The same
+# paragraph can be stale on the machine you are about to work on, and nothing says so.
+check=0
 force=0
 update=0
 shared=0
@@ -37,6 +50,7 @@ standin=""
 while true; do
   case "${1:-}" in
     -n|--dry-run) dry=1; shift ;;
+    -c|--check)   check=1; dry=1; shift ;;
     -f|--force)   force=1; shift ;;
     -u|--update)  update=1; shift ;;
     -s|--shared)  shared=1; shift ;;
@@ -48,7 +62,7 @@ while true; do
   esac
 done
 
-me="${1:?usage: install-watcher.sh [-n] [-u] [-f] [-s] <session-id> [project-dir]}"
+me="${1:?usage: install-watcher.sh [-n] [-c] [-u] [-f] [-s] <session-id> [project-dir]}"
 proj="${2:-$PWD}"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -109,7 +123,7 @@ md="$proj/CLAUDE.md"
 if [[ $shared -eq 0 && -f "$md" ]]; then
   if awk '/\*\*Bridge push \(watcher\):\*\*/,/watcher\.md/' "$md" | grep -qF '.session-id'; then
     shared=1
-    echo "install-watcher: existing paragraph uses .session-id — keeping the shared variant."
+    [[ $check -eq 1 ]] || echo "install-watcher: existing paragraph uses .session-id — keeping the shared variant."
   fi
 fi
 
@@ -123,7 +137,7 @@ if [[ -z "$standin" && -f "$md" ]]; then
   v="$(awk '/\*\*Bridge push \(watcher\):\*\*/,/watcher\.md/' "$md"        | grep -oE 'WATCH_BRIDGE_VERTRITT=[A-Za-z0-9_,.-]+' | head -1)"
   if [[ -n "$v" ]]; then
     standin="${v#WATCH_BRIDGE_VERTRITT=}"
-    echo "install-watcher: existing paragraph stands in for '$standin' - keeping it."
+    [[ $check -eq 1 ]] || echo "install-watcher: existing paragraph stands in for '$standin' - keeping it."
   fi
 fi
 foldpre=""
@@ -232,6 +246,26 @@ if [[ -n "$b_start" ]]; then
     [[ -z "$b_end" ]] && b_end="$(wc -l < "$md")"
     echo "install-watcher: WARNING — paragraph without a watcher.md closing line; guessed the end at line $b_end." >&2
   fi
+fi
+
+# --check: everything the verdict needs is known here -- same delimiting, same comparison as
+# below, without the prose and without the allow rules. Then stop: a measuring tool that also
+# edits settings.local.json is not one.
+if [[ $check -eq 1 ]]; then
+  if [[ -n "$b_start" ]]; then
+    if [[ "$(sed -n "${b_start},${b_end}p" "$md" | tr -d '\r')" == "$(printf '%s' "$block")" ]]; then
+      echo "CURRENT     $me"
+      exit 0
+    fi
+    echo "STALE       $me  (lines $b_start-$b_end; install-watcher.sh -u $me '$proj')"
+    exit 4
+  fi
+  if grep -qF 'watch-bridge.sh' "$md"; then
+    echo "NO-MARKER   $me  (paragraph without the marker — docs/watcher.md, \"No marker\")"
+    exit 3
+  fi
+  echo "MISSING     $me  (no arming paragraph; install-watcher.sh $me '$proj')"
+  exit 5
 fi
 
 if [[ -n "$b_start" ]]; then

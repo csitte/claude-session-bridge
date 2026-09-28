@@ -1365,6 +1365,48 @@ test_install() {
     && ok "-u keeps additions below the paragraph" \
     || bad "-u keeps additions below the paragraph"
 
+  head_ "installer: --check gives one machine-readable verdict and touches nothing"
+  # A rollout writes into a WORKING TREE, and working trees do not travel: a count of
+  # "all N files updated" is true for the machine it ran on. So the state has to be
+  # measurable per machine. The verdict must not be classified from prose -- both prose
+  # sentences contain the word "current", and a reviewer who grepped for it inverted the
+  # result on five files.
+  local out rc
+  p="$(new_proj bridge-section)"
+  bash "$INSTALLER" app "$p" >/dev/null 2>&1
+  before="$(md5sum < "$p/CLAUDE.md")"
+  out="$(bash "$INSTALLER" --check app "$p" 2>&1)"; rc=$?
+  if [[ $rc -eq 0 && "$out" == CURRENT* ]]; then ok "--check: CURRENT with exit 0"
+  else bad "--check: CURRENT with exit 0" "rc=$rc out=$out"; fi
+  if [[ "$before" == "$(md5sum < "$p/CLAUDE.md")" ]]; then ok "--check leaves the file untouched"
+  else bad "--check leaves the file untouched"; fi
+  # It must not edit settings either: a measuring tool that writes is not one.
+  local q; q="$(new_proj bridge-section)"
+  bash "$INSTALLER" --check app "$q" >/dev/null 2>&1
+  [[ -e "$q/.claude/settings.local.json" ]] \
+    && bad "--check does not add allow rules" \
+    || ok "--check does not add allow rules"
+  sed -i '/^\*\*Bridge push (watcher):\*\*/s/$/ OUTDATED/' "$p/CLAUDE.md"
+  out="$(bash "$INSTALLER" --check app "$p" 2>&1)"; rc=$?
+  if [[ $rc -eq 4 && "$out" == STALE* ]]; then ok "--check: STALE with exit 4"
+  else bad "--check: STALE with exit 4" "rc=$rc out=$out"; fi
+  # The verdict names the repair command, because whoever reads it is about to act.
+  printf '%s' "$out" | grep -q -- '-u app' \
+    && ok "--check names the repair command" \
+    || bad "--check names the repair command" "$out"
+  # The word "current" appears in BOTH prose verdicts -- so it must not be the feature.
+  printf '%s' "$out" | grep -qi 'current' \
+    && bad "--check: the stale verdict must not contain the word current" "$out" \
+    || ok "--check: the stale verdict must not contain the word current"
+  p="$(new_proj bridge-section)"
+  out="$(bash "$INSTALLER" --check app "$p" 2>&1)"; rc=$?
+  if [[ $rc -eq 5 && "$out" == MISSING* ]]; then ok "--check: MISSING with exit 5"
+  else bad "--check: MISSING with exit 5" "rc=$rc out=$out"; fi
+  printf '\nSee watch-bridge.sh for the arming ritual.\n' >> "$p/CLAUDE.md"
+  out="$(bash "$INSTALLER" --check app "$p" 2>&1)"; rc=$?
+  if [[ $rc -eq 3 && "$out" == NO-MARKER* ]]; then ok "--check: NO-MARKER with exit 3"
+  else bad "--check: NO-MARKER with exit 3" "rc=$rc out=$out"; fi
+
   head_ "installer: a paragraph without the marker is reported, not doubled"
   # A hand-written arming paragraph has no marker, so idempotence cannot see it: during a
   # real rollout the installer inserted -- correctly -- and the file then held two sets of
