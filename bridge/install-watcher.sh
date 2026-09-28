@@ -367,11 +367,12 @@ fi
 cat <<EOF
 
 Done for '$me'. From the next session start on, the session arms itself.
-To take effect in the running session: arm the Monitor tool with persistent: true (plus
-timeout_ms 3600000; if the word persistent is NOT in the answer, this build does not
-  know the flag: timeout_ms 1800000 and re-arm after every expiry - the expiry wording
-  differs per build, so never test for it),
-  command:     bash $script $me
+To take effect in the running session: arm it as a BACKGROUND command (run_in_background:
+  true), with --once AFTER the id. No Monitor, no timeout_ms - a Monitor expires because
+  its deadline passed, not because something arrived, and every expiry costs your human
+  four lines. The arm ends only on a real delivery; then read the output, handle the
+  message, and re-arm in the same move.
+  command:     bash $script $me --once
   description: session bridge: new messages for $me
 If one is already running for '$me', the new arm steps aside by itself — state:
   bash $script --status $me

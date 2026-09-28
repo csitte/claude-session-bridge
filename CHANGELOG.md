@@ -74,6 +74,13 @@ commit it names will say why.
   See `docs/watcher.md`. (`bridge/watch-bridge.sh`)
 
 ### Fixed
+- **Four printed hints still told you to arm a Monitor.** The arm form changed to a
+  background `--once` command, and the template said so -- but `arm_hint`, the coverage
+  block of `--status` and the installer's closing advice did not. The installer's was the
+  worst of them: it recommended `persistent: true` with a `timeout_ms` fallback, a flag that
+  no longer exists in any build. A hint is read by someone who is about to act, so a stale
+  one costs more than a stale comment. (`bridge/watch-bridge.sh`,
+  `bridge/install-watcher.sh`)
 - **The stepping-aside message no longer gives an all-clear.** When an arm finds a watcher of
   its id already delivering, it ends -- and it used to say "delivery continues unchanged". That
   is a promise it cannot keep: it has seen the predecessor alive twice, not into the future.

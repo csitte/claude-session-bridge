@@ -603,10 +603,10 @@ arm_hint() { # $1 = id
     delivering|unknown) : ;;
     stale)
       echo "ATTENTION: only a silent watcher remnant for '$1' — NOTHING is being delivered."
-      echo "           Arm the Monitor tool now; arming clears the remnant by itself." ;;
+      echo "           Arm again now (background command with --once); arming clears the remnant itself." ;;
     none)
       echo "ATTENTION: no watcher for '$1' — without arming, no bridge push arrives."
-      echo "           Arm the Monitor tool now (command: docs/watcher.md, or the arm paragraph in CLAUDE.md)." ;;
+      echo "           Arm now (command: docs/watcher.md, or the arm paragraph in CLAUDE.md)." ;;
   esac
 }
 
@@ -1199,7 +1199,7 @@ coverage_hint() {
     IFS='|' read -r id name pid <<<"$r"
     printf '         %-16s window "%s", PID %s\n' "$id" "$name" "$pid"
   done
-  echo "         Not fixable from outside: that session has to arm the monitor tool itself"
+  echo "         Not fixable from outside: that session has to arm itself"
   echo "         (the arming paragraph in its CLAUDE.md) — or it gets restarted."
   # And not by message either. The bridge route is out by definition (no watcher — that is
   # the finding), and a native cross-session message is held when the recipient's inbound
