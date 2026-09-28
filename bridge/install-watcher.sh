@@ -149,31 +149,26 @@ else
 fi
 
 block="**Bridge push (watcher):**${sharednote}At session start, **arm first, fold second** — in that order,
-and without checking \`--status\` beforehand: arm the Monitor tool with \`persistent: true\`
-and \`timeout_ms: 3600000\` alongside. **Then read the tool's answer -- it is the switch, not
-the flag, and the condition is the word \`persistent\`:** if the answer contains it (\"persistent
-— runs until TaskStop or session end\"), the watch runs until session end and is not re-armed.
-If the answer names **any deadline at all**, this build does not know the flag -- then the
-fallback applies: \`timeout_ms: 1800000\` and re-arm right after every expiry. Which way the
-switch goes is **not narrated** -- see the silence rule below.
-**Do not test for the expiry wording, it differs per build:** one session was told
-\"expires in 30m\" while another, on the same morning, got \"timeout 1800000ms\" for the same
-case. A switch that hangs on a wording is the same over-generalisation once more, just finer.
-Why a switch and not a fixed statement: this paragraph once claimed the flag no longer
-existed, then claimed the opposite, both times generalising from one machine. Measured across
-three sessions on two machines: in the build we have, the schema does **not** know the field,
-the answer is \"expires in 30m\", and watches expire at exactly 30 minutes. Earlier
-counter-evidence (73 and 57 minutes without expiry) is **dead**: it rested on three
-observations at three points in time, and a watch that expired and was re-armed in between
-leaves exactly that trace. Arming with the field stays right all the same -- it costs nothing
-and a later build may know it. And the trap that hid it: an unknown field is dropped silently
-despite \`additionalProperties: false\`, so an arm that goes through proves nothing; only the
-answer does. **Do not change this without measuring on your build** -- decide on the answer,
-never on the field name, never on a version number.
-description \"session bridge: new messages for $iddesc\", command with the path that exists
-on this machine:
-\`bash $script_pc $idexpr\` (machine A) or
-\`bash $script_nb $idexpr\` (machine B).
+and without checking \`--status\` beforehand. Arm it as a **background shell command** -- not
+as a Monitor -- with \`--once\` **after** the id, using the path that exists on this machine:
+\`bash $script_pc $idexpr --once\` (machine A) or
+\`bash $script_nb $idexpr --once\` (machine B).
+description \"session bridge: new messages for $iddesc\".
+**Why not a Monitor.** A Monitor has a deadline; without a working \`persistent\` flag it is
+capped at 30 minutes. An expiry therefore means *the time is up*, not *something arrived* --
+and every expiry costs your human four lines: the monitor event, the new monitor, a sentence
+from the session, a recap. Over eight night hours that is 16 per session; with eleven sessions
+running, about 176 such blocks a night. A \`--once\` arm ends **only when something was actually
+delivered**: roughly 5 a day instead of 48. It also makes the whole \`persistent\` question moot
+-- nothing is waiting on a deadline any more.
+**When the arm ends: read the output, handle the message, re-arm in the same move.** Re-arming
+swallows nothing -- the new watcher adopts its predecessor's mark and reports whatever arrived
+in the gap. **Only if it prints \`ATTENTION -- the mark ... was not adopted\`** is the gap open;
+then fold once, the ready-made command is in the message.
+**The price, stated:** a forgotten re-arm is **silent**. With a Monitor something kept running;
+here nothing does. Whatever watchdog you have for \"session running, no watcher\" is only loud
+while somebody looks at it, so the discipline stands: **re-arm in the same move in which you
+read the output**, not \"in a minute\".
 If a watcher already delivers for this id, the new arm steps aside by itself, and a silent
 remnant is cleared in the process — which is why arming is unconditionally right. **Then**
 run the bridge start scan in one pass — not a loop of your own over the files, that runs
@@ -184,25 +179,21 @@ lists the open threads with \`owner: $iddesc\`; if it prints a WARNING, the sync
 still fetching — repeat it later; if it prints ATTENTION, arming did not happen — do it now.
 Whatever already existed when you armed is baseline and arrives through the start scan, so
 for the **first** arm of a session the order loses nothing.
-**If the watch does expire** -- that is, only on the fallback path above, when the answer was
-\"expires in 30m\" -- **arm again right away**; there the harness caps at 30 minutes, and expiry
-is the normal case, not a fault. A re-arm swallows nothing: the new watcher
-adopts its predecessor's mark and reports what arrived in the gap. **Only if it prints
-\`ATTENTION -- the mark ... was not adopted\`** is the gap open -- then fold once, the ready
-command is in the message.
 ⚠ **Do not narrate any arm in the chat -- not even the first one.** Arming is ritual: a
-process without a result. This covers the arm at session start, every re-arm after an expiry
-and the outcome of the switch above -- which way it went is a finding about the build, not a
-message to your human. With a watch expiring every 30 minutes that is two lines per hour and
-session; on one morning it came to 54 empty lines from three sessions, and the person reading
-them lost the overview. Arm silently and carry on.
+process without a result.
+⚠⚠ **And after a re-arm your turn ends with NO text at all.** No \"waiting for your next
+step\", no \"I'll let you know\", no \"all quiet\" -- **nothing**. The arm is the last step of
+the turn. This is the gap the rule used to leave open: it forbade *narrating* the arm, and a
+closing pleasantry is formally not a report about the arm -- yet it produces exactly the noise
+the rule was written against. If your human asks something, answer them; a watcher event is
+not a question from them.
 **Report only what asks for an action:** a delivered bridge message,
 \`ATTENTION -- the mark ... was not adopted\`, an arm that did not happen at all, or a failure
-of the script. **And never claim \"nothing arrived\":** the harness expiry notice only says
-that *its* monitor saw nothing -- a dead watcher produces it exactly like a live one. If you
+of the script. **And never claim \"nothing arrived\":** an arm that ended only says *this*
+process is done -- a dead watcher looks exactly like a live one from the outside. If you
 need that statement, get it from \`--status\` -- but **before** re-arming. Afterwards it
 answers about the **successor**, which is alive by construction; read in the natural order
-(expiry, arm, check, \"delivering\") it proves nothing about the gap.
+(end, arm, check, \"delivering\") it proves nothing about the gap.
 Every notification = a new bridge message for this session → read the file, report it in
 the chat, react according to the bridge protocol. The watcher only reads and complements
 the start scan; write-once is unaffected.
@@ -216,7 +207,7 @@ too far ahead wins every fold until the clock catches up -- four such names in o
 the command existed.
 **Do not disarm the watcher:** it survives
 \`/clear\` and keeps delivering; a second arm recognises the running one and steps aside.
-Use TaskStop only if delivery must stop *immediately*. Check the state with
+Stop the background task only if delivery must stop *immediately*. Check the state with
 \`bash $script_pc --status $idexpr\` (machine A) or
 \`bash $script_nb --status $idexpr\` (machine B). Operational docs: docs/watcher.md next to the script."
 

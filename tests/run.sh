@@ -621,6 +621,68 @@ test_watcher() {
     ok "WATCH_BRIDGE_STAMP_SLACK lowers the threshold"
   else bad "WATCH_BRIDGE_STAMP_SLACK lowers the threshold"; fi
 
+  # --- REFERENCED: the repair advice has a condition ---------------------------
+  # An `mv` is harmless only while nobody has replied to the file. Once another message
+  # names it in `in-reply-to`, repairing it trades order for references, irreversibly.
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  rm -rf "$b/threads/001-test"
+  # a typed stamp that still decides the fold, and a reply pointing at it
+  post_state "$b" 001-mine 2026-01-02T000000Z__other__r1 other app OPEN
+  touch -d '2026-01-01T20:00:00Z' "$b/threads/001-mine/msgs/2026-01-02T000000Z__other__r1.md"
+  printf -- '---\nfrom: app\nto: other\ntype: reply\ndate: 2026-01-01T00:00:00Z\nin-reply-to: 2026-01-02T000000Z__other__r1.md\n---\n\nbody\n' \
+    > "$b/threads/001-mine/msgs/2026-01-01T210000Z__app__r2.md"
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q 'REFERENCED'; then
+    ok "the stamp check marks a file that a reply points at"
+  else bad "the stamp check marks a file that a reply points at" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -q 'Do NOT rename anything marked'; then
+    ok "... and the advice against renaming follows"
+  else bad "... and the advice against renaming follows" "$fold"; fi
+  # the same for the name check, which gives the same advice
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  rm -rf "$b/threads/001-test"
+  post_state "$b" 001-mine 2026-01-01T000000Z__other__ok1 other app OPEN
+  mkdir -p "$b/threads/001-mine/msgs"
+  printf -- '---\nfrom: other\nto: app\ntype: fyi\ndate: 2026-01-01T00:00:00Z\n---\n\nbody\n' \
+    > "$b/threads/001-mine/msgs/20260101T000000Z__other__c1.md"
+  printf -- '---\nfrom: app\nto: other\ntype: reply\ndate: 2026-01-01T00:00:00Z\nin-reply-to: 20260101T000000Z__other__c1.md\n---\n\nbody\n' \
+    > "$b/threads/001-mine/msgs/2026-01-01T010000Z__app__c2.md"
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q 'REFERENCED'; then
+    ok "the name check marks a referenced file too"
+  else bad "the name check marks a referenced file too" "$fold"; fi
+  # THE COUNTER-TEST: with nothing referenced the addition must not appear at all. A handle
+  # that names a condition nobody met reads as if it applied -- that mistake has been made.
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  rm -rf "$b/threads/001-test"
+  post_state "$b" 001-mine 2026-01-02T000000Z__other__n1 other app OPEN
+  touch -d '2026-01-01T20:00:00Z' "$b/threads/001-mine/msgs/2026-01-02T000000Z__other__n1.md"
+  printf -- '---\nfrom: other\nto: app\ntype: fyi\ndate: 2026-01-01T00:00:00Z\n---\n\nbody\n' \
+    > "$b/threads/001-mine/msgs/20260101T000000Z__other__n2.md"
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -qE 'Stamp check|Name check'; then
+    ok "the fixture without references still produces both findings"
+  else bad "the fixture without references still produces both findings" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -qE 'REFERENCED|Do NOT rename'; then
+    bad "nothing referenced: neither the mark nor the addition appears" "$fold"
+  else ok "nothing referenced: neither the mark nor the addition appears"; fi
+  # a bare `-` and a quoted value are not references -- they were 4 of 20 dead pointers
+  printf -- '---\nfrom: app\nto: other\ntype: reply\ndate: 2026-01-01T00:00:00Z\nin-reply-to: -\n---\n\nbody\n' \
+    > "$b/threads/001-mine/msgs/2026-01-01T020000Z__app__n3.md"
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'REFERENCED'; then
+    bad "an in-reply-to of '-' references nothing"
+  else ok "an in-reply-to of '-' references nothing"; fi
+  # the comparison is whole-name, never a substring (the long-standing trap here)
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  rm -rf "$b/threads/001-test"
+  post_state "$b" 001-mine 2026-01-02T000000Z__other__s9 other app OPEN
+  touch -d '2026-01-01T20:00:00Z' "$b/threads/001-mine/msgs/2026-01-02T000000Z__other__s9.md"
+  printf -- '---\nfrom: app\nto: other\ntype: reply\ndate: 2026-01-01T00:00:00Z\nin-reply-to: 2026-01-02T000000Z__other__s9.md.bak\n---\n\nbody\n' \
+    > "$b/threads/001-mine/msgs/2026-01-01T210000Z__app__s8.md"
+  if bash "$WATCHER" --fold app 2>/dev/null | grep -q 'REFERENCED'; then
+    bad "a longer name containing this one is not a reference"
+  else ok "a longer name containing this one is not a reference"; fi
+
   # --- duplicate thread numbers: reported only while two of them are still open ---
   # new_bridge ships a `001-test`; it has to go here, or the fixture itself carries a
   # duplicate number and the silence assertions below can never hold. (It did on the first
@@ -1361,21 +1423,30 @@ test_install() {
     && ok "the mark condition is written verbatim" \
     || bad "the mark condition is written verbatim" "$(grep 'Only if it prints' -A1 "$p/CLAUDE.md")"
 
-  # The switch hangs on the WORD `persistent`, never on the expiry wording. Two sessions on
-  # the same morning were told "expires in 30m" and "timeout 1800000ms" for the same case, so
-  # a paragraph that makes one wording the condition sends half the readers down the wrong
-  # branch -- and it fails silently, because both branches arm something.
-  if grep -q 'the condition is the word' "$p/CLAUDE.md"; then
-    ok "the written paragraph names the word persistent as the condition"
-  else bad "the written paragraph names the word persistent as the condition" "$(grep -n 'switch, not' -A2 "$p/CLAUDE.md")"; fi
-  if grep -q 'differs per build' "$p/CLAUDE.md"; then
-    ok "... and warns not to test for the expiry wording"
-  else bad "... and warns not to test for the expiry wording"; fi
-  # A measurement that was retracted must not travel on in the template: the 73 minutes rested
-  # on three observations at three points in time, which a re-armed watch reproduces exactly.
-  if grep -q 'is \*\*dead\*\*' "$p/CLAUDE.md"; then
-    ok "the retracted 73-minute measurement is marked as dead, not repeated as fact"
-  else bad "the retracted 73-minute measurement is marked as dead, not repeated as fact" "$(grep -n '73' "$p/CLAUDE.md")"; fi
+  # These three replace the checks on the old `persistent` switch. That switch existed
+  # because a Monitor has a deadline; since arming happens as a background command with
+  # `--once`, nothing waits on a deadline and the whole branch is moot. The old assertions
+  # went red on the day the template changed -- which is the point of having them: a new
+  # wording is a new input for every tool that reads it.
+  if grep -qF -- '--once' "$p/CLAUDE.md" && grep -q 'background shell command' "$p/CLAUDE.md"; then
+    ok "the written paragraph arms as a background command with --once"
+  else bad "the written paragraph arms as a background command with --once" "$(grep -n 'arm first' -A3 "$p/CLAUDE.md")"; fi
+  # `--once` must stand AFTER the id: in front of it the process inventory reads the arm as
+  # a one-shot call and later cleans up the live watcher as a remnant.
+  if grep -qE 'watch-bridge\.sh [^ ]+ --once' "$p/CLAUDE.md"; then
+    ok "... with --once after the id, not in front of it"
+  else bad "... with --once after the id, not in front of it" "$(grep -n -- '--once' "$p/CLAUDE.md")"; fi
+  # The silence rule has to cover the whole TURN, not just the wording. A session that only
+  # avoids the phrase "re-armed" and then writes a closing pleasantry produces exactly the
+  # noise the rule was written against -- measured at about 176 such blocks a night.
+  if grep -q 'turn ends with NO text' "$p/CLAUDE.md"; then
+    ok "the silence rule covers the whole turn, not just the wording"
+  else bad "the silence rule covers the whole turn, not just the wording" "$(grep -n 'narrate any arm' -A4 "$p/CLAUDE.md")"; fi
+  # The price of --once is that a forgotten re-arm is silent. A paragraph that drops the
+  # Monitor without naming that trade teaches half the lesson.
+  if grep -q 'forgotten re-arm is' "$p/CLAUDE.md"; then
+    ok "... and the price of --once (a silent forgotten re-arm) is named"
+  else bad "... and the price of --once (a silent forgotten re-arm) is named"; fi
 
   head_ "installer: CRLF files keep their line endings"
   p="$(new_proj bridge-section)"

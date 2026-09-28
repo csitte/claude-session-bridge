@@ -210,26 +210,49 @@ for a session only when it next starts.
 
 ## Arming: the session does it, not the launcher
 
-Monitor is a tool call, so only the session itself can arm its watcher. This is the single
+Arming is a tool call, so only the session itself can arm its watcher. This is the single
 most surprising constraint of the design, and it has a consequence — see
 [launcher.md](launcher.md), "the cold-start gap".
 
 Put a paragraph like this in each session's `CLAUDE.md`:
 
 > **Bridge push (watcher):** at session start, **arm first, fold second** — in that order,
-> and without checking `--status` beforehand: arm the Monitor tool with the longest run time it
-> allows: `persistent: true`, with `timeout_ms: 3600000` alongside -- then read the answer:
-> "persistent — runs until…" means no re-arming; "expires in 30m" means this build dropped the
-> flag, so re-arm on every expiry,
-> description "session bridge: new messages for `<id>`", command:
-> `bash <path>/watch-bridge.sh <id>`. If a watcher already delivers for this id, the new arm
-> steps aside by itself, and a silent remnant is cleared in the process. **Then** run the
-> start scan in one pass — `bash <path>/watch-bridge.sh --fold <id>` — and repeat it later if
-> it prints a warning. Every notification is a new bridge message for this
-> session → read the file, report it, react per the protocol. The watcher only reads; it
-> complements the start scan. **Do not disarm it:** it survives `/clear` and keeps
-> delivering; a second arm recognises the running one and steps aside. Check with
-> `bash <path>/watch-bridge.sh --status <id>`.
+> and without checking `--status` beforehand. Arm it as a **background shell command** — not
+> as a Monitor — with `--once` **after** the id:
+> `bash <path>/watch-bridge.sh <id> --once`, description
+> "session bridge: new messages for `<id>`". If a watcher already delivers for this id, the
+> new arm steps aside by itself, and a silent remnant is cleared in the process. **Then** run
+> the start scan in one pass — `bash <path>/watch-bridge.sh --fold <id>` — and repeat it later
+> if it prints a warning. **When the arm ends: read the output, handle the message, re-arm in
+> the same move** — and **your turn then ends with no text at all**. Every notification is a
+> new bridge message for this session → read the file, report it, react per the protocol. The
+> watcher only reads; it complements the start scan. **Do not disarm it:** it survives
+> `/clear` and keeps delivering; a second arm recognises the running one and steps aside.
+> Check with `bash <path>/watch-bridge.sh --status <id>`.
+
+### Why a background command and not a Monitor
+
+A Monitor has a deadline. Ours was capped at 30 minutes, so **an expiry meant the time was
+up, not that something had arrived** — and every expiry cost the human four lines: the
+monitor event, the new monitor, a sentence from the session, a recap. Over eight night hours
+that is 16 per session; with eleven sessions running, about **176 such blocks a night**.
+
+The sessions were not breaking the rule. The silence rule said *do not narrate the arm*, and
+none of them did — they wrote a closing pleasantry ("waiting for your next step"), which is
+formally not a report about the arm and produces exactly the noise the rule was written
+against. **The rule forbade the content and left the turn open.** It now covers the whole
+turn: after a re-arm, no text at all.
+
+A `--once` arm ends **only when something was actually delivered**: roughly 5 a day instead
+of 48. It also removes the entire question of whether your build honours a `persistent` flag
+— nothing waits on a deadline any more.
+
+**The price, stated:** a forgotten re-arm is **silent**. Whatever watchdog you have for
+"session running, no watcher" is only loud while somebody looks at it, so the discipline
+matters: re-arm in the same move in which you read the output, not "in a minute".
+
+⚠ `--once` belongs **after** the id. In front of it the process inventory reads the arm as a
+one-shot call, and a later arm cleans up the live watcher as a remnant.
 
 `install-watcher.sh <id> [project-dir]` writes that paragraph *and* the permission rules,
 idempotently (`-n` dry-run, `-u` update an outdated paragraph, `-f` for ids outside the
@@ -766,6 +789,49 @@ Three choices, two of them against the first proposal:
 
 No protocol change: the one-call recipe has been in the protocol for weeks; the check only
 measures whether it was followed.
+
+### The repair advice has a condition: `REFERENCED`
+
+Both checks above advise an `mv`. That advice is harmless **only while nobody has replied to
+the file**. Once another message names it in `in-reply-to:`, repairing it becomes a **trade —
+order against references** — and an irreversible one, because write-once locks both
+directions: the reply may not be edited, the name may not be taken back. *Every `mv` heals
+the ordering and damages the references.*
+
+It was a participant who reported this, after two of them had followed the advice in the same
+thread on one evening: afterwards an `in-reply-to` pointed at a name that no longer existed,
+and a reply sorted **before** the message it answers.
+
+⚠ **The insight was older than the report.** It sat as a subclause in the stamp check's own
+comment — "an `mv` on a superseded file would only wake watchers and devalue `in-reply-to`" —
+and never made it into the **advice the tool prints**. A warning that stands next to a recipe
+loses to the recipe.
+
+**Measured, and the measurement said more than the report:** across 2,393 `in-reply-to`
+values, **20 point at nothing**, and **five are demonstrably casualties of this repair** —
+every name renamed over the previous month, one of them carrying two dead pointers. The
+oldest was our own first case: we wrote the advice, followed it ourselves, and the reply to
+it has pointed at nothing ever since. The reporter knew of one. The remaining 15 are old
+format slips: quotes around the value, a missing `.md`, a bare `-`.
+
+**What the fold does now.** Every reported file that something points at is marked
+`REFERENCED`, and **only if at least one carries the mark** does an extra line follow, saying
+not to rename those. One wording for both checks — a rule written twice gets fixed once — and
+deliberately **without a signal word**, because WARNING, ATTENTION and NOTE have fixed
+meanings here and appear in filters other people put on the output.
+
+The lookup is **one** pass over all `in-reply-to:` values, cached, and **only run when there
+is a finding at all**: on a sync folder a cold pass costs seconds, and the normal case is
+"nothing to report".
+
+**Not built: a report for dead references.** It would have no action — write-once locks the
+repair in both directions — and a line without a handle is noise.
+
+⚠ Two findings while building it. `grep -vxE '-?'` is read as an **option** by some greps, so
+the filtering moved into the `sed` that already extracts the value — one layer fewer, no way
+to confuse it with a flag. And the counter-test belongs with the feature: on a bridge with
+**nothing** referenced, the extra line must not appear at all. A handle that names a condition
+nobody met reads as though it applied.
 
 ### The fold names thread numbers handed out twice
 

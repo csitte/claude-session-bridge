@@ -145,6 +145,31 @@ commit it names will say why.
   time. A session without a stand-in gains nothing, so this needs no second roll-out.
 
 ### Changed
+- **Arm the watcher as a background command with `--once`, not as a Monitor.** A Monitor has
+  a deadline; ours was capped at 30 minutes, so an expiry meant *the time was up*, not *something
+  arrived*. Each expiry cost the human four lines — monitor event, new monitor, a sentence from
+  the session, a recap — which over eight night hours is 16 per session, about **176 blocks a
+  night** across eleven sessions. A `--once` arm ends only when something was actually
+  delivered: roughly 5 a day instead of 48. The whole `persistent` switch is gone with it:
+  nothing waits on a deadline any more. **The silence rule grew too:** it used to forbid
+  *narrating* the arm, and sessions complied — then wrote a closing pleasantry, which is
+  formally not a report about the arm and is exactly the noise the rule was written against.
+  It now covers the whole turn: after a re-arm, no text at all. The price is stated in the
+  paragraph: a forgotten re-arm is silent, so re-arm in the same move in which you read the
+  output. `--once` belongs **after** the id — in front of it the process inventory reads the
+  arm as a one-shot call. Roll out with `install-watcher.sh -u`.
+  (`bridge/install-watcher.sh`, `docs/watcher.md`)
+- **The fold's repair advice has a condition now: `REFERENCED`.** Both the name check and the
+  stamp check advise an `mv`. That is harmless only while nobody has replied to the file —
+  once another message names it in `in-reply-to:`, the repair trades order for references, and
+  write-once makes the trade irreversible. Reported by a participant after two of them had
+  followed the advice in one thread on one evening. The insight was older than the report: it
+  sat as a subclause in the stamp check's own comment and never reached the advice the tool
+  prints. Measured across 2,393 `in-reply-to` values in a live bridge: 20 point at nothing, and
+  five are demonstrably casualties of this repair — the oldest being the very first case the
+  check was written for. Marked files now carry `REFERENCED`, and an extra line appears **only**
+  when at least one does. Not built: a report for dead references — it has no action, and a
+  line without a handle is noise. (`bridge/watch-bridge.sh`)
 - **The arm paragraph now names `--new-message`.** Putting the command into the protocol
   recipe was not enough: in our own bridge, measured the same evening, two of the 19 messages
   written *after* the recipe changed still carried a hand-typed stamp (5.1 and 10.5 minutes

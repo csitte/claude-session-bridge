@@ -115,6 +115,62 @@ orphan_hint() {
   echo "      Whoever is a participant there sets 'sets-owner' in the next message of that thread."
 }
 
+# --- Referenced? The condition under the repair advice ------------------------
+# The name check and the stamp check both advise an `mv`. That advice is harmless only
+# while nobody has replied to the file. As soon as another message names it in
+# `in-reply-to:`, the repair becomes a TRADE -- order against references -- and an
+# irreversible one, because write-once locks both directions: you may not edit the
+# reply, and the author may not take the name back.
+#
+# The insight was older than the report that prompted this: it sat as a SUBCLAUSE in the
+# stamp check's comment ("an `mv` on a superseded file would only wake watchers and
+# devalue `in-reply-to`") and never made it into the ADVICE the tool prints. Same class
+# as a warning next to a recipe that demonstrates the trap -- the recipe wins.
+#
+# Measured over a live bridge (2,393 `in-reply-to` values): 20 point at nothing, and five
+# of those are demonstrably casualties of this very repair -- every name that was renamed
+# over a month, one of them carrying two dead pointers. The remaining 15 are old format
+# slips (quotes around the value, a missing `.md`, a bare `-`).
+#
+# NOT built: a separate report for dead references. It has no action -- write-once locks
+# the repair in both directions -- and a line without a handle is noise.
+#
+# ONE pass over all `in-reply-to:` values, cached, and **only called when there is a
+# finding** -- on a sync folder a cold pass costs seconds, and the normal case is "nothing
+# to report". Grepping per hit would not be cheaper (the bottleneck is reading the files,
+# not the pattern) and is worse with several hits.
+_irt_loaded=0
+_irt_names=""
+referenced_names() {
+  if [[ $_irt_loaded -eq 0 ]]; then
+    _irt_loaded=1
+    _irt_names=$( cd "$bridge" 2>/dev/null || exit 0
+        grep -rh --include='*.md' '^in-reply-to:' threads _archiv 2>/dev/null \
+        | tr -d '\r' \
+        | sed -e 's/^in-reply-to:[[:space:]]*//' -e "s/^['\"]//" -e "s/['\"]\$//" -e '/^-\{0,1\}$/d' \
+        | LC_ALL=C sort -u )
+  fi
+  printf '%s' "$_irt_names"
+}
+
+# Does another message point at this file via `in-reply-to`? $1 = path or filename.
+# The BASENAME is compared whole, never as a substring.
+is_referenced() {
+  local base="${1##*/}"
+  referenced_names | grep -qxF "$base"
+}
+
+# The addition under the repair advice -- ONE wording for both checks, because a rule
+# written twice gets fixed once. Deliberately WITHOUT a signal word: WARNING, ATTENTION
+# and NOTE have fixed meanings in the fold and appear in filters other people put on the
+# output. Both checks are quiet lines, and so is this.
+irt_hint() {
+  echo "            Do NOT rename anything marked 'REFERENCED': another message names that file"
+  echo "            in 'in-reply-to'. An mv kills the reference, and write-once locks both"
+  echo "            directions -- you trade order for references. Leave it; folding takes the"
+  echo "            last file, not the reply chain."
+}
+
 # --- Start scan: fold the threads, show the open ones owned by <id> -----------
 # The fold the protocol defines (docs/protocol.md, "State is derived, never stored"):
 # per file the FIRST `sets-owner:`/`sets-status:` line, filename = chronological order,
@@ -148,16 +204,21 @@ orphan_hint() {
 # anyone. A quiet line, no upper-case keyword: the finding needs visibility, not
 # urgency. `_archiv/` is included: a wrong name comes back on reactivation.
 name_hint() {
-  local bad n f
+  local bad n f referenced=0
   bad=$( cd "$bridge" 2>/dev/null || exit 0
          find threads _archiv -mindepth 3 -maxdepth 3 -path '*/msgs/*.md' -not -path 'threads/_*' 2>/dev/null \
          | tr -d '\r' | grep -v -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z__[^/]*\.md$' | sort )
   [[ -n "$bad" ]] || return 0
   n=$(printf '%s\n' "$bad" | wc -l | tr -d ' ')
   echo "Name check: $n file(s) in msgs/ do not start with 'YYYY-MM-DDTHHMMSSZ__' -- folding and push order by the name, not by 'date:':"
-  while IFS= read -r f; do printf '            %s\n' "$f"; done <<< "$bad"
+  while IFS= read -r f; do
+    if is_referenced "$f"; then referenced=1; printf '            %s   REFERENCED\n' "$f"
+    else                                      printf '            %s\n' "$f"; fi
+  done <<< "$bad"
   echo "            Repair: mv to the correct name (content unchanged). A temp leftover next to its finished"
   echo "            message is not a message -- ask the author. Running watchers deliver a renamed file once."
+  [[ $referenced -eq 1 ]] && irt_hint
+  return 0
 }
 
 # --- Sixth check: stamps that lie ahead of their own write time --------------
@@ -240,9 +301,15 @@ stamp_hint() {
 
   n=$(printf '%s\n' "$bad" | wc -l | tr -d ' ')
   echo "Stamp check: $n file(s) in threads/*/msgs/ whose name lies more than $((slack/60)) min after the write time (mtime) -- typed, or local time with a 'Z'. They still decide the fold of their thread (last file, last sets-status or sets-owner) and win against everything written up to their stamp:"
-  while IFS='|' read -r line n2 wr; do printf '            %s  (+%s h, written %s%s)\n' "$line" "$n2" "$wr" "$(annotate "$line")"; done <<< "$bad"
+  local referenced=0 mark
+  while IFS='|' read -r line n2 wr; do
+    mark=""; if is_referenced "$line"; then referenced=1; mark=", REFERENCED"; fi
+    printf '            %s  (+%s h, written %s%s%s)\n' "$line" "$n2" "$wr" "$(annotate "$line")" "$mark"
+  done <<< "$bad"
   echo "            Repair by the author: mv to the name derived from the write time (content unchanged). Running watchers deliver the renamed file once."
   echo "            The line disappears once a younger message with sets-* supersedes the file -- it then decides nothing any more."
+  [[ $referenced -eq 1 ]] && irt_hint
+  return 0
 }
 
 # --- Seventh check: thread numbers handed out twice --------------------------
