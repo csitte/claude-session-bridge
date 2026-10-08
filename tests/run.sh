@@ -867,6 +867,134 @@ STUB2
   else bad "a predecessor that stays alive is still honoured" "$out"; fi
 }
 
+# --- an arm must not take itself for its predecessor ----------------------------------
+# Found in a review of the whole system: every stub so far listed only FOREIGN processes,
+# while the real inventory also lists the arm itself -- its wrapper, its script, and the
+# forked children of the script (they carry the same command line). That is why the two
+# worst watcher bugs stayed green: the handover check always found "a predecessor" (the
+# arm itself), and an arm older than 30 s stepped aside in favour of itself.
+#
+# This stub therefore walks up its own process chain and reports what it finds: every
+# ancestor running watch-bridge.sh as `script`, the parent of the topmost one as the
+# `wrapper`, and a `winpar` edge for each, keyed by winpid where msys has one (that is
+# what Win32_Process would show) and by pid elsewhere.
+selftree_stub() { # $1=workdir
+  cat > "$1/bin/powershell.exe" <<'STUB'
+#!/usr/bin/env bash
+if printf '%s' "$*" | grep -q 'Stop-Process'; then
+  printf '%s\n' "$*" >> "$STUB_DIR/stops"; exit 0
+fi
+n=$(wc -l < "$STUB_DIR/calls" 2>/dev/null | tr -d ' ')
+echo x >> "$STUB_DIR/calls"
+key() { local w=""; { read -r w < "/proc/$1/winpid"; } 2>/dev/null; echo "${w:-$1}"; }
+parent() {
+  local pp="" rest
+  if { read -r pp < "/proc/$1/ppid"; } 2>/dev/null; then echo "$pp"; return; fi
+  { read -r rest < "/proc/$1/stat"; } 2>/dev/null || return
+  rest=${rest##*) }; set -- $rest; echo "$2"
+}
+p=$PPID; top=""
+while [ -n "$p" ] && [ "$p" -gt 1 ]; do
+  if tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'watch-bridge.sh'; then
+    pp=$(parent "$p")
+    echo "script|app|$(key "$p")|${STUB_AGE:-300}|0|09-01 10:00"
+    echo "winpar|-|$(key "$p")|${STUB_AGE:-300}|$(key "$pp")|"
+    top=$p
+  fi
+  p=$(parent "$p")
+done
+if [ -n "$top" ]; then
+  w=$(parent "$top"); ww=$(parent "$w")
+  echo "wrapper|app|$(key "$w")|${STUB_AGE:-300}|${STUB_UNDER:-1}|09-01 10:00"
+  echo "winpar|-|$(key "$w")|${STUB_AGE:-300}|$(key "$ww")|"
+fi
+case "${STUB_MODE:-}" in
+  dying)  # a predecessor that is there on the first look and gone on the second
+    if [ "${n:-0}" -lt 1 ]; then
+      echo 'wrapper|app|1001|300|1|09-01 10:00'
+      echo 'script|app|1002|300|0|09-01 10:00'
+    fi ;;
+  young)  # a foreign wrapper seconds old, its script not yet there (or a shell that
+          # only mentions `watch-bridge.sh app` on its command line)
+    echo 'wrapper|app|1003|5|1|09-01 10:00' ;;
+  living) # a predecessor that stays
+    echo "wrapper|app|1001|${STUB_PRED_AGE:-300}|1|09-01 10:00"
+    echo "script|app|1002|${STUB_PRED_AGE:-300}|0|09-01 10:00" ;;
+esac
+echo 'claudepid|-|40|0|0|'
+STUB
+  chmod +x "$1/bin/powershell.exe"
+}
+
+test_selftree() {
+  head_ "watcher: an arm does not take itself for its predecessor"
+  if [[ ! -r /proc/$$/cmdline ]]; then
+    printf '  skip %s\n' "no /proc on this system -- the own process tree cannot be read"; return 0
+  fi
+  local b; b="$(new_bridge)"
+  export SESSION_BRIDGE_DIR="$b"; check_safety
+  local w="$TMPROOT/selftree.$RANDOM" out
+  mkdir -p "$w/bin" "$w/tmp"
+  selftree_stub "$w"
+
+  run_() { # $1=mode  $2=handover wait  [$3=wrapper under-claude]  [$4=predecessor age]
+    : > "$w/calls"; : > "$w/stops"
+    rm -f "$w"/tmp/watch-bridge-* 2>/dev/null; rmdir "$w/tmp/watch-bridge-arm.lock" 2>/dev/null
+    ( export PATH="$w/bin:$PATH" TMPDIR="$w/tmp" SESSION_BRIDGE_DIR="$b" STUB_DIR="$w" \
+             STUB_MODE="$1" WATCH_BRIDGE_HANDOVER_WAIT="$2" STUB_UNDER="${3:-1}" \
+             STUB_PRED_AGE="${4:-300}" WATCH_BRIDGE_STATE=0
+      # Lifted only here, with the stub in place: it records every `Stop-Process` instead
+      # of running it, so no real process can be touched (same as the handover group).
+      unset WATCH_BRIDGE_NO_REAP
+      timeout 12 bash "$WATCHER" app 1 --once 2>&1 )
+  }
+
+  # The predecessor dies during the handover wait; on the second look only the arm itself
+  # is left. Before the fix that answer was "delivering", and the arm stepped aside.
+  out="$(run_ dying 1)"
+  if printf '%s\n' "$out" | grep -q 'disappeared within'; then
+    ok "a predecessor that dies during the handover wait is noticed although the arm sees itself"
+  else bad "a predecessor that dies during the handover wait is noticed although the arm sees itself" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'already delivering'; then
+    bad "... and the arm does not step aside for itself" "$out"
+  else ok "... and the arm does not step aside for itself"; fi
+  # After taking over, the dead predecessor's pids are not ended: they come from the
+  # inventory before the wait, and Windows reuses pids.
+  if [[ -s "$w/stops" ]]; then
+    bad "... and no pid from before the wait is ended" "$(cat "$w/stops")"
+  else ok "... and no pid from before the wait is ended"; fi
+
+  # Only the arm itself, older than 30 s (a long wait for the lock in a mass start).
+  out="$(run_ none 1)"
+  if printf '%s\n' "$out" | grep -q 'already delivering'; then
+    bad "an arm older than 30 s does not step aside in favour of itself" "$out"
+  else ok "an arm older than 30 s does not step aside in favour of itself"; fi
+  # Same, started by hand (no session binary above it): before the fix the arm was its own
+  # "silent remnant" and ended itself.
+  out="$(run_ none 1 0)"
+  if [[ -s "$w/stops" ]]; then
+    bad "an arm started by hand does not end its own processes" "$(cat "$w/stops")"
+  else ok "an arm started by hand does not end its own processes"; fi
+
+  # A young foreign wrapper is never cleared -- the second job of the old age filter.
+  out="$(run_ young 1)"
+  if grep -q '1003' "$w/stops" 2>/dev/null; then
+    bad "a foreign wrapper seconds old is not cleared" "$(cat "$w/stops")"
+  else ok "a foreign wrapper seconds old is not cleared"; fi
+
+  # The normal case must not change: a living predecessor is honoured -- also when the arm
+  # sees itself next to it.
+  out="$(run_ living 1)"
+  if printf '%s\n' "$out" | grep -q 'already delivering (PID 1002)'; then
+    ok "a living predecessor is still honoured, and named correctly"
+  else bad "a living predecessor is still honoured, and named correctly" "$out"; fi
+  # A young predecessor counts too: two arms starting together end up as one, not two.
+  out="$(run_ living 1 1 5)"
+  if printf '%s\n' "$out" | grep -q 'already delivering (PID 1002)'; then
+    ok "a living predecessor counts even when everything is seconds old"
+  else bad "a living predecessor counts even when everything is seconds old" "$out"; fi
+}
+
 test_hook() {
   head_ "watcher: the hook, and waking on a hand-over that does not name you in to:"
   local b; b="$(new_bridge)"
@@ -2751,7 +2879,7 @@ test_reap() {
   cat > "$W/bin/powershell.exe" <<STUB
 #!/usr/bin/env bash
 if printf '%s' "\$*" | grep -q 'Stop-Process'; then
-  printf '%s\n' "\$*" | grep -oE -- '-Id [0-9,]+' >> '$log'
+  printf '%s\n' "\$*" | grep -oE -- '-Id [0-9,]+|@\\([0-9,]+\\)' | sed -E 's/^@\\((.*)\\)\$/-Id \\1/' >> '$log'
   exit 0
 fi
 cat <<'INV'
@@ -2827,7 +2955,7 @@ STUB
   cat > "$W/bin/powershell.exe" <<STUB
 #!/usr/bin/env bash
 if printf '%s' "\$*" | grep -q 'Stop-Process'; then
-  printf '%s\n' "\$*" | grep -oE -- '-Id [0-9,]+' >> '$log'
+  printf '%s\n' "\$*" | grep -oE -- '-Id [0-9,]+|@\\([0-9,]+\\)' | sed -E 's/^@\\((.*)\\)\$/-Id \\1/' >> '$log'
   exit 0
 fi
 cat <<'INV'
@@ -2913,7 +3041,7 @@ test_unknownarm() {
     cat > "$W/bin/powershell.exe" <<STUB
 #!/usr/bin/env bash
 if printf '%s' "\$*" | grep -q 'Stop-Process'; then
-  printf '%s\n' "\$*" | grep -oE -- '-Id [0-9,]+' >> '$log'
+  printf '%s\n' "\$*" | grep -oE -- '-Id [0-9,]+|@\\([0-9,]+\\)' | sed -E 's/^@\\((.*)\\)\$/-Id \\1/' >> '$log'
   exit 0
 fi
 cat <<'INV'
@@ -3046,7 +3174,14 @@ PS1
   out="$( SIDDIR="$(cygpath -w "$W/sid" 2>/dev/null || printf '%s' "$W/sid")" \
           CLASSIFY="$(cygpath -w "$W/ids.ps1" 2>/dev/null || printf '%s' "$W/ids.ps1")" \
           powershell.exe -NoProfile -NonInteractive -File "$(cygpath -w "$W/idfix.ps1" 2>/dev/null || printf '%s' "$W/idfix.ps1")" \
-          2>&1 | tr -d '\r' | sed 's/|[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]$//' | LC_ALL=C sort | paste -sd' ' - )"
+          2>&1 | tr -d '\r' | sed 's/|[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]$//' | LC_ALL=C sort )"
+  # Every bash.exe also yields a `winpar` row (pid | age | parent pid) for `drop_own_tree`,
+  # which consumes them before anyone else reads the inventory. Checked here once, then
+  # left out of the classification below.
+  if printf '%s\n' "$out" | grep -qx 'winpar|-|112|300|40|'; then
+    ok "each bash.exe also yields its parent edge for the own-tree filter"
+  else bad "each bash.exe also yields its parent edge for the own-tree filter" "$out"; fi
+  out="$(printf '%s\n' "$out" | grep -v '^winpar|' | paste -sd' ' - )"
   # The literal id resolves twice (script and wrapper), the path-ful `.session-id` form
   # resolves by reading the file, the path-less one becomes `unknown`, and the one-shot
   # `--status` call is not an arm at all -- otherwise every diagnostic run would report itself.
@@ -4833,6 +4968,7 @@ case "${1:-all}" in
   orphan) test_orphan ;;
   hook) test_hook ;;
   handover) test_handover ;;
+  selftree) test_selftree ;;
   new_message) test_new_message ;;
   commands) test_commands ;;
   linkcommands) test_linkcommands ;;
@@ -4863,7 +4999,7 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_selftree; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 

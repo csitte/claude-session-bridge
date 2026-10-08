@@ -414,6 +414,50 @@ Test group `handover`. The half that makes the other half provable: with the sec
 disabled, the arm steps aside for the dying predecessor exactly as before — and a predecessor
 that *stays* alive is still honoured, or every re-arm would produce a second watcher.
 
+### An arm does not see itself
+
+**The second look above never worked.** The inventory shows every arm **itself** as well, and
+after the wait it found its own wrapper and its own script there. The answer was always
+"delivering": if the predecessor had died in the meantime, the arm stepped aside anyway. Reproduced
+on a real system with a probe id -- arm 1 running, arm 2 waiting 20 s, arm 1 killed during the
+wait -- the old code said "already delivering ... this arm exits", and the id was left without a
+watcher.
+
+**The old guard was an age.** `age -gt 30` was meant to say "this is not me". But an arm that
+waits for the arm lock (up to 30 s in a mass start) plus PowerShell is older itself, and steps
+aside **in favour of itself**. Reproduced with the lock held: the old code named its own pid as
+the predecessor. Without the session binary above it (started by hand) it even landed in `stale`
+and ended itself.
+
+**What "me" is was measured:** an arm started from the agent's shell tool stands in
+`Win32_Process` as **five** `bash.exe` -- the `Git\bin\bash.exe` launcher, the msys shell below
+it, the script, and two forked children with the same command line (process substitution and a
+pipeline while the inventory runs). `drop_own_tree` removes them from the inventory before it is
+cached: the msys ancestors through `/proc`, the launcher and the children through the Windows
+parent edges (a new row kind, `winpar`, that never leaves the inventory). An edge only counts if
+the parent is not younger than the child -- otherwise a reused pid could make a foreign watcher
+"us".
+
+**The age had a second job, and only its absence showed it.** In the first trial run without the
+filter, an arm killed a **query shell**: its command line contained `watch-bridge.sh <probe-id>`,
+and to the inventory it was a "wrapper without a script". So the filter also protected **young
+foreign** processes from being cleared -- a second arm that is just starting as much as any shell
+that merely mentions the call. The age now applies to `stale` only: a young foreign arm counts as
+a predecessor (then this arm steps aside), but it is never cleared.
+
+**And after a failed handover** `stale` came from the inventory before the wait and named exactly
+the pids that had provably vanished. The inventory is now read again, and `Stop-Process` only
+hits what still carries `watch-bridge.sh` on its command line at the moment of ending -- check
+and end in one call.
+
+Test group `selftree`: the stub reports the arm's **own** process chain, as the real inventory
+does. Every earlier stub listed only foreign processes, which is why these bugs stayed green.
+Not in the stub: the walk up to the Git launcher, which exists only on Windows.
+
+**Found on the way, and more expensive than the bug:** bash reads a running script piecemeal.
+Overwriting `watch-bridge.sh` **in place** breaks every arm that is running at that moment (one
+failed with `list: unbound variable`). Replace it with a new file and `mv`.
+
 ### An orphaned watcher ends by itself
 
 When a watch expires, the harness ends the **shell** (`bash -c ...`), not the script below it.

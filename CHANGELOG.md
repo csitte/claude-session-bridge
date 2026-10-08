@@ -87,6 +87,18 @@ commit it names will say why.
   result on five files. (`bridge/install-watcher.sh`)
 
 ### Fixed
+- **An arm took itself for its predecessor.** The inventory lists the arm's own processes
+  too, and nothing excluded them. Two effects, both silent: the handover check (look again
+  after a wait whether the predecessor still lives) always found "a predecessor" -- the arm
+  itself -- so an arm stepped aside for a watcher that had just died and the id was left
+  without one; and an arm that had waited longer than 30 s for the arm lock stepped aside in
+  favour of itself (started by hand, it even ended its own processes). The own process tree
+  is now removed from the inventory (`drop_own_tree`); the 30-second age rule applies only to
+  clearing remnants, where it still protects young foreign processes. After a failed
+  handover the inventory is read again, and a remnant is only ended if it still carries
+  `watch-bridge.sh` on its command line at that moment (pids get reused). New test group
+  `selftree`, whose stub reports the arm's own process chain. `docs/watcher.md`, "An arm
+  does not see itself".
 - **Four printed hints still told you to arm a Monitor.** The arm form changed to a
   background `--once` command, and the template said so -- but `arm_hint`, the coverage
   block of `--status` and the installer's closing advice did not. The installer's was the

@@ -807,6 +807,102 @@ resolve_unknown_arms() {
   done
 }
 
+# --- Taking the own process tree out of the inventory ------------------------------
+# When an arm checks whether a watcher already delivers for its id, the inventory also
+# shows ITSELF -- and until 2026-10-08 it took itself for its predecessor. Two effects,
+# both silent:
+#   - The handover check looked again after 8 s whether the predecessor still lived -- and
+#     found its own wrapper and its own script. The answer was always "delivering"; if the
+#     predecessor had died in those 8 s, the arm stepped aside anyway and the id was left
+#     without a watcher. Exactly the case the check was built for.
+#   - The guard against it was an age buffer (`age -gt 30` meaning "not me"). An arm that
+#     waits for the lock in a mass start (up to 30 s) plus PowerShell is itself older than
+#     30 s and steps aside in favour of itself. Without the session binary (started by
+#     hand) it even landed in `stale`, and `Stop-Process` hit its own pid.
+# An age is a proxy for "is this me?" -- and the question can be answered directly.
+#
+# What "me" is was MEASURED (Windows, Git Bash): a single arm started from the agent's
+# shell tool stands in Win32_Process as FIVE bash.exe -- the `Git\bin\bash.exe` launcher,
+# under it the msys shell (`bash -c ...`), the script, and two forked children with the
+# SAME command line as the script (process substitution and a pipeline, while the
+# inventory runs). /proc does not know the launcher, and the Windows parent edge from the
+# script to its shell is broken (it points at an exited intermediate). Hence two ways:
+#   1. the msys chain through /proc: `$$` and all its ancestors, each by its winpid;
+#   2. Windows edges from the `winpar` rows: upwards from every own process as long as
+#      the parent is a bash.exe (finds the launcher), downwards from `$$` (finds the
+#      children).
+# A parent edge only counts if the parent is NOT younger than the child: Windows reuses
+# pids, and an edge to a reused pid would count a foreign watcher as "us" -- it would
+# become invisible.
+# Without /proc (WATCH_BRIDGE_PROC=0) and without `winpar` rows the set stays empty and the
+# inventory is as unfiltered as before. On Linux (no winpid) the pid itself is the key --
+# only so that the test suite runs there.
+drop_own_tree() {
+  local proc="${WATCH_BRIDGE_PROC:-/proc}"
+  local -a lines=()
+  local -A par=() alter=() kinder=() own=()
+  local line kind id pid age under started
+  while IFS= read -r line; do
+    if [[ "$line" == winpar\|* ]]; then
+      IFS='|' read -r kind id pid age under started <<< "$line"
+      [[ -n "$pid" ]] || continue
+      par[$pid]=$under; alter[$pid]=${age:-0}
+      kinder[$under]="${kinder[$under]:-} $pid"
+      continue
+    fi
+    lines+=("$line")
+  done
+
+  # Key of an msys process: its winpid, on Linux the pid itself.
+  _own_key() { local w=""; { read -r w < "$proc/$1/winpid"; } 2>/dev/null; echo "${w:-$1}"; }
+  local self=""
+  if [[ "$proc" != 0 && -d "$proc/$$" ]]; then
+    self=$(_own_key $$)
+    local m=$$ pp rest n=0
+    while [[ -n "$m" && "$m" -gt 1 && $n -lt 32 ]]; do
+      own[$(_own_key "$m")]=1
+      pp=""
+      if ! { read -r pp < "$proc/$m/ppid"; } 2>/dev/null; then
+        # Linux: the fourth field of stat, after the command name in parentheses.
+        { read -r rest < "$proc/$m/stat"; } 2>/dev/null || break
+        rest=${rest##*) }; read -r _ pp _ <<< "$rest"
+      fi
+      m=$pp; n=$((n+1))
+    done
+  fi
+
+  # Upwards along Windows edges, only through bash.exe (only those have a winpar row).
+  local w x p
+  for w in "${!own[@]}"; do
+    x=$w
+    while [[ -n "${par[$x]+x}" ]]; do
+      p=${par[$x]}
+      [[ -n "${par[$p]+x}" && -z "${own[$p]+x}" ]] || break
+      [[ "${alter[$p]}" -ge "${alter[$x]}" ]] || break
+      own[$p]=1; x=$p
+    done
+  done
+  # Downwards only from `$$`: the children of this script.
+  if [[ -n "$self" ]]; then
+    local -a todo=("$self")
+    while [[ ${#todo[@]} -gt 0 ]]; do
+      x=${todo[0]}; todo=("${todo[@]:1}")
+      for p in ${kinder[$x]:-}; do
+        [[ -z "${own[$p]+x}" ]] || continue
+        [[ "${alter[$p]}" -le "${alter[$x]:-${alter[$p]}}" ]] || continue
+        own[$p]=1; todo+=("$p")
+      done
+    done
+  fi
+
+  for line in "${lines[@]}"; do
+    IFS='|' read -r kind id pid age under started <<< "$line"
+    case "$kind" in claudepid) printf '%s\n' "$line"; continue ;; esac
+    [[ -n "${pid:-}" && -n "${own[$pid]+x}" ]] && continue
+    printf '%s\n' "$line"
+  done
+}
+
 watcher_inventory() {
   command -v powershell.exe >/dev/null 2>&1 || return 0
   local cache="${TMPDIR:-/tmp}/watch-bridge-inv.$$"
@@ -893,6 +989,11 @@ try {
 foreach ($p in $all.Values) {
   if ($p.Name -ne 'bash.exe') { continue }
   if ($exited.ContainsKey([int]$p.ProcessId)) { continue }
+  # The parent edge of EVERY bash.exe, for `drop_own_tree`: only with it can the bash side
+  # find the `Git\bin\bash.exe` launcher above its own msys shell and the forked children
+  # of its own script. The row never leaves `watcher_inventory` -- `drop_own_tree` eats it.
+  # Fields as in the other rows: pid | age | (instead of `under-claude`) parent pid.
+  'winpar|-|{0}|{1}|{2}|' -f $p.ProcessId, [int]($now - $p.CreationDate).TotalSeconds, [int]$p.ParentProcessId
   # Three kinds, not two. `service` comes FIRST, because a service would otherwise pass
   # as a `script` and be counted as one half of a pair whose other half (a wrapper under
   # the session binary) does not exist for it -- which is exactly what made it a "silent
@@ -1014,7 +1115,7 @@ PS_INV
   WATCH_BRIDGE_SPIN_MINAGE="$spin_minage" WATCH_BRIDGE_SPIN_MINPCT="$spin_minpct" \
   WATCH_BRIDGE_ZOMBIE_MINAGE="$zombie_minage" \
     powershell.exe -NoProfile -NonInteractive -Command "$code" 2>/dev/null \
-    | tr -d '\r' | resolve_unknown_arms > "$cache.tmp" 2>/dev/null
+    | tr -d '\r' | resolve_unknown_arms | drop_own_tree > "$cache.tmp" 2>/dev/null
   mv -f "$cache.tmp" "$cache" 2>/dev/null || true
   cat "$cache" 2>/dev/null || true
 }
@@ -1997,6 +2098,52 @@ done
 #
 # "Old" means older than 30 s: this arm's own wrapper processes are only seconds old
 # and must not be counted.
+# Reads the inventory for `handle_existing` -- as a function of its own, because after a
+# failed handover it has to be read a SECOND time (otherwise `stale` names the pids that
+# just vanished, and Windows reuses pids quickly). Bash scoping is dynamic: the
+# assignments here hit the `local` variables of `handle_existing`, not globals.
+_read_existing() {
+  delivering=0 script_pid="" unattributable=0 wrapper_live=0
+  stale=() spin=()
+  while IFS='|' read -r kind id pid age under started; do
+    # An arm whose id cannot be determined: it may be the wrapper of the very process we
+    # are about to end as a "silent remnant" -- and it cannot be proven either way, because
+    # there is no live parent edge between wrapper and script. So it is counted, not guessed.
+    if [[ "$kind" == unknown ]]; then unattributable=$((unattributable+1)); continue; fi
+    # Orphaned consoles with sustained load belong to NO id -- collect them separately,
+    # before any id filter. Exactly this blindness is why the incident ran for fourteen
+    # hours although a reaper existed.
+    if [[ "$kind" == spinner ]]; then
+      [[ -n "${pid:-}" ]] && spin+=("$pid")
+      continue
+    fi
+    [[ "$kind" == script || "$kind" == wrapper || "$kind" == service ]] || continue
+    [[ "${id:-}" == "$me" ]] || continue
+    # Until 2026-10-08 this read `age -gt 30 || continue`, and the filter had TWO jobs.
+    # The first -- "is this me?" -- it did badly: if the own arm had waited longer for the
+    # lock it was older itself and stepped aside in favour of itself. `drop_own_tree` does
+    # that job now; what arrives here is foreign. The second job only became visible once
+    # the filter was gone: it protected YOUNG foreign processes from being cleared -- a
+    # second arm whose wrapper is up and whose script is still coming, and any shell whose
+    # command line merely mentions `watch-bridge.sh <id>`. In a trial run without the
+    # filter, an arm took exactly such a query shell for a "wrapper without script" and
+    # killed it. So the age now applies to `stale` only: a young foreign arm counts as a
+    # predecessor (then this arm steps aside), but it is never cleared.
+    # A running service IS the predecessor to step aside for, and it never belongs in
+    # `stale`. Exactly that happened on the first trial run: the delivery service was
+    # running, the next start took it for a silent remnant and killed it. Nothing was
+    # lost (the mark carries over), but every start would have killed and restarted it,
+    # and in that gap nobody delivers.
+    if [[ "$kind" == service ]]; then
+      script_pid="$pid"; wrapper_live=1
+      continue
+    fi
+    [[ "$kind" == wrapper && "$under" == 1 ]] && wrapper_live=1
+    [[ "$kind" == script ]] && script_pid="$pid"
+    [[ "${age:-0}" -gt 30 ]] && stale+=("$pid")
+  done < <(watcher_inventory)
+}
+
 handle_existing() {
   [[ -z "${WATCH_BRIDGE_NO_REAP:-}" ]] || return 0
 
@@ -2020,34 +2167,7 @@ handle_existing() {
   local kind id pid age under started
   local delivering=0 script_pid="" unattributable=0 wrapper_live=0
   local -a stale=() spin=()
-  while IFS='|' read -r kind id pid age under started; do
-    # An arm whose id cannot be determined: it may be the wrapper of the very process we
-    # are about to end as a "silent remnant" -- and it cannot be proven either way, because
-    # there is no live parent edge between wrapper and script. So it is counted, not guessed.
-    if [[ "$kind" == unknown ]]; then unattributable=$((unattributable+1)); continue; fi
-    # Orphaned consoles with sustained load belong to NO id -- collect them separately,
-    # before any id filter. Exactly this blindness is why the incident ran for fourteen
-    # hours although a reaper existed.
-    if [[ "$kind" == spinner ]]; then
-      [[ -n "${pid:-}" ]] && spin+=("$pid")
-      continue
-    fi
-    [[ "$kind" == script || "$kind" == wrapper || "$kind" == service ]] || continue
-    [[ "${id:-}" == "$me" ]] || continue
-    [[ "${age:-0}" -gt 30 ]] || continue
-    # A running service IS the predecessor to step aside for, and it never belongs in
-    # `stale`. Exactly that happened on the first trial run: the delivery service was
-    # running, the next start took it for a silent remnant and killed it. Nothing was
-    # lost (the mark carries over), but every start would have killed and restarted it,
-    # and in that gap nobody delivers.
-    if [[ "$kind" == service ]]; then
-      script_pid="$pid"; wrapper_live=1
-      continue
-    fi
-    [[ "$kind" == wrapper && "$under" == 1 ]] && wrapper_live=1
-    [[ "$kind" == script ]] && script_pid="$pid"
-    stale+=("$pid")
-  done < <(watcher_inventory)
+  _read_existing
 
   # "Delivering" here means what it means in --status: a wrapper under claude.exe AND a
   # script of the same id. Until 2026-09-14 the wrapper alone was enough -- and a wrapper
@@ -2061,8 +2181,8 @@ handle_existing() {
   # untouched -- arms without a determinable id are already out via `continue` above, so
   # wrapper_live never sees them.
   #
-  # The 30-second filter above covers the startup case: an arm whose wrapper is up and
-  # whose script is still coming is younger than 30s and is not considered at all.
+  # The startup case (own wrapper up, own script just there) was covered by a 30-second
+  # filter until 2026-10-08; now the arm does not see itself at all.
   [[ $wrapper_live -eq 1 && -n "$script_pid" ]] && delivering=1
 
   # ALWAYS reap spinners -- even if this arm is about to step aside. They have nothing
@@ -2098,6 +2218,10 @@ handle_existing() {
       if [[ "$(delivery_state "$me")" != delivering ]]; then
         echo "watch-bridge: the watcher this arm was about to step aside for" \
              "(PID $script_pid) disappeared within ${handover}s -- this arm takes over." >&2
+        # Read the inventory AGAIN: `stale` would otherwise come from before the sleep and
+        # name exactly the pids that have provably vanished -- and Windows reuses pids
+        # quickly, so the `Stop-Process` below could hit a stranger.
+        _read_existing
         delivering=0
       fi
     fi
@@ -2141,8 +2265,11 @@ handle_existing() {
     echo "              Look with: watch-bridge.sh --status" >&2
   elif [[ ${#stale[@]} -gt 0 ]]; then
     local list; list=$(IFS=,; echo "${stale[*]}")
+    # Only what still carries a watch-bridge command line at the moment of ending is ended:
+    # between inventory and Stop-Process a pid may have been freed and reused. Check and
+    # end in the same call, no second window in between.
     powershell.exe -NoProfile -NonInteractive \
-      -Command "Stop-Process -Id $list -Force -ErrorAction SilentlyContinue" >/dev/null 2>&1
+      -Command "\$ziel = @($list); Get-CimInstance Win32_Process | Where-Object { \$ziel -contains [int]\$_.ProcessId -and \$_.CommandLine -like '*watch-bridge.sh*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force -ErrorAction SilentlyContinue }" >/dev/null 2>&1
     echo "watch-bridge: removed silent remnant of '$me' (PID $list)" >&2
   fi
 
