@@ -276,6 +276,18 @@ test_watcher() {
   assert_eq "invalid SESSION_BRIDGE_DIR aborts (no silent fallback)" "1" "$?"
   bash "$WATCHER" >/dev/null 2>&1
   assert_eq "no arguments -> usage, exit 64" "64" "$?"
+  # A mistyped switch or a zero interval used to land in `poll` and become `sleep --onc` /
+  # `sleep 0`: the loop then ran over the bridge without a pause (74 passes in 3 s,
+  # measured). The `timeout` is the other half of the proof -- before the fix these calls
+  # never returned and would come back as 124.
+  SESSION_BRIDGE_DIR="$b" timeout 10 bash "$WATCHER" app --onc >/dev/null 2>&1
+  assert_eq "a mistyped switch is usage, exit 64 -- not a loop without a pause" "64" "$?"
+  SESSION_BRIDGE_DIR="$b" timeout 10 bash "$WATCHER" app 0 >/dev/null 2>&1
+  assert_eq "a zero interval is usage, exit 64"                                 "64" "$?"
+  SESSION_BRIDGE_DIR="$b" timeout 10 bash "$WATCHER" app 5x >/dev/null 2>&1
+  assert_eq "a non-numeric interval is usage, exit 64"                          "64" "$?"
+  SESSION_BRIDGE_DIR="$b" timeout 3 bash "$WATCHER" app 0.5 >/dev/null 2>&1
+  assert_eq "a fractional interval is still accepted (the loop runs until timeout)" "124" "$?"
   SESSION_BRIDGE_DIR="$b" bash "$WATCHER" --status app >/dev/null 2>&1
   assert_eq "--status exits 0 even with nothing running" "0" "$?"
 

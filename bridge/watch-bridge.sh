@@ -2082,9 +2082,19 @@ for a in "${@:2}"; do
   case "$a" in
     --once)    once=1 ;;
     --service) service=1 ;;
+    -*)        echo "watch-bridge: unknown switch '$a'" >&2; usage ;;
     *)         poll="$a" ;;
   esac
 done
+# The interval has to be a number greater than zero. Until 2026-10-09 EVERYTHING unknown
+# landed in `poll` -- a `--onc` instead of `--once` became `sleep --onc`, which fails at
+# once, and the loop ran over the bridge without a pause: measured 74 passes in 3 s. A `0`
+# did the same. Both are a loud failure with `usage` now, instead of a watcher that looks
+# as if it were running.
+if ! [[ "$poll" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! awk -v p="$poll" 'BEGIN { exit !(p > 0) }'; then
+  echo "watch-bridge: poll interval must be a number greater than 0, not '$poll'" >&2
+  usage
+fi
 
 # --- What is already running: step aside or clean up --------------------------
 # A watcher survives the end of its session structurally (msys tears the process tree

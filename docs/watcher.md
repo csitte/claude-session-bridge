@@ -458,6 +458,20 @@ Not in the stub: the walk up to the Git launcher, which exists only on Windows.
 Overwriting `watch-bridge.sh` **in place** breaks every arm that is running at that moment (one
 failed with `list: unbound variable`). Replace it with a new file and `mv`.
 
+### A mistyped switch is a loud failure, not a loop without a pause
+
+Everything after the id that was not `--once` or `--service` landed in `poll`. A `--onc`
+therefore became `sleep --onc`, which fails at once, and the loop ran over the bridge
+**without a pause** -- measured at 74 passes in 3 seconds, each one a full glob over the
+bridge. A `0` as the interval does the same. From the outside such a watcher looked as if it
+were running: process there, id in the inventory, `--status` content -- only with constant
+load on the drive.
+
+An unknown `-...` is now a failure with `usage` (exit 64), and the interval has to be a number
+greater than zero (fractions allowed; the suite runs `0.5`). Four checks in test group
+`watcher`; the other half of the proof is the `timeout` around them: before the fix these
+calls never returned (124), after it they return at once (64).
+
 ### An orphaned watcher ends by itself
 
 When a watch expires, the harness ends the **shell** (`bash -c ...`), not the script below it.

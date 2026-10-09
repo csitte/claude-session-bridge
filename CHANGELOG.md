@@ -87,6 +87,11 @@ commit it names will say why.
   result on five files. (`bridge/install-watcher.sh`)
 
 ### Fixed
+- **A mistyped switch no longer turns the watcher into a loop without a pause.** Everything
+  after the id that was not `--once` or `--service` was taken as the poll interval, so
+  `--onc` became `sleep --onc` (fails at once) and the loop ran over the bridge 25 times a
+  second; `0` did the same. An unknown `-...` and a non-positive or non-numeric interval
+  are now `usage` (exit 64). Four checks in the `watcher` group.
 - **The launcher's memory notices never appeared at a launch.** `cc_launch` split its entry
   with `{ local IFS='|'; read ...; }`; braces are not a scope, so `|` stayed the field
   separator for the rest of `cc_launch` and everything it calls. `cc_memory_state` then read
