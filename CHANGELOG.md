@@ -87,6 +87,11 @@ commit it names will say why.
   result on five files. (`bridge/install-watcher.sh`)
 
 ### Fixed
+- **Giving up on a file without a readable header is said, not done silently.** After the
+  retries (`WATCH_BRIDGE_RETRIES`, default 40) such a file went into `seen` without a word
+  -- a message the sync client had not loaded in time, or one with a malformed header, was
+  gone for this watcher. It is now a NOTE on stdout naming the file, and in `--once` mode
+  the arm ends on it so the session reads it.
 - **`--status` no longer counts a shell without its script as coverage.** A wrapper under
   the session binary whose script had died got neither a row nor UNARMED -- the diagnosis
   said "no watcher is running" and nothing else, while the arm and `delivery_state` had

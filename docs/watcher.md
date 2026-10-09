@@ -489,6 +489,22 @@ young shell (under `WATCH_BRIDGE_START_GRACE`) is `starting`, as before: its scr
 the way. Four checks in test group `coverage`; the stub replaces the inventory, so they run
 on every platform.
 
+### Giving up is said: the file without a readable header
+
+A file whose `from:` and `to:` cannot be read is looked at again up to 40 times
+(`WATCH_BRIDGE_RETRIES`, 200 s at a 5 s poll) -- a sync client often delivers the name before
+the content. After that it went into `seen` **silently** until 2026-10-09: done for this
+watcher, without a word. That hits two situations, and both cost a message: a long sync (the
+message is in the next fold, but the push is gone) and a malformed header (`To:`, `**to:**`
+-- a bot may write that, and then **no** watcher ever reads it).
+
+Giving up now prints a NOTE on stdout: which file, which thread, after how many passes, and
+the two possible causes with the path. Same mark as `near_miss` (`gemeldet`): in `--once` mode
+the arm ends on it, otherwise the line would sit in the output file until the next real
+delivery brought it along -- exactly as silent as the case it reports. Not `delivered`; the
+hook does not run. The suite runs the case with `WATCH_BRIDGE_RETRIES=3` in seconds; the old
+version ran into the `timeout` (124) instead of ending (0).
+
 ### An orphaned watcher ends by itself
 
 When a watch expires, the harness ends the **shell** (`bash -c ...`), not the script below it.

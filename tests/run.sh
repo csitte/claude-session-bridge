@@ -271,6 +271,25 @@ test_watcher() {
     "200-late.md 210-normal.md" \
     "$(watch_run "$b" app posts_late 2)"
 
+  # Giving up is SAID, not done silently. Until 2026-10-09 a file whose header never became
+  # readable went into `seen` after the retries without a word -- a message the sync
+  # client had not loaded in time, or one with a malformed header, was simply gone for
+  # this watcher. Now it is a NOTE on stdout, and in `--once` mode the arm ends on it, so
+  # the session actually reads it. Retries cut to 3 so the test takes seconds, not minutes.
+  local gout="$TMPROOT/giveup.$RANDOM" gpid grc
+  ( export SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_RETRIES=3 WATCH_BRIDGE_STATE=0
+    timeout 20 bash "$WATCHER" app 1 --once ) > "$gout" 2>/dev/null &
+  gpid=$!
+  sleep 2                                             # baseline pass
+  printf 'To: app\nnot a frontmatter\n' > "$b/threads/001-test/msgs/230-malformed.md"
+  wait "$gpid"; grc=$?
+  assert_eq "a file whose header never becomes readable ends the --once arm (not 124)" "0" "$grc"
+  if grep -q '^NOTE — file without a readable header.*230-malformed.md' "$gout"; then
+    ok "... and says which file it gave up on"
+  else bad "... and says which file it gave up on" "$(cat "$gout")"; fi
+  if grep -q 'NOT delivered' "$gout"; then ok "... and that nothing was delivered"; else bad "... and that nothing was delivered" "$(cat "$gout")"; fi
+  rm -f "$b/threads/001-test/msgs/230-malformed.md"
+
   head_ "watcher: bridge path resolution"
   SESSION_BRIDGE_DIR="$TMPROOT/does-not-exist" bash "$WATCHER" app 1 >/dev/null 2>&1
   assert_eq "invalid SESSION_BRIDGE_DIR aborts (no silent fallback)" "1" "$?"

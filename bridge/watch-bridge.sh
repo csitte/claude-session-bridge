@@ -2572,6 +2572,16 @@ while true; do
     if [[ -z "$from" && -z "$to" ]]; then
       n=$(( ${retry[$f]:-0} + 1 ))
       if [[ $n -lt $retry_max ]]; then retry["$f"]=$n; continue; fi
+      # Given up -- and SAID so. Until 2026-10-09 the file went into `seen` silently here:
+      # after 40 passes (200 s) a message whose header the sync client had not loaded yet
+      # was done for this watcher, and one with a malformed header (`To:`, `**to:**`, as a
+      # bot may write it) likewise, without anyone hearing of it. Same mark as `near_miss`:
+      # in `--once` mode stdout reaches the session only when the process ends.
+      echo "NOTE — file without a readable header ticked off after $n passes, NOT delivered: thread '$slug' — $(basename "$f")"
+      echo "       Either the sync client is still loading it (then it is in the next fold), or its"
+      echo "       header has the wrong shape ('To:', '**to:**'). Look at: $f"
+      reported=1
+      unset "retry[$f]"
     fi
     seen["$f"]=1
     state_dirty=1
