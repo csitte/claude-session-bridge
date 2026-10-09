@@ -990,7 +990,12 @@ cc_launch() {
   # Split by field instead of cutting off a prefix: there is a FOURTH field now
   # (`instructions=<key>`), and `extra="${rest#*|}"` would have taken it along and passed
   # it to `claude` as-is. For three-field entries the result is unchanged.
-  { local IFS='|'; read -r -a _f <<< "$entry"; }
+  # The separator is set FOR THIS ONE `read` only. Until 2026-10-08 this read
+  # `{ local IFS='|'; read ...; }` -- braces are not a scope, so '|' stayed in force for the
+  # rest of cc_launch and everything it calls, and the memory stamp
+  # (`read -r shost sts scount`) landed whole in its first field: the "state from another
+  # machine" and "sync still running" lines never appeared at a launch.
+  IFS='|' read -r -a _f <<< "$entry"
   name="${_f[0]}"; dir="${_f[1]:-}"; extra="${_f[2]:-}"
   case "${_f[3]:-}" in
     "")               instr="" ;;

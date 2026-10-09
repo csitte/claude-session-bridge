@@ -87,6 +87,13 @@ commit it names will say why.
   result on five files. (`bridge/install-watcher.sh`)
 
 ### Fixed
+- **The launcher's memory notices never appeared at a launch.** `cc_launch` split its entry
+  with `{ local IFS='|'; read ...; }`; braces are not a scope, so `|` stayed the field
+  separator for the rest of `cc_launch` and everything it calls. `cc_memory_state` then read
+  the whole stamp into its first field and returned silently -- "state from another
+  machine" and "sync still running" were never shown, although calling the function on its
+  own worked. The separator now applies to that one `read` only; a new check in the `stamp`
+  group goes through `cc_launch` and was red before the fix.
 - **An arm took itself for its predecessor.** The inventory lists the arm's own processes
   too, and nothing excluded them. Two effects, both silent: the handover check (look again
   after a wait whether the predecessor still lives) always found "a predecessor" -- the arm

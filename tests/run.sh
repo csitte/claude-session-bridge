@@ -3449,6 +3449,22 @@ test_stamp() {
   if printf '%s\n' "$out" | grep -q '^\[memory\] proj: state from other-host'; then
     ok "a stamp from another host is shown"
   else bad "a stamp from another host is shown" "$out"; fi
+  # ... and the line has to reach the LAUNCH, not only the function. Until 2026-10-08
+  # cc_launch split its entry with `{ local IFS='|'; read ...; }` -- braces are not a scope,
+  # so the '|' stayed in force for the rest of cc_launch and everything it calls, and
+  # `read -r shost sts scount` put the whole stamp into the first field and returned
+  # silently. Every check above calls cc_memory_state directly and stayed green for a month.
+  local mbin="$TMPROOT/stbin.$RANDOM"; mkdir -p "$mbin"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$mbin/mintty"; chmod +x "$mbin/mintty"
+  out="$( ( export CLAUDE_CONFIG_DIR="$cfg" PATH="$mbin:$PATH" CC_LIVE_PIDS='' CC_NO_PULL=1 \
+              CC_FRESH=0 CC_FORCE=0 CC_NO_CLONE=1
+            # shellcheck source=/dev/null
+            source "$ROOT/launcher/_lib.sh"
+            cc_launch "proj|$repo" 2>&1 >/dev/null
+            wait ) )"
+  if printf '%s\n' "$out" | grep -q '^\[memory\] proj: state from other-host'; then
+    ok "... and it reaches the launch, not only the function"
+  else bad "... and it reaches the launch, not only the function" "$out"; fi
   # a garbled stamp must not produce noise or an error
   printf 'garbage\n' > "$mem/.last-wrap"
   assert_eq "a garbled stamp is ignored, not reported" "" "$(state)"
