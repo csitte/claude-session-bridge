@@ -1469,7 +1469,7 @@ checkout_hint() { # $1 = the id it was called with; prints to stdout
 status_report() {
   local filter="${1:-}" grace="${WATCH_BRIDGE_START_GRACE:-90}"
   local kind id pid age under started st r
-  local -A live=() count=() young=() svc=()
+  local -A live=() count=() young=() svc=() wrap=() wraprow=() huelle=()
   local -a rows=() spinners=() zombies=() unknownarms=()
   while IFS='|' read -r kind id pid age under started; do
     [[ -n "${kind:-}" ]] || continue
@@ -1485,7 +1485,16 @@ status_report() {
     [[ -n "${id:-}" ]] || continue
     [[ -z "$filter" || "$id" == "$filter" ]] || continue
     if [[ "$kind" == wrapper ]]; then
-      [[ "$under" == 1 ]] && live["$id"]=1
+      # A shell alone is NOT "delivering". The arm and `delivery_state` have asked for
+      # shell AND script since 2026-09-14; here the shell was enough -- a session whose
+      # script had died got neither a row nor UNARMED. Reproduced: a stub with only a
+      # shell, session running, and `--status` said "no watcher is running" without any
+      # coverage line. Decided below, after reading: shell with script is delivering,
+      # shell without script gets a row of its own.
+      if [[ "$under" == 1 ]]; then
+        wrap["$id"]=1; wraprow["$id"]="$pid|$started|${age:-0}"
+        [[ "${age:-0}" -le "$grace" ]] && young["$id"]=1
+      fi
     else
       # A service carries its own liveness: it gets a row like a script AND counts as
       # delivering, because the wrapper that would otherwise prove it does not exist for
@@ -1497,6 +1506,16 @@ status_report() {
       [[ "${age:-0}" -le "$grace" ]] && young["$id"]=1
     fi
   done < <(watcher_inventory)
+  local wid wpid wstarted wage
+  for wid in "${!wrap[@]}"; do
+    if [[ -n "${count[$wid]:-}" ]]; then
+      live["$wid"]=1
+    else
+      huelle["$wid"]=1
+      IFS='|' read -r wpid wstarted wage <<<"${wraprow[$wid]}"
+      rows+=("$wid|$wpid|$wstarted|$wage")
+    fi
+  done
 
   # Second source: which sessions are running at all? Only together with it does a
   # remnant become a finding — or, just as usefully, a harmless leftover.
@@ -1531,6 +1550,7 @@ status_report() {
       IFS='|' read -r id pid started age <<<"$r"
       if   [[ "$age" -le "$grace" ]];    then st="starting (${age}s)"
       elif [[ -n "${svc[$id]:-}" ]];     then st="delivering (service, no session)"
+      elif [[ -n "${huelle[$id]:-}" ]];  then st="SHELL without its script — delivers nothing; arm now"
       elif [[ -n "${live[$id]:-}" ]];    then st="delivering"
       elif [[ -z "$sess" ]];             then st="REMNANT (silent)"
       elif [[ -n "${running[$id]:-}" ]]; then st="REMNANT (silent) — session IS RUNNING, unarmed"

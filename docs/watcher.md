@@ -472,6 +472,23 @@ greater than zero (fractions allowed; the suite runs `0.5`). Four checks in test
 `watcher`; the other half of the proof is the `timeout` around them: before the fix these
 calls never returned (124), after it they return at once (64).
 
+### `--status` no longer counts a shell without its script as coverage
+
+Since 2026-09-14 the arm and `delivery_state` ask for shell **and** script. `--status` kept
+asking for the shell alone: `live[id]` was set as soon as a wrapper under the session binary
+existed. A session whose script had died therefore got **neither a row** (rows existed only
+for scripts) **nor UNARMED** (the shell counted as coverage). Reproduced with a stub: only a
+shell in the inventory, the session running according to the registry -- the answer was "no
+watcher is running", nothing else. That is the quietest form this diagnosis has: it does not
+say "fine", it says nothing, and nothing reads as fine.
+
+The decision is now made after reading: a shell with a script is `delivering`, a shell
+without one gets a row of its own -- `SHELL without its script — delivers nothing; arm now`
+-- and does not count as coverage, so the running session behind it shows up as UNARMED. A
+young shell (under `WATCH_BRIDGE_START_GRACE`) is `starting`, as before: its script is on
+the way. Four checks in test group `coverage`; the stub replaces the inventory, so they run
+on every platform.
+
 ### An orphaned watcher ends by itself
 
 When a watch expires, the harness ends the **shell** (`bash -c ...`), not the script below it.

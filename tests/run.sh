@@ -2156,6 +2156,37 @@ test_coverage() {
     bad "without a process inventory the check says nothing" "$out"
   else ok "without a process inventory the check says nothing"; fi
 
+  # A SHELL WITHOUT ITS SCRIPT is not coverage. The arm and delivery_state have asked for
+  # shell AND script since 2026-09-14; --status still took the shell alone, so a session
+  # whose script had died showed neither a row nor UNARMED -- silence, while nothing was
+  # delivered (found in a review of the whole system, 2026-10-07). The stub replaces the
+  # inventory, so this half runs on every platform.
+  local sbin="$TMPROOT/covbin.$RANDOM"; mkdir -p "$sbin"
+  cat > "$sbin/powershell.exe" <<'STUB'
+#!/usr/bin/env bash
+if printf '%s' "$*" | grep -q 'Stop-Process'; then exit 0; fi
+echo 'wrapper|app|112|500|1|09-01 10:00'
+echo 'claudepid|-|4242|0|0|'
+STUB
+  chmod +x "$sbin/powershell.exe"
+  rm -rf "$reg"; write_session "$reg" 4242 '/repos/app' 'App'
+  out="$(PATH="$sbin:$PATH" WATCH_BRIDGE_INV_TTL=0 CLAUDE_CONFIG_DIR="$reg" bash "$WATCHER" --status 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q '^app .*SHELL without its script'; then
+    ok "a shell without its script is shown as such"
+  else bad "a shell without its script is shown as such" "$out"; fi
+  if printf '%s\n' "$out" | grep -q '^UNARMED: 1 running session'; then
+    ok "... and the running session behind it counts as unarmed"
+  else bad "... and the running session behind it counts as unarmed" "$out"; fi
+  if printf '%s\n' "$out" | grep -q 'delivering'; then
+    bad "... and nothing is called delivering" "$out"
+  else ok "... and nothing is called delivering"; fi
+  # The control: shell AND script of the same id is delivering, as before.
+  printf 'echo %s\n' "'script|app|113|500|0|09-01 10:00'" >> "$sbin/powershell.exe"
+  out="$(PATH="$sbin:$PATH" WATCH_BRIDGE_INV_TTL=0 CLAUDE_CONFIG_DIR="$reg" bash "$WATCHER" --status 2>/dev/null)"
+  if printf '%s\n' "$out" | grep -q '^app .*delivering$' && ! printf '%s\n' "$out" | grep -q 'UNARMED'; then
+    ok "shell plus script is still delivering and covered"
+  else bad "shell plus script is still delivering and covered" "$out"; fi
+
   CLAUDE_CONFIG_DIR="$reg" bash "$WATCHER" --status >/dev/null 2>&1
   assert_eq "--status still exits 0 with the coverage check in place" "0" "$?"
   unset SESSION_BRIDGE_DIR

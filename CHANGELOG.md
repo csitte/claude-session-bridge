@@ -87,6 +87,12 @@ commit it names will say why.
   result on five files. (`bridge/install-watcher.sh`)
 
 ### Fixed
+- **`--status` no longer counts a shell without its script as coverage.** A wrapper under
+  the session binary whose script had died got neither a row nor UNARMED -- the diagnosis
+  said "no watcher is running" and nothing else, while the arm and `delivery_state` had
+  treated that shell as not delivering since 2026-09-14. It now gets a row of its own
+  (`SHELL without its script — delivers nothing; arm now`) and the running session behind
+  it is reported as UNARMED. Four checks in the `coverage` group.
 - **A mistyped switch no longer turns the watcher into a loop without a pause.** Everything
   after the id that was not `--once` or `--service` was taken as the poll interval, so
   `--onc` became `sleep --onc` (fails at once) and the loop ran over the bridge 25 times a
