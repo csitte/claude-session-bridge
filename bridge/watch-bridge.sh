@@ -2322,9 +2322,14 @@ fm_field() { # $1=field $2=file
 # `all` falls through this check by itself (it is nobody's id) and therefore stays
 # unpushed, including as part of a list.
 addressed() { # $1=to-field
-  local t
-  # shellcheck disable=SC2086  # word splitting is the point: split the list on commas
-  for t in ${1//,/ }; do
+  # Split on commas ONLY; whitespace around the ids does not matter. Until 2026-10-09 this
+  # read `for t in ${1//,/ }` unquoted: a `*` in the field became a glob over the watcher's
+  # working directory (a file named like the id would have delivered), and spaces separated
+  # as well -- against the protocol. `local -` confines `set -f` to this function.
+  local -; local t; set -f
+  local -a parts; IFS=',' read -r -a parts <<< "$1"
+  for t in "${parts[@]}"; do
+    t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
     [[ "$t" == "$me" ]] && return 0
   done
   return 1
@@ -2353,12 +2358,16 @@ addressed() { # $1=to-field
 # THE LIMIT, named: a delivery service with no session (`--service`) writes its stdout to a log
 # file nobody reads, so for it this stays quiet. Its cover is the recipient's own polling.
 near_miss() { # $1=to-field
-  local t p
-  # shellcheck disable=SC2086  # word splitting is the point
-  for t in ${1//,/ }; do
-    [[ "$t" == *+* ]] || continue
-    # shellcheck disable=SC2086
-    for p in ${t//+/ }; do
+  local -; local t p; set -f
+  local -a parts; IFS=',' read -r -a parts <<< "$1"
+  for t in "${parts[@]}"; do
+    # A token that carries the id only WRAPPED: joined with `+`, in brackets or quotes
+    # (`[a, b]`, `"a"` -- one real case in 3,707 `to:` lines of our bridge, it hit nobody and
+    # said nothing), or separated by spaces instead of commas. Strip the wrapping, test the
+    # rest.
+    p="${t//[][\"]/ }"; p="${p//\'/ }"; p="${p//+/ }"
+    # shellcheck disable=SC2086  # word splitting is the point, globbing is off
+    for p in $p; do
       [[ "$p" == "$me" ]] && return 0
     done
   done
@@ -2599,7 +2608,7 @@ while true; do
       # Not addressed -- but perhaps meant? Reasoning at `near_miss`.
       if near_miss "$to"; then
         echo "NOTE -- nearly addressed to '$me', NOT delivered: thread '$slug', from '$from' -- $(basename "$f")"
-        echo "        to: $to   --   only commas separate, and '$me' sits inside a token with a '+'."
+        echo "        to: $to   --   only commas separate, and ids stand bare; '$me' sits inside a token with a '+', brackets, quotes or spaces."
         echo "        The message is in the thread. Ask the sender for 'to: a, b' next time."
         reported=1
       fi

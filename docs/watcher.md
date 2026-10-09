@@ -505,6 +505,22 @@ delivery brought it along -- exactly as silent as the case it reports. Not `deli
 hook does not run. The suite runs the case with `WATCH_BRIDGE_RETRIES=3` in seconds; the old
 version ran into the `timeout` (124) instead of ending (0).
 
+### `to:` splits on commas only, and a `*` is not a glob
+
+`addressed` ran as `for t in ${1//,/ }` until 2026-10-09 -- unquoted. Two consequences, both
+measured: **spaces separated as well** (`to: x app` hit `app`, against the protocol), and a
+**`*` in the field became a glob** over the watcher's working directory -- with a file named
+like the id lying there, that was a delivery out of thin air. On top, `to: [a, b]` and
+`to: "a"` hit nobody and said nothing; across 3,707 `to:` lines of our bridge exactly one
+real case.
+
+Now: the split is on **commas only**, whitespace around the ids does not matter, and `set -f`
+is confined to the function (`local -`). `near_miss` knows **brackets, quotes and spaces** as
+wrapping besides `+`: if the own id sits inside such a token, the same NOTE as for `a+b`
+follows -- reported, not delivered, for the same reason as before: no second grammar. A bare
+`*` is neither a hit nor a near miss. Three checks in test group `watcher`, among them the
+glob case with a file named `app` in the working directory.
+
 ### An orphaned watcher ends by itself
 
 When a watch expires, the harness ends the **shell** (`bash -c ...`), not the script below it.

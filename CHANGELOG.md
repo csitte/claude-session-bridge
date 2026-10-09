@@ -87,6 +87,11 @@ commit it names will say why.
   result on five files. (`bridge/install-watcher.sh`)
 
 ### Fixed
+- **`to:` splits on commas only, and a `*` in it is not a glob.** The unquoted split in
+  `addressed` let spaces separate ids as well and expanded a `*` over the watcher's working
+  directory -- a file named like the id would have delivered. Wrapped ids (`[a, b]`, `"a"`,
+  `a b`) are now reported as near misses like `a+b`, not delivered. Three checks in the
+  `watcher` group.
 - **Giving up on a file without a readable header is said, not done silently.** After the
   retries (`WATCH_BRIDGE_RETRIES`, default 40) such a file went into `seen` without a word
   -- a message the sync client had not loaded in time, or one with a malformed header, was

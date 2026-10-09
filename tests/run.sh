@@ -227,6 +227,33 @@ test_watcher() {
   if grep -q 'to: app+app-b' "$nmout"; then ok "... and it quotes the offending line"
   else bad "... and it quotes the offending line" "$(cat "$nmout")"; fi
 
+  # Wrapped ids -- `[app, app-b]`, `"app"`, `app-b app`: one real case in 3,707 `to:` lines
+  # of our bridge (`to: [xorino-product, csitte]`, 2026-08-16) hit nobody and said nothing.
+  # Same answer as for `+`: report, do not deliver (no second grammar). And a bare `*` must
+  # not glob: the watcher runs in a directory holding a file named `app`, which the old
+  # unquoted `for t in ${1//,/ }` expanded into exactly this id -- a delivery out of thin air.
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  nmout="$TMPROOT/nearmiss3.$RANDOM"
+  local gdir="$TMPROOT/globdir.$RANDOM"; mkdir -p "$gdir"; : > "$gdir/app"
+  ( cd "$gdir" && exec bash "$WATCHER" app 1 ) > "$nmout" 2>/dev/null &
+  nmpid=$!
+  sleep 2
+  post "$b" 320-bracket other "[app, app-b]"
+  post "$b" 330-quoted  other '"app"'
+  post "$b" 340-spaces  other "app-b app"
+  post "$b" 350-glob    other "*"
+  wait_for_lines "$nmout" 9 8
+  sleep 1
+  kill "$nmpid" 2>/dev/null; wait "$nmpid" 2>/dev/null
+  assert_eq "bracket, quoted and space-separated forms are three near misses" \
+    "3" "$(grep -c "nearly addressed to 'app'" "$nmout")"
+  if grep -q "Bridge message for 'app'" "$nmout"; then
+    bad "... and none of them is delivered -- nor is '*' via a file named app" "$(cat "$nmout")"
+  else ok "... and none of them is delivered -- nor is '*' via a file named app"; fi
+  if grep -q '350-glob' "$nmout"; then
+    bad "a bare '*' is neither delivered nor reported" "$(cat "$nmout")"
+  else ok "a bare '*' is neither delivered nor reported"; fi
+
   # A `+` that has nothing to do with this id stays silent -- otherwise every session on the
   # bridge would warn about every plus-addressed message, and a warning everybody gets is one
   # nobody acts on.
