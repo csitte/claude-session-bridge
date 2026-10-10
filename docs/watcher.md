@@ -1383,7 +1383,9 @@ session)") and `handle_existing`.
 `~/.config/session-bridge/<id>.webhook` (`url=`, `key=`) and hands each message to
 `webhook-notify.sh`. Keep that file out of the repository -- it holds a secret, it is read
 and never executed, and the key travels to `curl` in a config file rather than as an
-argument, because arguments are visible in the process list.
+argument, because arguments are visible in the process list. Inside that config file a `"`
+would end the value and a `\` start an escape -- the script escapes both, so a key may
+contain them (measured: unescaped, `ab"cd\ef` arrived as `ab`, with a 200 and no error).
 
 To have it start with the machine, use whatever your platform offers (a user service, a
 scheduled task at logon, an entry in your own launcher). One service per config file is the

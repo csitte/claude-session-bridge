@@ -28,6 +28,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 WATCHER="$ROOT/bridge/watch-bridge.sh"
 INSTALLER="$ROOT/bridge/install-watcher.sh"
+# The baseline's cold-start grace (5 s by default) would add seconds to every arm in this
+# suite; the one case that needs it sets it itself (test_markrules).
+export WATCH_BRIDGE_BASELINE_SETTLE=0
 
 export WATCH_BRIDGE_NO_REAP=1
 
@@ -1185,11 +1188,29 @@ EOF
   local closeps guard kill_ forced
   closeps="$ROOT/launcher/close-cc-sessions.ps1"
   guard="$(grep -n "CommandLine -like '\*--service\*'" "$closeps" | head -1 | cut -d: -f1)"
-  kill_="$(grep -n 'Stop-Target -Target $w.ProcessId' "$closeps" | head -1 | cut -d: -f1)"
+  kill_="$(grep -n 'Stop-Target -Target $u.Pid' "$closeps" | head -1 | cut -d: -f1)"
   if [[ -n "$guard" && -n "$kill_" && "$guard" -lt "$kill_" ]]; then
     ok "close-cc-sessions spares a --service watcher before it would kill it"
   else
     bad "close-cc-sessions spares a --service watcher before it would kill it" "guard=$guard kill=$kill_"
+  fi
+  # The `.session-id` arm form carries no id in the wrapper's command line; the id is in a
+  # file in the session's working directory, and only the session registry knows that
+  # directory. The registry lookup must sit before the kill, and an unresolvable wrapper must
+  # hold the kill back rather than let a guess through. Structural again (PowerShell).
+  local reg hold oneoff
+  reg="$(grep -n 'sessions' "$closeps" | grep -n 'claude' | head -1 | cut -d: -f2)"
+  hold="$(grep -n 'undetermined -gt 0' "$closeps" | head -1 | cut -d: -f1)"
+  oneoff="$(grep -n "one-off call, not an arm" "$closeps" | head -1 | cut -d: -f1)"
+  if [[ -n "$reg" && -n "$hold" && "$reg" -lt "$kill_" && "$hold" -lt "$kill_" ]]; then
+    ok "close-cc-sessions resolves the .session-id arm form via the registry, and holds back when it cannot"
+  else
+    bad "close-cc-sessions resolves the .session-id arm form via the registry, and holds back when it cannot" "registry=$reg hold=$hold kill=$kill_"
+  fi
+  if [[ -n "$oneoff" && "$oneoff" -lt "$kill_" ]] && grep -q 'switch\]\$WatcherCheck' "$closeps"; then
+    ok "... a one-off call is no arm, and -WatcherCheck shows the verdicts without killing"
+  else
+    bad "... a one-off call is no arm, and -WatcherCheck shows the verdicts without killing" "oneoff=$oneoff"
   fi
 
   # The kill used to read 'taskkill /PID $w.ProcessId /F' here. It now goes through
@@ -1293,15 +1314,19 @@ key=%s
 
   # A receiver on a port the OS picks -- a fixed port collides in CI, where jobs share a
   # machine. It serves every request until it is killed.
-  _receiver() {  # $1 = status code, $2 = body, $3 = port file
-    python - "$1" "$2" "$3" <<'PY' &
+  _receiver() {  # $1 = status code, $2 = body, $3 = port file, [$4 = file for Authorization]
+    python - "$1" "$2" "$3" "${4:-}" <<'PY' &
 import http.server, sys
 code, body, portfile = int(sys.argv[1]), sys.argv[2].encode("utf-8"), sys.argv[3]
+authfile = sys.argv[4] if len(sys.argv) > 4 else ""
 
 
 class H(http.server.BaseHTTPRequestHandler):
     def do_POST(s):
         s.rfile.read(int(s.headers.get("Content-Length") or 0))
+        if authfile:
+            with open(authfile, "a", encoding="utf-8") as f:
+                f.write((s.headers.get("Authorization") or "") + "\n")
         s.send_response(code)
         s.send_header("Content-Length", str(len(body)))
         s.end_headers()
@@ -1352,7 +1377,107 @@ PY
     kill "$rsrv" 2>/dev/null
   fi
 
-  rm -f "$hook" "$hookout" "$rmsg" "$rport"
+  # 7. The key reaches the endpoint byte for byte -- also with `"` and `\` in it. The key
+  # travels in a curl config file, and inside its quotes a `"` ends the value silently and
+  # a `\` starts an escape: measured with curl 8.21, a key `ab"cd\ef` arrived as `ab`, with
+  # HTTP 200 from the receiver and nothing in the log. The script escapes both now.
+  rm -f "$rport"
+  local rauth; rauth="$TMPROOT/auth.$RANDOM"
+  if _receiver 200 '{"success":true}' "$rport" "$rauth"; then
+    rcfg="$TMPROOT/conf.key.$RANDOM.webhook"
+    printf 'url=http://127.0.0.1:%s/hook\nkey=ab"cd\\ef-ALNUM_09.x\n' "$(cat "$rport")" > "$rcfg"
+    WEBHOOK_NOTIFY_LOG="$rcfg.log" WB_FILE="$rmsg" WB_TO=probe WB_FROM=someone \
+      WB_SLUG=440-x WB_ID=probe WB_REASON=to bash "$wn" "$rcfg" >/dev/null 2>&1
+    sleep 0.3
+    if grep -qxF 'Bearer ab"cd\ef-ALNUM_09.x' "$rauth" 2>/dev/null; then
+      ok "a key with a quote and a backslash reaches the endpoint unchanged"
+    else bad "a key with a quote and a backslash reaches the endpoint unchanged" "$(cat "$rauth" 2>&1)"; fi
+    kill "$rsrv" 2>/dev/null
+  else
+    printf '  skip no local receiver could be started here\n'
+    kill "$rsrv" 2>/dev/null
+  fi
+
+  rm -f "$hook" "$hookout" "$rmsg" "$rport" "$rauth"
+}
+
+test_markrules() {
+  head_ "watcher: the mark is pruned, survives a day, and the baseline waits for a loading drive"
+  local b td log mark
+
+  # Pruning. The mark lists what has been seen; what no longer exists is dropped on the next
+  # save, so the file mirrors the bridge instead of growing with its history (one mark on a
+  # desktop had 1,440 lines, 613 of them paths that no longer existed).
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  td="$TMPROOT/markrules1.$RANDOM"
+  post "$b" 2026-01-01T000000Z__other__p1 other app
+  log="$(mark_run "$b" "$td" app 4)"
+  mark="$(ls "$td"/watch-bridge-seen-app-* 2>/dev/null | head -1)"
+  if [[ -n "$mark" ]]; then
+    printf '%s\n' "$b/threads/001-test/msgs/2025-12-31T000000Z__other__gone.md" >> "$mark"
+    post "$b" 2026-01-02T000000Z__other__p2 other app
+    log="$(mark_run "$b" "$td" app 4)"
+    assert_eq "pruning: the new message is still delivered" "1" "$(mark_reported "$log")"
+    if ! grep -q 'gone.md' "$mark" && grep -q 'p2.md' "$mark" && grep -q 'p1.md' "$mark"; then
+      ok "... and the saved mark drops the path that no longer exists and keeps the live ones"
+    else bad "... and the saved mark drops the path that no longer exists and keeps the live ones" "$(cat "$mark")"; fi
+  else bad "pruning: no mark was written" "$(ls -A "$td")"; fi
+
+  # A day-old mark used to be DELETED before it could speak: the next arm found nothing, took
+  # a silent baseline, and the only message that demands an action (ATTENTION + fold) never
+  # came. Other ids' stale marks are still cleaned up.
+  local b2 td2; b2="$(new_bridge)"; td2="$TMPROOT/markrules2.$RANDOM"
+  post "$b2" 2026-01-01T000000Z__other__q1 other app
+  log="$(mark_run "$b2" "$td2" app 4)"
+  touch -d '25 hours ago' "$td2"/watch-bridge-seen-app-* 2>/dev/null
+  post "$b2" 2026-01-02T000000Z__other__q2 other app
+  log="$(mark_run "$b2" "$td2" app 4)"
+  if grep -q 'ATTENTION' "$log"; then ok "a day-old own mark is not deleted before it can speak: ATTENTION on stdout"
+  else bad "a day-old own mark is not deleted before it can speak" "stdout=[$(cat "$log")] stderr=[$(cat "$log.err")]"; fi
+  local other="$td2/watch-bridge-seen-zzz-123"
+  : > "$other"; touch -d '25 hours ago' "$other"
+  log="$(mark_run "$b2" "$td2" app 3)"
+  if [[ ! -e "$other" ]]; then ok "... while a day-old mark of ANOTHER id is still removed"
+  else bad "... while a day-old mark of ANOTHER id is still removed"; fi
+
+  # A mark that is there but cannot be read is the same loss as an empty one -- and used to
+  # be a silent baseline (under --once: the arm ended after it without a word).
+  local b3 td3; b3="$(new_bridge)"; td3="$TMPROOT/markrules3.$RANDOM"
+  post "$b3" 2026-01-01T000000Z__other__r1 other app
+  log="$(mark_run "$b3" "$td3" app 4)"
+  chmod 000 "$td3"/watch-bridge-seen-app-* 2>/dev/null
+  if [[ -r "$(ls "$td3"/watch-bridge-seen-app-* 2>/dev/null | head -1)" ]]; then
+    printf '  skip an unreadable mark cannot be produced here (chmod has no effect)\n'
+  else
+    post "$b3" 2026-01-02T000000Z__other__r2 other app
+    log="$(mark_run "$b3" "$td3" app 4)"
+    if grep -q 'ATTENTION' "$log" && grep -q 'not readable' "$log"; then ok "an unreadable mark is announced on stdout, not a silent baseline"
+    else bad "an unreadable mark is announced on stdout" "stdout=[$(cat "$log")] stderr=[$(cat "$log.err")]"; fi
+    chmod 644 "$td3"/watch-bridge-seen-app-* 2>/dev/null
+  fi
+
+  # Cold start. A sync client shows part of the folders first and loads the rest over the
+  # next seconds; a baseline taken then is short, and what appears afterwards is "new" -- a
+  # whole thread delivered to a session that read it long ago, and a --once arm ending on the
+  # first of them. The baseline now waits and takes in what appears while the drive loads.
+  local b4 td4 out4 p4 rc4 i; b4="$(new_bridge)"; td4="$TMPROOT/markrules4.$RANDOM"; mkdir -p "$td4"
+  out4="$TMPROOT/markrules4.$RANDOM.log"
+  post "$b4" 2026-01-01T000000Z__other__s0 other app
+  ( export TMPDIR="$td4" SESSION_BRIDGE_DIR="$b4" WATCH_BRIDGE_NO_REAP=1 \
+           WATCH_BRIDGE_BASELINE_SETTLE=3 WATCH_BRIDGE_BASELINE_ROUNDS=3
+    timeout 90 bash "$WATCHER" app 1 --once > "$out4" 2> "$out4.err" ) &
+  p4=$!
+  for i in $(seq 1 80); do grep -q 'baseline taken' "$out4.err" 2>/dev/null && break; sleep 0.5; done
+  post "$b4" 2026-01-01T000100Z__other__s1 other app      # lands in the settle window
+  sleep 8                                                  # both rounds are over by now
+  post "$b4" 2026-01-01T000200Z__other__s2 other app      # a real new message
+  wait "$p4"; rc4=$?
+  assert_eq "cold start: the --once arm ends on the message after the grace, rc 0" "0" "$rc4"
+  if grep -q 's2.md' "$out4" && ! grep -q 's1.md' "$out4"; then
+    ok "... delivering s2 only: s1 appeared while the drive was still loading, so it is baseline"
+  else bad "... delivering s2 only" "stdout=[$(cat "$out4")] stderr=[$(cat "$out4.err")]"; fi
+  if grep -q 'baseline caught up' "$out4.err"; then ok "... and stderr says the baseline caught up"
+  else bad "... and stderr says the baseline caught up" "$(cat "$out4.err")"; fi
 }
 
 test_orphan() {
@@ -1558,6 +1683,34 @@ test_install() {
   bash "$INSTALLER" app "$p" >/dev/null 2>&1
   if grep -q 'Bridge push (watcher)' "$p/CLAUDE.md"; then ok "file without a bridge section: appended"
   else bad "file without a bridge section: appended"; fi
+
+  head_ "installer: a paragraph without its closing line ends at the next heading"
+  # The paragraph lost its last line (a paraphrase, a truncated copy). Below it: a heading, a
+  # foreign rule, and a line that happens to mention watcher.md. Until now the end of the
+  # paragraph was "the first line mentioning watcher.md from the marker on" -- here the one
+  # under the foreign heading -- and `-u` replaced the heading and the rule with it, silently.
+  p="$(new_proj bridge-section)"
+  bash "$INSTALLER" app "$p" >/dev/null 2>&1
+  local lastln
+  lastln="$(awk -v s="$(grep -n -m1 -F '**Bridge push (watcher):**' "$p/CLAUDE.md" | cut -d: -f1)" \
+              'NR>=s && /[Ww]atcher\.md/ {print NR; exit}' "$p/CLAUDE.md")"
+  sed -i "${lastln}d" "$p/CLAUDE.md"
+  printf '\n## Foreign rules\n\nRule A: keep me.\nSee also watcher.md for the arm.\n' >> "$p/CLAUDE.md"
+  local nout
+  nout="$(bash "$INSTALLER" -n -u app "$p" 2>&1)"
+  if printf '%s' "$nout" | grep -q 'guessed the end' && printf '%s' "$nout" | grep -q '^ *< \*\*Bridge push'; then
+    ok "-n warns and shows the lines a guessed end would replace"
+  else bad "-n warns and shows the lines a guessed end would replace" "$nout"; fi
+  if ! printf '%s' "$nout" | grep -q '< Rule A: keep me'; then ok "... and the foreign rule is not among them"
+  else bad "... and the foreign rule is not among them"; fi
+  bash "$INSTALLER" -u app "$p" >/dev/null 2>&1
+  if grep -q '^## Foreign rules' "$p/CLAUDE.md" && grep -q '^Rule A: keep me' "$p/CLAUDE.md"; then
+    ok "-u leaves the heading and the foreign rule below the paragraph alone"
+  else bad "-u leaves the heading and the foreign rule below the paragraph alone" "$(cat "$p/CLAUDE.md")"; fi
+  if [[ "$(grep -c 'Bridge push (watcher)' "$p/CLAUDE.md")" == 1 ]]; then ok "... and the paragraph is there once"
+  else bad "... and the paragraph is there once"; fi
+  bash "$INSTALLER" --check app "$p" >/dev/null 2>&1 && ok "... and is current afterwards" \
+    || bad "... and is current afterwards" "$(bash "$INSTALLER" --check app "$p" 2>&1)"
 
   head_ "installer: dry-run and update"
   p="$(new_proj bridge-section)"
@@ -5267,7 +5420,7 @@ STUB
 
 case "${1:-all}" in
   watcher) test_watcher ;;
-  mark) test_mark ;;
+  mark) test_mark; test_markrules ;;
   orphan) test_orphan ;;
   hook) test_hook ;;
   handover) test_handover ;;
@@ -5303,7 +5456,7 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_selftree; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_header; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_mark; test_markrules; test_orphan; test_hook; test_handover; test_selftree; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_header; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|new_message|header|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 

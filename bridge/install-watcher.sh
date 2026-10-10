@@ -238,15 +238,30 @@ fi
 # from there on that mentions "watcher.md" (= last line of the template). This leaves
 # additions a session wrote BELOW the paragraph untouched.
 b_start="$(grep -n -m1 -F '**Bridge push (watcher):**' "$md" | cut -d: -f1)"
-b_end=""
+b_end=""; b_guessed=0
 if [[ -n "$b_start" ]]; then
-  b_end="$(awk -v s="$b_start" 'NR>=s && /[Ww]atcher\.md/ {print NR; exit}' "$md")"
+  # The closing line only counts BEFORE the next heading. If the paragraph lacks it (a
+  # paraphrase, a truncated copy), the search used to run on to the next mention anywhere
+  # further down -- and `-u` replaced everything in between, heading and foreign rules
+  # included, silently. The template has no line starting with `#`, so a heading is always
+  # the end of the paragraph, never part of it.
+  b_end="$(awk -v s="$b_start" 'NR>s && /^#/ {exit} NR>=s && /[Ww]atcher\.md/ {print NR; exit}' "$md")"
   if [[ -z "$b_end" ]]; then
-    b_end="$(awk -v s="$b_start" 'NR>=s && /^[[:space:]]*\r?$/ {print NR-1; exit}' "$md")"
+    b_guessed=1
+    b_end="$(awk -v s="$b_start" 'NR>s && /^#/ {print NR-1; exit}' "$md")"
+    [[ -z "$b_end" ]] && b_end="$(awk -v s="$b_start" 'NR>=s && /^[[:space:]]*\r?$/ {print NR-1; exit}' "$md")"
     [[ -z "$b_end" ]] && b_end="$(wc -l < "$md")"
-    echo "install-watcher: WARNING — paragraph without a watcher.md closing line; guessed the end at line $b_end." >&2
+    echo "install-watcher: WARNING — paragraph without a watcher.md closing line; guessed the end at line $b_end (up to the next heading)." >&2
   fi
 fi
+
+# What a guessed end would displace is SHOWN: `-n` used to name only the range, and a range
+# without its content is no preview.
+show_displaced() {
+  [[ $b_guessed -eq 1 ]] || return 0
+  echo "              These lines ($b_start-$b_end) would be replaced -- end guessed, please read:"
+  sed -n "${b_start},${b_end}p" "$md" | tr -d '\r' | sed 's/^/              < /'
+}
 
 # --check: everything the verdict needs is known here -- same delimiting, same comparison as
 # below, without the prose and without the allow rules. Then stop: a measuring tool that also
@@ -278,8 +293,10 @@ if [[ -n "$b_start" ]]; then
     echo "              (lines $b_start-$b_end). Replace it with -u/--update."
   elif [[ $dry -eq 1 ]]; then
     echo "CLAUDE.md   : [dry-run] would replace lines $b_start-$b_end. New wording:"
+    show_displaced
     printf '%s\n' "$block" | sed 's/^/              | /'
   else
+    show_displaced
     tmp="$(mktemp)"
     head -n $((b_start-1)) "$md" > "$tmp"
     printf '%s\n' "$out" >> "$tmp"

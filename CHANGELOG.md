@@ -15,6 +15,33 @@ commit it names will say why.
 ## Unreleased
 
 ### Fixed
+- **The watcher's mark is pruned to what exists, survives a day's pause, and the baseline
+  waits for a loading drive.** The mark used to grow with the bridge's history (1,440 lines,
+  613 of them gone, on one machine) -- it now keeps only the files the glob finds. A mark
+  older than a day used to be deleted before `state_load` could read it, so the next arm
+  took a silent baseline instead of saying ATTENTION; the own mark is now exempt from that
+  cleanup, and an unreadable mark is announced like an empty one. And a baseline taken while
+  a sync client is still loading folders was short, so a whole thread could be delivered as
+  "new" -- the baseline now waits `WATCH_BRIDGE_BASELINE_SETTLE` seconds (default 5, up to
+  `WATCH_BRIDGE_BASELINE_ROUNDS` rounds) and takes in what appears. Group `mark`.
+- **`install-watcher.sh -u` can no longer delete text below the paragraph.** The end of an
+  existing paragraph was "the first line mentioning watcher.md from the marker on"; if the
+  paragraph had lost its closing line, that search ran on into the next section and `-u`
+  replaced heading and foreign rules with it. The end now stops at the next heading, and
+  `-n` (and `-u`) print the lines a guessed end would replace. Test in group `install`.
+- **`close-cc-sessions.ps1` no longer kills the watcher of a running session that arms with
+  `$(head -1 .session-id)`.** The wrapper's command line carries no id in that form, so the
+  session never counted as alive and its watcher was terminated (seen on a live table). The
+  script now reads the id from the file, via the session registry (`~/.claude/sessions`,
+  claude PID to working directory); if that fails, it holds the kill back instead of
+  guessing. A one-off call (`--fold`, `--status`, `--new-message`) is no longer treated as an
+  orphaned watcher. New switch `-WatcherCheck` prints every verdict with its reason and
+  terminates nothing.
+- **`webhook-notify.sh` escapes the key for curl's config file.** Inside the quotes of a
+  curl config, `"` ends the value and `\` starts an escape; a key containing either was
+  truncated silently (measured with curl 8.21: `ab"cd\ef` arrived as `ab`, HTTP 200 from the
+  test receiver, nothing logged). Both characters are escaped now; other keys are unchanged.
+  Test in group `hook` with a receiver that records the `Authorization` header.
 - **The fold reads `sets-owner` / `sets-status` from the header only** (up to the second
   `---`, 15 lines at most — the same bound the watcher uses for delivery), from `msgs/*.md`
   only, never from `thread.md`. Until now a body line `sets-status: DONE` at column 0 closed

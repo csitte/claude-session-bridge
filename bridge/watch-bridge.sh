@@ -2589,12 +2589,25 @@ if [[ "${WATCH_BRIDGE_STATE:-1}" != "0" ]]; then
   state_key="$(printf '%s' "$bridge" | cksum | tr -cd '0-9')"
   state_file="${TMPDIR:-/tmp}/watch-bridge-seen-${me}-${state_key}"
   # Do not let the marks of dead ids pile up (same as for the inventory cache).
-  find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'watch-bridge-seen-*' -mmin +1440 -delete 2>/dev/null || true
+  # ... but NEVER the own one: it used to be deleted here BEFORE `state_load` could look at
+  # it. After a day's pause the arm found no mark, took a silent baseline -- and the one
+  # message that demands an action (ATTENTION + fold) never came. The own mark is read,
+  # reports its age, and the first save replaces it; marks of dead ids are still removed.
+  find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'watch-bridge-seen-*' ! -name "watch-bridge-seen-${me}-*" -mmin +1440 -delete 2>/dev/null || true
 fi
 state_max_age="${WATCH_BRIDGE_STATE_MAX_AGE:-3600}"
 # How often the mark proves it is still alive while nothing arrives (reasoning at the loop).
 state_touch_every="${WATCH_BRIDGE_STATE_TOUCH:-60}"
 state_touched=0
+# Cold start: a sync client shows part of the folders first and loads the rest over the
+# next seconds. A baseline taken in that moment is short, and whatever appears afterwards is
+# "new" to this watcher -- a whole thread, delivered to a session that read it long ago; a
+# `--once` arm then ends on the first of them. So the baseline waits
+# `WATCH_BRIDGE_BASELINE_SETTLE` seconds (default 5, like the fold) and takes in what came
+# in the meantime, at most `WATCH_BRIDGE_BASELINE_ROUNDS` times; 0 switches it off. Only
+# for a real baseline (no mark adopted) -- once per session.
+baseline_settle="${WATCH_BRIDGE_BASELINE_SETTLE:-5}"
+baseline_rounds="${WATCH_BRIDGE_BASELINE_ROUNDS:-3}"
 
 # The mark is unusable: this is the only situation in which a re-arm can still swallow
 # something -- it falls back to baseline, so whatever arrived during the pause is old to it.
@@ -2612,7 +2625,14 @@ state_unusable() {
 
 # Load the mark. 0 = adopted (the baseline is then skipped), 1 = not usable.
 state_load() {
-  [[ -n "$state_file" && -r "$state_file" ]] || return 1
+  [[ -n "$state_file" && -e "$state_file" ]] || return 1
+  if [[ ! -r "$state_file" ]]; then
+    # Present but unreadable: the same loss as an empty one -- a predecessor existed and its
+    # state cannot be had. Until now a silent `return 1`, and under `--once` the arm ended
+    # after the baseline without a word.
+    state_unusable "is not readable"
+    return 1
+  fi
   local now mt age line n=0
   now=$(date -u +%s)
   mt=$(date -u -r "$state_file" +%s 2>/dev/null) || return 1
@@ -2638,10 +2658,24 @@ state_load() {
 }
 
 # Write the mark: temp + mv, so a watcher starting at the same moment never reads half of it.
+# Write the mark: temp + mv, so an arm starting at the same moment never reads half of it.
+# And prune it to what EXISTS: the mark used to carry every file ever seen, also after its
+# thread was archived -- one mark on a desktop had 1,440 lines, 613 of them paths that no
+# longer existed. Now it keeps what the glob finds right now; the price is named: a thread
+# brought back from `_archive/` is new to the next arm (noise, never a loss). An empty glob
+# (a sync hiccup) prunes nothing -- otherwise the next arm would find an empty mark, and
+# that is an ATTENTION.
 state_save() {
   [[ -n "$state_file" ]] || return 0
-  local tmp="$state_file.$$"
-  if printf '%s\n' "${!seen[@]}" > "$tmp" 2>/dev/null; then
+  local tmp="$state_file.$$" f n=0
+  local -A cur=()
+  for f in "$bridge"/threads/*/msgs/*.md; do cur["$f"]=1; n=$(( n + 1 )); done
+  if (( n > 0 )); then
+    for f in "${!seen[@]}"; do [[ -n "${cur[$f]:-}" ]] && printf '%s\n' "$f"; done > "$tmp" 2>/dev/null
+  else
+    printf '%s\n' "${!seen[@]}" > "$tmp" 2>/dev/null
+  fi
+  if [[ -s "$tmp" ]]; then
     mv -f "$tmp" "$state_file" 2>/dev/null || rm -f "$tmp" 2>/dev/null
   else
     rm -f "$tmp" 2>/dev/null
@@ -2777,7 +2811,25 @@ while true; do
     fi
     delivered=1
   done
-  baseline=0
+  if (( baseline )); then
+    baseline=0
+    # Cold-start grace (reason at `baseline_settle` above).
+    if (( baseline_settle > 0 )); then
+      echo "watch-bridge: baseline taken (${#seen[@]} files) -- waiting ${baseline_settle}s in case the drive is still loading." >&2
+      runde=0
+      while (( runde < baseline_rounds )); do
+        sleep "$baseline_settle"
+        nachgezogen=0
+        for f in "$bridge"/threads/*/msgs/*.md; do
+          [[ -n "${seen[$f]:-}" ]] && continue
+          seen["$f"]=1; state_dirty=1; nachgezogen=$(( nachgezogen + 1 ))
+        done
+        (( nachgezogen )) || break
+        echo "watch-bridge: baseline caught up -- $nachgezogen more files after ${baseline_settle}s (drive still loading)." >&2
+        runde=$(( runde + 1 ))
+      done
+    fi
+  fi
   # CAREFUL, THIS ORDER *IS* THE SAFETY NET. The `echo` above must come before `state_save`.
   # A watcher whose monitor was killed keeps running while the bridge is quiet — it only
   # touches the mark. When a message finally arrives, the `echo` hits a pipe with no reader,

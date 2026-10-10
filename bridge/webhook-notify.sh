@@ -126,8 +126,15 @@ fi
 # The key travels in a curl config file, NOT on the command line: arguments are visible in
 # the process list, and a secret that shows up there is readable by every piece of software
 # on the machine.
+# Inside the quotes of a curl config file, backslash sequences apply: a `"` in the value
+# ENDS it silently, a `\` starts a sequence. Measured (curl 8.21): a key `ab"cd\ef` arrived
+# at the receiver as `ab` -- HTTP 200 from the test receiver, no error, nothing in the log.
+# So `\` -> `\\` and `"` -> `\"`; everything else curl passes through unchanged. (Today's
+# keys are alphanumeric; but the service that issues a key decides its shape, not we.)
+keyesc=${key//\\/\\\\}
+keyesc=${keyesc//\"/\\\"}
 {
-  printf 'header = "Authorization: Bearer %s"\n' "$key"
+  printf 'header = "Authorization: Bearer %s"\n' "$keyesc"
   printf 'header = "Content-Type: application/json"\n'
 } > "$headers"
 chmod 600 "$headers" 2>/dev/null

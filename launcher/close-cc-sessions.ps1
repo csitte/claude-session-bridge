@@ -18,9 +18,12 @@
 # Meant for testing and for cleaning up by hand.
 # -Pattern <text>: test switch; targets only mintty windows with <text> in their command
 # line and leaves the starter window and the watchers alone (reason below).
+# -WatcherCheck: only shows which bridge watcher would stay and which would go, with the
+# reason. Nothing is terminated. This is how you verify the watcher line on the live table.
 
 param(
     [switch]$RemnantsOnly,
+    [switch]$WatcherCheck,
     [datetime]$Since = (Get-Date),
     [string]$Pattern = 'remote-control'
 )
@@ -136,8 +139,102 @@ function Remove-WindowRemnants([datetime]$since, [bool]$childRequired) {
     }
 }
 
+# The id of an arm from its command line -- or from the file the command line names. Two
+# checkouts sharing ONE CLAUDE.md arm as `watch-bridge.sh $(head -1 .session-id)`: the
+# wrapper does not carry the id, a file in the session's working directory does. Until this
+# change such a session never made it into $aktiv, and this script killed its watcher while
+# the session was running (seen on a live table). Asking the wrapper's child process does NOT
+# work at the Windows level -- the chain from the script up to the wrapper is broken, the
+# script's parent process no longer exists (measured). What knows the working directory is
+# the registry of running sessions (~/.claude/sessions/<pid>.json: pid, cwd), and the walk up
+# the chain has found the claude PID already. Nothing is guessed: no file, no id -- then the
+# wrapper counts as 'undetermined', and while one of those lives, no watcher without a
+# matched session is terminated (the watcher's own rule: between a visible too-much and an
+# invisible too-little, take the too-much).
+function Resolve-ArmId([string]$cmd, [int]$claudePid, [hashtable]$cwdByPid) {
+    if ($cmd -match $script:rx) { return $Matches[1] }
+    if ($cmd -match 'head -1 ([^)\s]*\.session-id)') {
+        $f = $Matches[1]
+        if ($f -match '^/([A-Za-z])/(.*)$') { $f = $Matches[1] + ':/' + $Matches[2] }   # msys path
+        elseif ($f -notmatch '^[A-Za-z]:') {
+            $cwd = $cwdByPid[$claudePid]
+            if (-not $cwd) { return $null }
+            $f = Join-Path $cwd $f
+        }
+        try { $id = ([string](Get-Content -LiteralPath $f -TotalCount 1 -ErrorAction Stop)).Trim() } catch { return $null }
+        if ($id -match '^[A-Za-z0-9._][A-Za-z0-9._-]*$') { return $id }
+    }
+    return $null
+}
+
+# Which bridge watcher stays and which goes -- ONE function for the run and for
+# -WatcherCheck, so the check shows the very verdict the run executes.
+$script:rx = "watch-bridge\.sh'?\s+'?([A-Za-z0-9._][A-Za-z0-9._-]*)"   # 1st char without "-": otherwise options like --status match
+function Get-WatcherVerdicts {
+    $procs = Get-CimInstance Win32_Process
+    $byId  = @{}; foreach ($p in $procs) { $byId[[int]$p.ProcessId] = $p }
+    $wb    = $procs | Where-Object { $_.Name -eq 'bash.exe' -and $_.CommandLine -like '*watch-bridge.sh*' }
+    $rx    = $script:rx
+
+    $cwdByPid = @{}
+    Get-ChildItem (Join-Path $env:USERPROFILE '.claude\sessions\*.json') -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            $j = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+            if ($j.pid -and $j.cwd) { $cwdByPid[[int]$j.pid] = [string]$j.cwd }
+        } catch { }
+    }
+
+    $aktiv = @(); $undetermined = 0
+    foreach ($w in ($wb | Where-Object { $_.CommandLine -like '* -c *' })) {
+        $cur = $byId[[int]$w.ParentProcessId]; $d = 0
+        while ($cur -and $d -lt 6) {
+            if ($cur.Name -eq 'claude.exe') {
+                $id = Resolve-ArmId $w.CommandLine $cur.ProcessId $cwdByPid
+                if ($id) { $aktiv += $id } else { $undetermined++ }
+                break
+            }
+            $cur = $byId[[int]$cur.ParentProcessId]; $d++
+        }
+    }
+
+    $out = @()
+    foreach ($w in ($wb | Where-Object { $_.CommandLine -notlike '* -c *' })) {
+        # The third kind of process: the delivery service for a participant that is NOT a
+        # session (see bridge/bridge-push.sh). It carries '--service', and by construction it
+        # hangs under NO claude.exe -- so it falls straight through the $aktiv check above,
+        # which asks for a live wrapper under claude.exe. Without this guard every run of
+        # this script ends the service, and nothing brings it back: bridge-push.sh has no
+        # restart loop, it 'exec's the watcher. The recipient would stop getting wake-ups --
+        # and because it is not a session, nobody would notice.
+        #
+        # WHY IT MAY STAY: it belongs to the MACHINE, not to a session -- 'machine on,
+        # service running' is its promise. This script closes Claude sessions; a service
+        # without a session is not its subject. To stop it, close its own window.
+        $id = if ($w.CommandLine -match $rx) { $Matches[1] } else { '(unknown)' }
+        $verdict = 'stays'
+        if ($w.CommandLine -like '*--service*') { $reason = 'machine service, no session' }
+        # A one-off call (--fold, --status, --new-message) is not an arm -- and a fold can run
+        # for minutes on a slow drive; until this change the line hit it as watcher
+        # '(unknown)' and killed it in the middle of a session's start ritual.
+        elseif ($w.CommandLine -match "watch-bridge\.sh'?\s+'?--") { $reason = 'one-off call, not an arm' }
+        elseif ($aktiv -contains $id) { $reason = 'session alive' }
+        elseif ($undetermined -gt 0) { $reason = ('{0} wrapper(s) with an undeterminable id are running -- not guessing' -f $undetermined) }
+        else { $verdict = 'kill'; $reason = 'no live session' }
+        $out += [pscustomobject]@{ Pid = [int]$w.ProcessId; Id = $id; Verdict = $verdict; Reason = $reason }
+    }
+    return $out
+}
+
 if ($RemnantsOnly) {
     Remove-WindowRemnants $Since $true
+    return
+}
+
+if ($WatcherCheck) {
+    Write-Host "Watcher verdicts (nothing is terminated):" -ForegroundColor Cyan
+    foreach ($u in @(Get-WatcherVerdicts)) {
+        Write-Host ("  {0,-18} PID {1,-6} {2,-6} {3}" -f $u.Id, $u.Pid, $u.Verdict, $u.Reason)
+    }
     return
 }
 
@@ -218,45 +315,17 @@ foreach ($l in $launcher) {
 # Spared are watchers whose wrapper process still hangs under a live claude.exe (= a
 # session this script did not close, e.g. one started by hand). Without a live wrapper
 # the watcher is silent anyway.
-$procs = Get-CimInstance Win32_Process
-$byId  = @{}; foreach ($p in $procs) { $byId[[int]$p.ProcessId] = $p }
-$wb    = $procs | Where-Object { $_.Name -eq 'bash.exe' -and $_.CommandLine -like '*watch-bridge.sh*' }
-if ($windowsOnly) { $wb = @() }
-$rx    = "watch-bridge\.sh'?\s+'?([A-Za-z0-9._][A-Za-z0-9._-]*)"   # 1st char without "-": otherwise options like --status match
-
-$aktiv = @()
-foreach ($w in ($wb | Where-Object { $_.CommandLine -like '* -c *' })) {
-    $cur = $byId[[int]$w.ParentProcessId]; $d = 0
-    while ($cur -and $d -lt 6) {
-        if ($cur.Name -eq 'claude.exe') {
-            if ($w.CommandLine -match $rx) { $aktiv += $Matches[1] }
-            break
-        }
-        $cur = $byId[[int]$cur.ParentProcessId]; $d++
-    }
-}
-
-foreach ($w in ($wb | Where-Object { $_.CommandLine -notlike '* -c *' })) {
-    # The third kind of process: the delivery service for a participant that is NOT a
-    # session (see bridge/bridge-push.sh). It carries '--service', and by construction it
-    # hangs under NO claude.exe -- so it falls straight through the $aktiv check above,
-    # which asks for a live wrapper under claude.exe. Without this guard every run of
-    # this script ends the service, and nothing brings it back: bridge-push.sh has no
-    # restart loop, it 'exec's the watcher. The recipient would stop getting wake-ups --
-    # and because it is not a session, nobody would notice.
-    #
-    # WHY IT MAY STAY: it belongs to the MACHINE, not to a session -- 'machine on,
-    # service running' is its promise. This script closes Claude sessions; a service
-    # without a session is not its subject. To stop it, close its own window.
-    if ($w.CommandLine -like '*--service*') {
-        $sid = if ($w.CommandLine -match $rx) { $Matches[1] } else { '(unknown)' }
-        Write-Host ("  - delivery service {0} stays (machine service, no session)" -f $sid)
+$verdicts = @()
+if (-not $windowsOnly) { $verdicts = @(Get-WatcherVerdicts) }
+foreach ($u in $verdicts) {
+    if ($u.Verdict -eq 'stays') {
+        # 'session alive' is the normal case and stays quiet; the other reasons are rare and
+        # say something you want to know while shutting down.
+        if ($u.Reason -ne 'session alive') { Write-Host ("  - bridge watcher {0} stays ({1})" -f $u.Id, $u.Reason) }
         continue
     }
-    $id = if ($w.CommandLine -match $rx) { $Matches[1] } else { '(unknown)' }
-    if ($aktiv -contains $id) { continue }
-    Write-Host ("  - bridge watcher {0} (PID {1})" -f $id, $w.ProcessId)
-    Stop-Target -Target $w.ProcessId -What ("bridge watcher " + $id)
+    Write-Host ("  - bridge watcher {0} (PID {1})" -f $u.Id, $u.Pid)
+    Stop-Target -Target $u.Pid -What ("bridge watcher " + $u.Id)
 }
 
 # Third line: orphaned ConPTY consoles (see docs/watcher.md, "A third line").
