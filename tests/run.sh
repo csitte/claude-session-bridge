@@ -843,6 +843,27 @@ orphan_kill_shell() { # $1=shell pid -- end the shell ALONE, leaving the child
   kill "$1" 2>/dev/null
 }
 
+# An arm that TAKES OVER goes on to poll, and with `--once` it only ends once it has
+# delivered something. Until 2026-10-10 the hand-over groups let such an arm run into
+# `timeout` (12 s / 25 s) -- which made every take-over case cost the full timeout, and
+# worse, made the budget a property of the machine: the inventory stub spawns a handful of
+# processes per ancestor, and on msys every process costs ~0.1 s. Measured on a notebook:
+# one arm 5.8 s alone, 18.8 s with six arms at once. Under load the arm was killed BEFORE
+# its decision, and three cases passed on the empty output of a killed arm.
+#
+# So the take-over gets a deterministic end: a fresh mark naming message A (adopted, so
+# there is no baseline), and message B lying there unseen -- an arm that takes over
+# delivers B within seconds and exits 0; an arm that steps aside never reaches the mark.
+# `timeout` stays, but only as a guard against a hang.
+takeover_fixture() { # $1=bridge  $2=TMPDIR of the arm  -- posts A and B once, writes the mark
+  [[ -f "$1/threads/001-test/msgs/2026-01-01T000000Z__other__a1.md" ]] || {
+    post "$1" 2026-01-01T000000Z__other__a1 other app
+    post "$1" 2026-01-01T000100Z__other__b2 other app; }
+  printf '%s\n' "$1/threads/001-test/msgs/2026-01-01T000000Z__other__a1.md" \
+    > "$2/watch-bridge-seen-app-$(printf '%s' "$1" | cksum | tr -cd '0-9')"
+}
+took_over() { printf '%s\n' "$1" | grep -q "^Bridge message for 'app'.*b2\.md"; }
+
 # --- stepping aside is only safe while the predecessor lives -------------------------
 # Reported from the field: an arm stepped aside, the predecessor was gone seconds later,
 # and the id stood there with no watcher at all -- silently. Two messages sat in that gap.
@@ -882,6 +903,7 @@ test_handover() {
   lauf() { # $1 = handover wait
     : > "$zaehler"
     rm -f "$w"/tmp/watch-bridge-seen-* 2>/dev/null
+    takeover_fixture "$b" "$w/tmp"
     ( export PATH="$w/bin:$PATH" TMPDIR="$w/tmp" SESSION_BRIDGE_DIR="$b" \
              WATCH_BRIDGE_HANDOVER_WAIT="$1"
       # The suite forces WATCH_BRIDGE_NO_REAP=1 as a safety rail -- and that makes
@@ -890,7 +912,7 @@ test_handover() {
       # `Stop-Process`, so no real watcher can be touched. Same pattern as the
       # unattributable-arm group.
       unset WATCH_BRIDGE_NO_REAP
-      timeout 25 bash "$WATCHER" app 1 --once 2>&1 )
+      timeout 60 bash "$WATCHER" app 1 --once 2>&1 )
   }
 
   # Without the check -- the behaviour that lost the messages. The arm steps aside and the
@@ -905,6 +927,8 @@ test_handover() {
   if printf '%s\n' "$out" | grep -q 'disappeared within'; then
     ok "with the check on, the arm notices and takes over"
   else bad "with the check on, the arm notices and takes over" "$out"; fi
+  if took_over "$out"; then ok "... and goes on to deliver"
+  else bad "... and goes on to deliver" "$out"; fi
   if printf '%s\n' "$out" | grep -q 'already delivering'; then
     bad "... and does not also claim the predecessor is still delivering" "$out"
   else ok "... and does not also claim the predecessor is still delivering"; fi
@@ -998,13 +1022,14 @@ test_selftree() {
   run_() { # $1=mode  $2=handover wait  [$3=wrapper under-claude]  [$4=predecessor age]
     : > "$w/calls"; : > "$w/stops"
     rm -f "$w"/tmp/watch-bridge-* 2>/dev/null; rmdir "$w/tmp/watch-bridge-arm.lock" 2>/dev/null
+    takeover_fixture "$b" "$w/tmp"
     ( export PATH="$w/bin:$PATH" TMPDIR="$w/tmp" SESSION_BRIDGE_DIR="$b" STUB_DIR="$w" \
              STUB_MODE="$1" WATCH_BRIDGE_HANDOVER_WAIT="$2" STUB_UNDER="${3:-1}" \
-             STUB_PRED_AGE="${4:-300}" WATCH_BRIDGE_STATE=0
+             STUB_PRED_AGE="${4:-300}"
       # Lifted only here, with the stub in place: it records every `Stop-Process` instead
       # of running it, so no real process can be touched (same as the handover group).
       unset WATCH_BRIDGE_NO_REAP
-      timeout 12 bash "$WATCHER" app 1 --once 2>&1 )
+      timeout 60 bash "$WATCHER" app 1 --once 2>&1 )
   }
 
   # The predecessor dies during the handover wait; on the second look only the arm itself
@@ -1015,6 +1040,8 @@ test_selftree() {
   else bad "a predecessor that dies during the handover wait is noticed although the arm sees itself" "$out"; fi
   if printf '%s\n' "$out" | grep -q 'already delivering'; then
     bad "... and the arm does not step aside for itself" "$out"
+  elif ! took_over "$out"; then
+    bad "... and the arm does not step aside for itself" "no delivery either: $out"
   else ok "... and the arm does not step aside for itself"; fi
   # After taking over, the dead predecessor's pids are not ended: they come from the
   # inventory before the wait, and Windows reuses pids.
@@ -1026,18 +1053,24 @@ test_selftree() {
   out="$(run_ none 1)"
   if printf '%s\n' "$out" | grep -q 'already delivering'; then
     bad "an arm older than 30 s does not step aside in favour of itself" "$out"
+  elif ! took_over "$out"; then
+    bad "an arm older than 30 s does not step aside in favour of itself" "no delivery either: $out"
   else ok "an arm older than 30 s does not step aside in favour of itself"; fi
   # Same, started by hand (no session binary above it): before the fix the arm was its own
   # "silent remnant" and ended itself.
   out="$(run_ none 1 0)"
   if [[ -s "$w/stops" ]]; then
     bad "an arm started by hand does not end its own processes" "$(cat "$w/stops")"
+  elif ! took_over "$out"; then
+    bad "an arm started by hand does not end its own processes" "no delivery either: $out"
   else ok "an arm started by hand does not end its own processes"; fi
 
   # A young foreign wrapper is never cleared -- the second job of the old age filter.
   out="$(run_ young 1)"
   if grep -q '1003' "$w/stops" 2>/dev/null; then
     bad "a foreign wrapper seconds old is not cleared" "$(cat "$w/stops")"
+  elif ! took_over "$out"; then
+    bad "a foreign wrapper seconds old is not cleared" "no delivery either: $out"
   else ok "a foreign wrapper seconds old is not cleared"; fi
 
   # The normal case must not change: a living predecessor is honoured -- also when the arm
