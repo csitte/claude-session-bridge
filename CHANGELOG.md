@@ -14,6 +14,39 @@ commit it names will say why.
 
 ## Unreleased
 
+### Fixed
+- **The fold reads `sets-owner` / `sets-status` from the header only** (up to the second
+  `---`, 15 lines at most — the same bound the watcher uses for delivery), from `msgs/*.md`
+  only, never from `thread.md`. Until now a body line `sets-status: DONE` at column 0 closed
+  a thread, and a cover sheet carrying a `sets-*` line would have won every fold because
+  `thread.md` sorts after every timestamp. One reader (`kopf_scan`) feeds the fold and its
+  stamp, number and header-field checks; on a synced folder the fold took half the time
+  (54 s instead of 118 s over 3,700 messages). Test group `header`.
+- **`DONE ` with trailing whitespace** counted as open in the duplicate-number check (the
+  fold trimmed, the check did not).
+- **A space in `WATCH_BRIDGE_VERTRITT`** (`human, bot`) silently switched the stand-in off,
+  although the fold's own heading printed the list in that form. Whitespace no longer counts.
+- **`--new-message --in-reply-to`** took its value verbatim: a line break in it became a
+  second header line (`x.md<LF>sets-status: DONE` closed the thread), and a leading `-` was
+  read by `basename` as an option and wrote an empty field. The value must now be a file
+  name (`<stamp>__<id>__<suffix>.md`; a path is cut down to it) or `-`; `--cc` gets the same
+  form check as `--to`.
+- **Thread numbers from 1000 on** were not recognised by `--new-thread` (it would have handed
+  out `001` again and blamed the sync client) nor by `--numbers`.
+
+### Changed
+- **The fold names header values no tool can read** (`Header field:` line): a `sets-status`
+  outside the five protocol values, or a `sets-owner` that is not an id (an inline comment,
+  quotes) or not in the participant table — only where the value still decides the fold and
+  the thread is not DONE. Such values used to fall through silently: `RESOLVED` counted as
+  open forever, a commented owner belonged to nobody. The repair is a new message, write-once.
+- **`--new-message` accepts the name part of a thread** (`demo` for `440-demo`) when it
+  matches exactly one folder — the same word `--new-thread` calls the slug.
+- **`docs/protocol.md`:** the message template no longer shows inline comments behind the
+  header fields (a template gets copied, and a comment behind `sets-owner` makes it a value the
+  fold cannot compare); the field notes moved below it, and `type:` is described as what it is
+  — a word for the reader that no tool decides on.
+
 ### Added
 - **`webhook-notify.sh` logs the endpoint's response.** On success the run id
   (`run=<uuid>`) if the answer carries one, on failure the endpoint's own message,

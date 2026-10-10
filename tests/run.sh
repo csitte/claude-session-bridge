@@ -1926,6 +1926,21 @@ test_new_thread() {
     ok "the cover sheet is written after the mkdir and before the series note"
   else bad "the cover sheet is written after the mkdir and before the series note"; fi
 
+  # --- numbers have three digits until they have four (10.10.2026) ---------------------------
+  # Every place that matched `[0-9][0-9][0-9]-` would have stopped recognising threads at
+  # 1000 and handed out "001" again -- with a message blaming the sync client.
+  local b4; b4="$TMPROOT/nt4.$RANDOM"; mkdir -p "$b4/threads/999-last/msgs" "$b4/_archiv/1000-first-four/msgs"
+  export SESSION_BRIDGE_DIR="$b4"
+  assert_eq "a four-digit number in the archive is the maximum, the next is 1001" "1001-next" \
+    "$(bash "$WATCHER" --new-thread next --title "next" 2>/dev/null)"
+  bash "$WATCHER" --new-thread 1002-typed --title "typed" >/dev/null 2>&1
+  assert_eq "a four-digit number passed in the slug is refused like a three-digit one" "2" "$?"
+  post_named "$b4" threads 1001-next 20260101T000000Z app
+  post_named "$b4" threads 1001-twin 20260102T000000Z site
+  bash "$WATCHER" --numbers 2>/dev/null | grep -qE '^1001 +COLLISION' \
+    && ok "--numbers sees a four-digit collision" \
+    || bad "--numbers sees a four-digit collision"
+
   unset WATCH_BRIDGE_SETTLE
   unset SESSION_BRIDGE_DIR
 }
@@ -2010,6 +2025,39 @@ test_new_message() {
   assert_eq "without a participant table, unknown ids are not refused" "0" "$?"
   echo x | bash "$WATCHER" --new-message 440-demo --from "Bad Id" --to whoever >/dev/null 2>&1
   assert_eq "... but a malformed id still is" "2" "$?"
+
+  # --- the header is written from the options, so every option that lands there is checked
+  # (10.10.2026). `--in-reply-to` used to go in verbatim: a line break in it was a second
+  # header line, and `x.md<LF>sets-status: DONE` closed the thread. `basename` without `--`
+  # turned a leading `-` into an option and wrote an empty field.
+  local before after
+  before="$(ls "$b/threads/440-demo/msgs" | wc -l | tr -d ' ')"
+  echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to session-b \
+      --in-reply-to $'x.md\nsets-status: DONE' >/dev/null 2>&1
+  assert_eq "in-reply-to with a line break is refused (a second header line)" "2" "$?"
+  echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to session-b \
+      --in-reply-to 'not a file' >/dev/null 2>&1
+  assert_eq "in-reply-to that is not a .md name is refused" "2" "$?"
+  after="$(ls "$b/threads/440-demo/msgs" | wc -l | tr -d ' ')"
+  assert_eq "... and nothing was written" "$before" "$after"
+  n="$(echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to session-b \
+        --in-reply-to -dash.md 2>/dev/null)"
+  assert_eq "a name with a leading dash is kept, not read as an option" "in-reply-to: -dash.md" \
+    "$(grep '^in-reply-to:' "$b/threads/440-demo/msgs/$n")"
+  n="$(echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to session-b \
+        --in-reply-to "/some/where/msgs/2026-01-01T000000Z__session-b__0001.md" 2>/dev/null)"
+  assert_eq "a path is cut down to the file name" "in-reply-to: 2026-01-01T000000Z__session-b__0001.md" \
+    "$(grep '^in-reply-to:' "$b/threads/440-demo/msgs/$n")"
+  echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to session-b --cc 'x;y' >/dev/null 2>&1
+  assert_eq "--cc gets the same form check as --to" "2" "$?"
+
+  # --- the slug without its number resolves, when it is unique (10.10.2026) -----------------
+  n="$(echo x | bash "$WATCHER" --new-message demo --from session-a --to session-b 2>/dev/null)"
+  assert_eq "the name part alone ('demo') finds 440-demo" "yes" \
+    "$([[ -f "$b/threads/440-demo/msgs/$n" ]] && echo yes || echo no)"
+  mkdir -p "$b/threads/441-demo/msgs"
+  echo x | bash "$WATCHER" --new-message demo --from session-a --to session-b >/dev/null 2>&1
+  assert_eq "... but not when two folders carry that name" "2" "$?"
 }
 
 test_numbers() {
@@ -2045,6 +2093,123 @@ test_numbers() {
 
   bash "$WATCHER" --numbers >/dev/null 2>&1
   assert_eq "--numbers exits 0" "0" "$?"
+  unset SESSION_BRIDGE_DIR
+}
+
+# --------------------------------------------------------------------------
+# header: the fold reads the header only, and says what it cannot read
+# --------------------------------------------------------------------------
+# Until 10.10.2026 the fold took `sets-*` from anywhere in a message and from
+# `thread.md`, while the watcher read 15 lines: two readers, two truths. The field
+# bridge had no case in 3,700 messages -- these fixtures are the cases it would have
+# misread. The second half is the eighth check: a value the fold cannot compare
+# (`RESOLVED`, an owner with a comment) used to fall through silently.
+test_header() {
+  head_ "watcher: the fold's header reader and the 'Header field' line"
+  local b fold
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  export WATCH_BRIDGE_SETTLE=0
+
+  # a body line `sets-status: DONE` at column 0 must not close the thread ...
+  post_state "$b" 010-body 100-a other app OPEN
+  printf -- '---\nfrom: other\nto: app\ntype: fyi\ndate: 2026-01-01T00:00:00Z\n---\n\nIf this were done I would write\nsets-status: DONE\nbut it is not.\n' \
+    > "$b/threads/010-body/msgs/200-b.md"
+  # ... nor a cover sheet carrying sets-* (it sorts after every timestamp and would win)
+  post_state "$b" 020-cover 100-a other app OPEN
+  printf -- '---\ntitle: cover\ncreated: 2026-01-01\nsets-status: DONE\nsets-owner: other\n---\n' \
+    > "$b/threads/020-cover/thread.md"
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  assert_eq "a body line 'sets-status: DONE' and a thread.md with sets-* do not close the thread" \
+    "010-body 020-cover" "$(printf '%s\n' "$fold" | awk '/^[0-9]/ {print $1}' | sort | paste -sd' ' -)"
+  if printf '%s\n' "$fold" | grep -q '^Header field:'; then
+    bad "clean headers: no 'Header field' line" "$fold"
+  else ok "clean headers: no 'Header field' line"; fi
+  # the stamp check's "still deciding" filter reads the same stream: a body line must not
+  # make a superseded file look deciding (it is the lexically LAST file here, so it decides
+  # anyway -- the point is that the run does not fail on the shared reader)
+  bash "$WATCHER" --fold app >/dev/null 2>&1
+  assert_eq "--fold exits 0 with the shared header stream" "0" "$?"
+
+  # --- the eighth check -------------------------------------------------------------------
+  post_state "$b" 030-status 100-a other app RESOLVED
+  mkdir -p "$b/threads/040-comment/msgs"
+  printf -- '---\nfrom: other\nto: app\ntype: reply\ndate: 2026-01-01T00:00:00Z\nsets-owner: app   # by Friday\nsets-status: OPEN\n---\n\nbody\n' \
+    > "$b/threads/040-comment/msgs/100-a.md"
+  post_state "$b" 050-healed 100-a other app RESOLVED     # superseded below: decides nothing
+  post_state "$b" 050-healed 200-b other app OPEN
+  post_state "$b" 060-closed 100-a other "app # x" DONE   # closed: nothing to do
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q '^Header field: 2 value'; then
+    ok "two deciding values are reported; the superseded and the closed one are not"
+  else bad "two deciding values are reported; the superseded and the closed one are not" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -qF "030-status  sets-status 'RESOLVED' (100-a.md) -- counts as open"; then
+    ok "the status line names thread, value and file, and says the thread counts as open"
+  else bad "the status line names thread, value and file" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -qF "040-comment  sets-owner 'app   # by Friday' (100-a.md) -- not an id"; then
+    ok "an owner with an inline comment is named as 'not an id'"
+  else bad "an owner with an inline comment is named as 'not an id'" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -qE '^040-comment '; then
+    bad "the commented owner folds nowhere -- the line replaces the silent drop" "$fold"
+  else ok "the commented owner folds nowhere -- the line replaces the silent drop"; fi
+  if printf '%s\n' "$fold" | grep -q 'new message with a clean field'; then
+    ok "the line names the repair (a new message, write-once)"
+  else bad "the line names the repair" "$fold"; fi
+
+  # an owner outside the participant table: reported only when there is a table
+  post_state "$b" 070-stranger 100-a other aqp OPEN
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  # Matched on the finding's own wording: the fixture names are not timestamps, so the
+  # name check lists the file too, and a bare slug grep hit THAT line first.
+  if printf '%s\n' "$fold" | grep -q '070-stranger  sets-owner'; then
+    bad "without a README an unknown owner is not a finding (form only)" "$fold"
+  else ok "without a README an unknown owner is not a finding (form only)"; fi
+  printf '# README\n\n| Id | Role | Path |\n|---|---|---|\n| `app` | one | `/x/a` |\n| `other` | two | `/x/b` |\n' > "$b/README.md"
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -qF "070-stranger  sets-owner 'aqp' (100-a.md) -- not in the participant table"; then
+    ok "with a README an owner that is not a participant is a finding (a typo folds nowhere)"
+  else bad "with a README an owner that is not a participant is a finding" "$fold"; fi
+
+  # --- duplicate numbers: `DONE ` with trailing whitespace is DONE ------------------------
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  post_state "$b" 080-one 100-a other app OPEN
+  mkdir -p "$b/threads/080-two/msgs"
+  printf -- '---\nfrom: other\nto: app\ntype: status\ndate: 2026-01-01T00:00:00Z\nsets-owner: other\nsets-status: DONE \n---\n\nbody\n' \
+    > "$b/threads/080-two/msgs/100-a.md"
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q '^Thread number:'; then
+    bad "'DONE ' with trailing whitespace closes a thread for the duplicate-number check" "$fold"
+  else ok "'DONE ' with trailing whitespace closes a thread for the duplicate-number check"; fi
+  post_state "$b" 080-two 200-b other other OPEN
+  fold="$(bash "$WATCHER" --fold app 2>/dev/null)"
+  if printf '%s\n' "$fold" | grep -q '^Thread number:'; then
+    ok "... and two open threads on one number are still reported"
+  else bad "... and two open threads on one number are still reported" "$fold"; fi
+
+  # --- the stand-in list tolerates ', ' -- the fold header prints it that way itself ------
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  post_state "$b" 090-human 100-a other human OPEN
+  fold="$(WATCH_BRIDGE_VERTRITT='bot, human' bash "$WATCHER" --fold app 2>/dev/null)"
+  # The stand-in block's own line form (two spaces, slug) -- a bare slug grep hit the name
+  # check's line instead and stayed green with the fix removed (mutation run, 10.10.2026).
+  if printf '%s\n' "$fold" | grep -qE '^  090-human '; then
+    ok "WATCH_BRIDGE_VERTRITT with a space after the comma still stands in"
+  else bad "WATCH_BRIDGE_VERTRITT with a space after the comma still stands in" "$fold"; fi
+
+  # --- the delivery path stops at the header too ---------------------------------------
+  # The header here has NO `to:` at all, the body has one within the first 15 lines. With the
+  # bound removed, `fm_field` finds the body line and delivers; a fixture with a `to:` in the
+  # header cannot tell the two apart, because the first hit wins either way (the first
+  # version of this case stayed green under the mutation).
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  bodyto() {
+    printf -- '---\nfrom: other\ntype: fyi\ndate: 2026-01-01T00:00:00Z\n---\n\nto: app\n' \
+      > "$1/threads/001-test/msgs/300-bodyto.md"
+    post "$1" 310-real other app
+  }
+  assert_eq "delivery: a 'to: app' line in the body (within 15 lines) does not address app" \
+    "310-real.md" "$(watch_run "$b" app bodyto 1)"
+
+  unset WATCH_BRIDGE_SETTLE
   unset SESSION_BRIDGE_DIR
 }
 
@@ -5089,6 +5254,7 @@ case "${1:-all}" in
   install) test_install ;;
   numbers) test_numbers ;;
   newthread) test_new_thread ;;
+  header) test_header ;;
   coverage) test_coverage ;;
   checkout) test_checkout ;;
   launcher) test_launcher ;;
@@ -5104,8 +5270,8 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_selftree; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
-  *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
+  all)     test_watcher; test_mark; test_orphan; test_hook; test_handover; test_selftree; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_header; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|new_message|header|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 
 printf '\n%s\n' "----------------------------------------"

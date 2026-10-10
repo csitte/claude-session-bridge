@@ -63,17 +63,32 @@ suffix so two simultaneous writers cannot collide. Lexical sort equals chronolog
 
 ```markdown
 ---
-from: session-a          # author participant id
-to: session-b            # one id, a comma-separated list, or 'all'
-type: brief              # brief | question | reply | ack | status | fyi
-date: __TS__                 # the recipe's sed fills this in; same clock reading, colons kept
+from: session-a
+to: session-b
+type: brief
+date: __TS__
 in-reply-to: <filename of the message this answers, or '-'>
-sets-owner: session-b    # OPTIONAL — hands the ball to this participant
-sets-status: OPEN        # OPTIONAL — moves the thread to this state
+sets-owner: session-b
+sets-status: OPEN
 ---
 
 <terse body; link commits and files rather than pasting them>
 ```
+
+- `from:` — the author's participant id. `to:` — one id, a comma-separated list, or `all`.
+- `type:` — one lowercase word for the reader; no tool decides on it. Common values: `brief`,
+  `question`, `reply`, `answer`, `ack`, `status`, `fyi`, `request`, `report`.
+- `date:` — the recipe's `sed` fills it in: the same clock reading as the filename, colons kept.
+- `sets-owner:` / `sets-status:` — OPTIONAL. The first hands the ball to a participant, the
+  second moves the thread to one of `OPEN`, `IN_PROGRESS`, `NEEDS_INFO`, `BLOCKED`, `DONE`.
+
+**Nothing after the value.** An earlier version of this template carried inline comments
+(`sets-owner: session-b    # OPTIONAL — …`), and a template is what gets copied: a comment or
+quotes behind the value make it a value the fold cannot compare — `sets-owner: x # by Friday`
+belongs to nobody, `sets-status: RESOLVED` counts as open forever, and nothing says so. Since
+10.10.2026 the fold names such values (`Header field:` line); the repair is a new message with
+a clean field, never an edit. The header ends at the second `---`; fields are read from the
+header only, never from the body or from `thread.md`.
 
 **Write it with the command** -- the recipe below stays as the explanation of what it does. Four
 malformed names in one month in a live bridge, each from a hand-typed stamp, are why:
@@ -89,9 +104,13 @@ EOF
 
 One `date -u` for filename and `date:`, front matter from the options, the text from the heredoc,
 temp file then `mv`; ids are checked against the participant table in `README.md`, a `+` in
-`--to` is refused, `--sets-status` must be one of the five protocol values, and the command
-prints the filename -- the `in-reply-to` of the next reply. A thread may be named by its number
-when that number matches exactly one folder in `threads/`.
+`--to` is refused, `--sets-status` must be one of the five protocol values, `--in-reply-to` must
+be a file name (`<stamp>__<id>__<suffix>.md`, a path is cut down to it; anything else is
+refused, because the value lands verbatim in the header and a line break in it would be a
+second header line), `--cc` gets the same form check as `--to`, and the command prints the
+filename -- the `in-reply-to` of the next reply. A thread may be named by its number when that
+number matches exactly one folder in `threads/`, or by its name part alone (`demo` for
+`440-demo`) when that matches exactly one.
 
 Create it with temp-then-rename so a concurrent reader never sees a half-written file:
 

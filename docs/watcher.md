@@ -5,8 +5,9 @@ message arrived; a session would find it at its next start-of-session scan, whic
 tomorrow. The watcher closes that gap.
 
 `watch-bridge.sh <session-id> [poll-seconds]` polls `<bridge>/threads/*/msgs/` and prints
-**one line per new message addressed to that id**. Armed as a persistent *Monitor* task of
-Claude Code, every line becomes a notification that wakes the session.
+**one line per new message addressed to that id**. Armed as a background Bash task with
+`--once` (see "Why a background command and not a Monitor" below), its output reaches the session when the
+task ends — which is exactly when something was delivered — and the session re-arms.
 
 The bridge folder is resolved from the built-in site paths, or from **`SESSION_BRIDGE_DIR`**
 if that is set — it overrides them and is then binding, and the script refuses to start if the
@@ -967,6 +968,48 @@ Three choices, each from a measurement rather than an opinion:
   **only for the hits**: listing every candidate cost 3.7 s on a sync folder, the hits a
   fraction of that.
 
+### The fold reads the header only — one reader for every check
+
+Until 10.10.2026 the fold took `sets-owner` / `sets-status` with `grep -rHm1` over the
+**whole** thread folder: no bound at the header, and `thread.md` included. Two consequences,
+neither ever seen in the field, both reproduced: an explanatory body line `sets-status: DONE`
+at column 0 would have closed the thread, and a `thread.md` carrying a `sets-*` line would
+have won **every** fold, because `thread.md` sorts after every timestamp — while the protocol
+says the cover sheet holds immutable facts only. The watcher, meanwhile, read 15 lines
+(`fm_field`): *two readers, two truths.* Now `kopf_scan` reads each file up to the second
+`---` line, 15 lines at most, `msgs/*.md` only, and `fm_field` has the same bound. The raw
+stream is stored **once** per fold; the stamp, number and header-field checks read it instead
+of walking the bridge a second and third time. Measured over a 3,700-message bridge on a
+synced folder: byte-identical output to the greps, **fold 54 s instead of 118 s**. It is not
+a cache — nothing survives the run. Two by-catches: `DONE ` with trailing whitespace counted
+as open in the duplicate-number check (the fold trimmed, the check did not), and a space in
+`WATCH_BRIDGE_VERTRITT` (`human, bot`) silently switched the stand-in off — the fold's own
+heading printed the list in exactly that form.
+
+### The fold names header values that no tool can read
+
+The fold compares bytewise: `status != DONE`, `owner == me`. A value next to that does not
+stand out, it falls **through** — `sets-status: RESOLVED` counts as open forever,
+`sets-owner: app   # by Friday` belongs to nobody, and the no-owner note does not fire because
+the owner is not empty. The protocol template itself showed inline comments behind exactly
+these fields until 10.10.2026 (the class where the example demonstrates the trap).
+
+```
+Header field: 1 value(s) that decide the fold of their thread and that no tool reads:
+            058-handoffs  sets-status 'RESOLVED' (2026-08-18T211547Z__touring__2a65.md) -- counts as open; allowed: OPEN, IN_PROGRESS, NEEDS_INFO, BLOCKED, DONE
+            Repair by a participant of the thread: a new message with a clean field
+            (--new-message checks the values); the old file stays, write-once.
+```
+
+Reported is only what **decides** the fold (the last value per thread) and only in threads
+that are not DONE; owners are checked against the participant table, without a README only
+the form. **Values are not reinterpreted** — the same line `near_miss` takes for `to:`:
+cutting a comment off would admit a second spelling, and the third follows. Measured over
+3,700 messages: the `RESOLVED` above had since been superseded by an `OPEN` and no longer
+decided anything; the archive held two `NEED_INFO` and one `DONE. The **…`. The stock was
+clean; the line stands for the next case. A quiet line without a signal word, like
+`Name check:`. Test group `header`, 14 cases.
+
 ### Two checkouts, one CLAUDE.md — the wrong id
 
 **What happened.** A background session living in a second checkout armed and folded under
@@ -1239,6 +1282,13 @@ The test for it is deliberately **structural** (it asserts in the source that `m
 the message) rather than behavioural: whether SIGPIPE actually lands is a race, and a runtime
 test for it stayed green with the order broken — guarding nothing. Both times this happened it
 surfaced only through a mutation run, never through reading.
+
+**Numbers have three digits until they have four** (10.10.2026). `max_num`, the slug check
+and `--numbers` matched `[0-9][0-9][0-9]-`: from thread 1000 on the command would have
+recognised nothing, handed out `001` again and blamed the sync client for the collision.
+Far away in our bridge (489 at the time) — but three lines, and the message would have
+pointed the wrong way. Now `^[0-9]+-`; `%03d` writes four digits by itself. Test group
+`newthread`, three cases.
 
 ## Duplicate thread numbers: `--numbers`
 

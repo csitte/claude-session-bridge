@@ -75,9 +75,10 @@ watcher only ever reads them.
   hygiene* (`--status`, leftover detection, the launcher's window handling) uses PowerShell
   and WMI and will not run as-is on macOS or Linux. We have never tested it there and do not
   claim it works.
-- **The push depends on Claude Code's Monitor primitive.** A session arms a persistent
-  background monitor whose stdout lines become notifications. If that primitive changes, the
-  push layer disappears and the channel degrades to scan-at-session-start — which still
+- **The push depends on Claude Code's background-task primitive.** A session arms the watcher
+  as a background Bash task (`--once`); the task's output reaches the session when it ends,
+  which is when something was delivered, and the session re-arms. If that primitive changes,
+  the push layer disappears and the channel degrades to scan-at-session-start — which still
   works. That degradation path is the design, not an afterthought.
 - **Not a product, and not staffed.** No versioning policy, no support, no stability promise
   — a declared snapshot of a system that is in daily use elsewhere. It does have an installer

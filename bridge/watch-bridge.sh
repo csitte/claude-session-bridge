@@ -221,6 +221,45 @@ name_hint() {
   return 0
 }
 
+# --- The fold's header reader (since 10.10.2026) ------------------------------
+# ONE pass over `threads/*/msgs/*.md` that reads only the HEADER of each file: up to the
+# second `---` line, at most 15 lines -- the same bound `fm_field` uses on the delivery
+# path. Until 10.10. the fold fetched its fields with `grep -rHm1 '^sets-…:'` over the
+# whole thread folder: with no bound at the header (an explanatory body line
+# `sets-status: DONE` at column 0 would have closed the thread) and including
+# `thread.md` (which sorts after every timestamp and would have won every fold -- the
+# protocol says it holds immutable facts only). Two readers, two truths: the watcher
+# read 15 lines, the fold everything. The field bridge (3,700 messages, archive
+# included) had not a single case on 10.10. -- the defect was dormant; it is removed
+# anyway because the fold is the second net, and a silent misreading there costs a
+# message.
+#
+# Output in the FORM of the old greps (`O:./slug/msgs/file:sets-owner: value`,
+# `S:…:sets-status: value`) so that every consumer (do_fold, stamp_hint, number_hint)
+# reads the same raw stream; measured over the field bridge on 10.10.: byte-identical
+# 1,609 lines, 11 s instead of 24 s (two greps). Values are NOT cleaned here -- a `#`
+# comment or quotes in a value are a finding for `header_hint`, not a spelling variant
+# (the same line `near_miss` takes for `to:`). Call from `$bridge/threads`. `xargs -r`:
+# with no hits awk must not wait on stdin. CR is stripped (files from Windows writers).
+kopf_scan() {
+  find . -mindepth 3 -maxdepth 3 -path './*/msgs/*.md' -print0 2>/dev/null \
+  | xargs -0 -r awk '
+      FNR==1 { d=0; o=0; s=0 }
+      FNR>15 { nextfile }
+      { line=$0; sub(/\r$/, "", line) }
+      line ~ /^---[ \t]*$/ { if (++d >= 2) nextfile; next }
+      !o && index(line, "sets-owner:")==1  { o=1; print "O:" FILENAME ":" line }
+      !s && index(line, "sets-status:")==1 { s=1; print "S:" FILENAME ":" line }
+    ' 2>/dev/null
+}
+# The raw stream of the running fold: fold_report stores it once, the checks read it
+# instead of walking the bridge a second and third time. Empty = read it yourself.
+WB_KOPF_FILE=""
+kopf_lines() { # -> the raw stream, from the store or fresh
+  if [[ -n "$WB_KOPF_FILE" && -r "$WB_KOPF_FILE" ]]; then cat "$WB_KOPF_FILE"
+  else ( cd "$bridge/threads" 2>/dev/null || exit 0; kopf_scan ); fi
+}
+
 # --- Sixth check: stamps that lie ahead of their own write time --------------
 # The name check catches the wrong FORM. On the same day three names turned up with
 # the right form and a wrong VALUE: `…T104500Z` written at 08:45 UTC (local time with
@@ -267,10 +306,12 @@ stamp_hint() {
   # catches up with its stamp.
   local deciding
   last_per_thread() { tr -d '\r' | awk -F/ '{ if ($NF > m[$2]) m[$2]=$NF } END { for (s in m) print "threads/" s "/msgs/" m[s] }'; }
-  deciding=$( cd "$bridge/threads" 2>/dev/null || exit 0
-      { grep -rHm1 --include='*.md' '^sets-owner:'  . 2>/dev/null | cut -d: -f1 | last_per_thread
-        grep -rHm1 --include='*.md' '^sets-status:' . 2>/dev/null | cut -d: -f1 | last_per_thread
-        find . -mindepth 3 -maxdepth 3 -path './*/msgs/*.md' 2>/dev/null | last_per_thread
+  # Owner and status files from the header reader's raw stream (header only, never
+  # `thread.md`) -- the same source as do_fold, or there would be two readers again.
+  deciding=$( { kopf_lines | grep '^O:' | cut -c3- | cut -d: -f1 | last_per_thread
+        kopf_lines | grep '^S:' | cut -c3- | cut -d: -f1 | last_per_thread
+        ( cd "$bridge/threads" 2>/dev/null || exit 0
+          find . -mindepth 3 -maxdepth 3 -path './*/msgs/*.md' 2>/dev/null ) | last_per_thread
       } | LC_ALL=C sort -u )
   bad=$(printf '%s\n' "$bad" | awk -F'|' 'NR==FNR { d[$0]=1; next } ($1 in d)' <(printf '%s\n' "$deciding") -)
   [[ -n "$bad" ]] || return 0
@@ -285,8 +326,7 @@ stamp_hint() {
   # (DONE AND last message >= 7 days). So do not filter, annotate: **a line with an expiry
   # date is no longer a permanent line.**
   local status_map
-  status_map=$( cd "$bridge/threads" 2>/dev/null || exit 0
-      grep -rHm1 --include='*.md' '^sets-status:' . 2>/dev/null | tr -d '\r' \
+  status_map=$( kopf_lines | grep '^S:' | cut -c3- \
       | awk -F: '{ p=$1; sub(/^\.\//,"",p); split(p,a,"/"); v=$3; gsub(/^[ \t]+|[ \t]+$/,"",v)
                    if (a[3] > f[a[1]]) { f[a[1]]=a[3]; s[a[1]]=v } }
                  END { for (t in s) print t "\t" s[t] }' )
@@ -342,11 +382,10 @@ number_hint() {
   [[ -n "$dup" ]] || return 0
   # ONE grep pass over the candidate folders rather than one per folder: on a cloud-sync
   # folder every access is a fetch round.
-  st_all=$( cd "$bridge/threads" 2>/dev/null || exit 0
-            local args=()
-            while IFS= read -r num; do [[ -n "$num" ]] && args+=("$num"-*/); done <<< "$dup"
-            (( ${#args[@]} )) || exit 0
-            grep -rHm1 --include='*.md' '^sets-status:' "${args[@]}" 2>/dev/null | tr -d '\r' )
+  # Since 10.10.2026 from the header reader's raw stream (header only, no `thread.md`),
+  # filtered to the numbers concerned.
+  st_all=$( kopf_lines | grep '^S:' | cut -c3- \
+            | grep -E "^\./($(printf '%s\n' "$dup" | paste -sd'|' -))-" )
   # Two passes, and the expensive one runs over the hits only: listing the msgs/ directories
   # (for the oldest message) costs a fetch round each -- measured 3.7 s over all candidates,
   # a fraction over the hits. Decide what to report first, then fetch the display for it.
@@ -355,8 +394,9 @@ number_hint() {
     n_open=0
     for d in "$bridge/threads/$num"-*/; do
       [[ -d "$d" ]] || continue
+      # Trailing whitespace off, as in the fold -- without that `DONE ` counted as open here.
       st=$(printf '%s\n' "$st_all" | grep -F "$(basename "$d")/msgs/" | LC_ALL=C sort | tail -1 \
-           | sed 's/.*sets-status: *//')
+           | sed 's/.*sets-status:[[:space:]]*//; s/[[:space:]]*$//')
       [[ "$st" == "DONE" ]] || n_open=$((n_open+1))
     done
     (( n_open >= 2 )) && report+="$num"$'\n'
@@ -376,25 +416,81 @@ number_hint() {
   echo "              do not guess; renaming onto a guessed number is how this arose."
 }
 
+# --- Eighth check: header values no tool reads (since 10.10.2026) --------------
+# The fold compares `sets-status` with `DONE` and `sets-owner` with its own id -- bytewise.
+# A value next to that does not stand out, it falls THROUGH: `sets-status: RESOLVED` counts
+# as open forever, `sets-owner: x   # by Friday` belongs to nobody -- and the no-owner NOTE
+# does not fire, because the owner is not empty. Our own protocol template showed inline
+# comments behind exactly these fields until 10.10. Measured over 3,700 messages: one
+# `RESOLVED` (later superseded by an `OPEN`, so no longer deciding), two `NEED_INFO` and
+# one `DONE. The **…` in the archive; comments and quotes: none. The stock is clean; the
+# check stands for the next case, not for the stock.
+# Reported is only what DECIDES the fold (the last value per thread) and only in threads
+# that are not DONE; values are not reinterpreted (the same line `near_miss` takes for
+# `to:`): the author repairs -- with a new message, write-once. Owners are checked against
+# the participant table; without a README only the form. A quiet line like `Name form:` --
+# visibility, not urgency.
+header_hint() {
+  local ids="" known=0 slug field value file out="" n
+  if [[ -r "$bridge/README.md" ]]; then ids="$(readme_ids "$bridge/README.md")"; known=1; fi
+  while IFS=$'\t' read -r slug field value file; do
+    [[ -n "$slug" ]] || continue
+    case "$field" in
+      status)
+        case "$value" in OPEN|IN_PROGRESS|NEEDS_INFO|BLOCKED|DONE) continue ;; esac
+        out+="            $slug  sets-status '$value' ($file) -- counts as open; allowed: OPEN, IN_PROGRESS, NEEDS_INFO, BLOCKED, DONE"$'\n' ;;
+      owner)
+        if [[ "$value" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then
+          [[ $known -eq 0 ]] && continue
+          grep -qx -- "$value" <<<"$ids" && continue
+          out+="            $slug  sets-owner '$value' ($file) -- not in the participant table; nobody folds this thread"$'\n'
+        else
+          out+="            $slug  sets-owner '$value' ($file) -- not an id (comment, quotes, spaces?); nobody folds this thread"$'\n'
+        fi ;;
+    esac
+  done < <(kopf_lines | awk '
+      { k=substr($0,1,1); rest=substr($0,3); i=index(rest,":"); path=substr(rest,1,i-1); rest=substr(rest,i+1)
+        n=split(path,p,"/"); slug=p[2]; file=p[n]; if (slug ~ /^_/) next
+        i=index(rest,":"); v=substr(rest,i+1); sub(/^[[:space:]]+/,"",v); sub(/[[:space:]]+$/,"",v)
+        if (v=="") next
+        if (k=="O") { if (file>=fo[slug]) { fo[slug]=file; ow[slug]=v } }
+        else        { if (file>=fs[slug]) { fs[slug]=file; st[slug]=v } } }
+      END { for (s in fs) if (st[s]!="DONE") print s "\tstatus\t" st[s] "\t" fs[s]
+            for (s in ow) if (st[s]!="DONE") print s "\towner\t" ow[s] "\t" fo[s] }' | LC_ALL=C sort)
+  [[ -n "$out" ]] || return 0
+  n=$(printf '%s' "$out" | grep -c .)
+  echo "Header field: $n value(s) that decide the fold of their thread and that no tool reads:"
+  printf '%s' "$out"
+  echo "            Repair by a participant of the thread: a new message with a clean field"
+  echo "            (--new-message checks the values); the old file stays, write-once."
+}
+
 fold_report() {
   local me="$1" settle="${WATCH_BRIDGE_SETTLE:-5}"
   resolve_bridge
   local n1 n2 pass=0 tmp
   tmp=$(mktemp) || exit 1
+  WB_KOPF_FILE="$tmp.kopf"
   # shellcheck disable=SC2064  # expand $tmp now, not when the trap fires
-  trap "rm -f '$tmp'" EXIT
+  trap "rm -f '$tmp' '$tmp.kopf'" EXIT
 
   count_threads() { ls -d "$bridge"/threads/*/ 2>/dev/null | wc -l | tr -d ' '; }
   do_fold() { # -> lines "slug|status|owner|last-file", only owner==me && status!=DONE
     ( cd "$bridge/threads" 2>/dev/null || exit 0
-      # Three passes over the tree instead of one per file:
-      #   O:./slug/msgs/file:sets-owner: value   (first hit per file, as the fold requires)
+      # Two passes over the tree instead of one per file:
+      #   O:./slug/msgs/file:sets-owner: value   (first hit in the HEADER per file, kopf_scan)
       #   S:./slug/msgs/file:sets-status: value
       #   L:./slug/msgs/file                     (all messages -> youngest per thread)
-      { grep -rHm1 --include='*.md' '^sets-owner:'  . 2>/dev/null | sed 's/^/O:/'
-        grep -rHm1 --include='*.md' '^sets-status:' . 2>/dev/null | sed 's/^/S:/'
+      # The header stream is stored: stamp_hint, number_hint and header_hint read it
+      # instead of walking the bridge again (11 s per walk on a synced folder).
+      kopf_scan > "$WB_KOPF_FILE"
+      { cat "$WB_KOPF_FILE"
         find . -mindepth 3 -maxdepth 3 -path './*/msgs/*.md' 2>/dev/null | sed 's/^/L:/'
       } | tr -d '\r' | awk -v me="$me" -v vert="${WATCH_BRIDGE_VERTRITT:-}" '
+        # The stand-in list is a comma list; the fold header prints it with ", " itself --
+        # a space in it silently switched the stand-in off until 10.10.2026. Whitespace
+        # does not count.
+        BEGIN { gsub(/[[:space:]]/, "", vert) }
         { k=substr($0,1,1); rest=substr($0,3)
           if (k=="L") path=rest; else { i=index(rest,":"); path=substr(rest,1,i-1); rest=substr(rest,i+1) }
           n=split(path, p, "/"); slug=p[2]; file=p[n]        # p[1]="." from the leading ./
@@ -506,6 +602,7 @@ fold_report() {
   name_hint
   stamp_hint
   number_hint
+  header_hint
   proxy_hint "$tmp"
   participation_hint "$tmp"
   local slug st ow last kind
@@ -640,12 +737,12 @@ numbers_report() {
     find threads _archiv -mindepth 3 -maxdepth 3 -path '*/msgs/*.md' 2>/dev/null
   ) | tr -d '\r' | awk -F/ '
     { dir=$1; slug=$2; file=$4
-      if (slug !~ /^[0-9][0-9][0-9]-/) next
+      if (slug !~ /^[0-9]+-/) next
       if (!(slug in first) || file < first[slug]) { first[slug]=file; where[slug]=dir }
     }
     END {
       for (s in first) {
-        num=substr(s,1,3); f=first[s]
+        num=s; sub(/-.*/, "", num); f=first[s]
         ts=f; sub(/__.*/,"",ts)
         who=f; sub(/^[^_]*__/,"",who); sub(/__.*/,"",who)
         n[num]++
@@ -1746,10 +1843,13 @@ new_thread() { # <slug> --title "<title>" [number, for a deliberate series]
   case "$slug" in
     */*)
       echo "watch-bridge: slug contains '/'." >&2; exit 2 ;;
-    [0-9][0-9][0-9]-*)
-      echo "watch-bridge: the number is handed out, not passed in -- for a deliberate series give it as a further argument." >&2
-      exit 2 ;;
   esac
+  # Numbers have three digits until they have four: every place that demanded
+  # `[0-9][0-9][0-9]-` would have recognised nothing from thread 1000 on.
+  if [[ "$slug" =~ ^[0-9]+- ]]; then
+    echo "watch-bridge: the number is handed out, not passed in -- for a deliberate series give it as a further argument." >&2
+    exit 2
+  fi
 
   # Title: mandatory, one line, no surrounding whitespace. An empty title would be no
   # gain -- we would trade "no cover sheet" for "title not filled in".
@@ -1782,7 +1882,7 @@ new_thread() { # <slug> --title "<title>" [number, for a deliberate series]
   count_all() { ls -d "$bridge"/threads/*/ "$bridge"/_archiv/*/ 2>/dev/null | wc -l | tr -d ' '; }
   max_num()   { ls -d "$bridge"/threads/*/ "$bridge"/_archiv/*/ 2>/dev/null \
                 | sed 's#/$##; s#.*/##' \
-                | awk '/^[0-9][0-9][0-9]-/ { n = substr($0,1,3) + 0; if (n > m) m = n } END { print m + 0 }'; }
+                | awk '/^[0-9]+-/ { n = $0; sub(/-.*/, "", n); n += 0; if (n > m) m = n } END { print m + 0 }'; }
 
   # Settle first: a highest-number that is too low because the sync client is still
   # catching up is precisely the cause this command exists to remove.
@@ -1957,6 +2057,17 @@ new_message() {
     elif [[ ${#hits[@]} -gt 1 ]]; then
       echo "watch-bridge: number $nr is ambiguous (${hits[*]}) -- name the slug." >&2; exit 2
     fi
+  else
+    # The name part without the number -- that is what `--new-thread` calls the slug, and
+    # until 10.10.2026 it was refused here. If it matches exactly ONE folder it is meant;
+    # with several the full folder name stays mandatory.
+    local d hits=()
+    for d in "$bridge"/threads/[0-9]*-"$slug"/; do [[ -d "$d" ]] && hits+=("$(basename "$d")"); done
+    if [[ ${#hits[@]} -eq 1 ]]; then
+      dir="$bridge/threads/${hits[0]}"
+    elif [[ ${#hits[@]} -gt 1 ]]; then
+      echo "watch-bridge: '$slug' is ambiguous (${hits[*]}) -- name the full folder." >&2; exit 2
+    fi
   fi
   if [[ -z "$dir" ]]; then
     echo "watch-bridge: thread '$slug' does not exist in threads/ (the archive does not count -- nothing is written there)." >&2
@@ -2005,7 +2116,13 @@ new_message() {
     if [[ $force -eq 1 ]]; then echo "watch-bridge: NOTE: recipients not in the participant table: $unknown (--force)." >&2
     else echo "watch-bridge: recipients not in the README's participant table: $unknown -- a typo? (--force overrides)." >&2; exit 2; fi
   fi
-  for t in ${cc//,/ }; do [[ -n "$t" ]] && ccnorm+="${ccnorm:+, }$t"; done
+  # `cc:` is read by no tool -- but it sits in the header, so it gets the same form check
+  # as `--to`; the table is not required.
+  for t in ${cc//,/ }; do
+    [[ -n "$t" ]] || continue
+    id_ok "$t" || { echo "watch-bridge: '$t' in --cc is not an id." >&2; exit 2; }
+    ccnorm+="${ccnorm:+, }$t"
+  done
   if [[ -n "$owner" ]]; then
     id_ok "$owner" || { echo "watch-bridge: --sets-owner '$owner' is not an id." >&2; exit 2; }
     if ! id_known "$owner"; then
@@ -2021,8 +2138,16 @@ new_message() {
   # in-reply-to: the filename of the message being answered, in THIS thread. If it is not
   # there it is usually a retyped name -- the message still goes out (a warning, no abort),
   # because on another machine the file may still be syncing.
+  # The FORM is mandatory (since 10.10.2026): the value lands verbatim in the header, and a
+  # line break in it would be a second header line (`x.md<LF>sets-status: DONE` would have
+  # closed the thread). `basename` without `--` read a value with a leading `-` as an option
+  # and wrote an empty field. A path is cut down to the file name; anything but a `.md`
+  # name made of the protocol's characters is an abort.
   if [[ "$irt" != "-" ]]; then
-    irt="$(basename "$irt")"
+    irt="${irt##*/}"
+    if [[ ! "$irt" =~ ^[A-Za-z0-9._-]+\.md$ ]]; then
+      echo "watch-bridge: --in-reply-to must be a file name from msgs/ ('<stamp>__<id>__<suffix>.md') or '-'." >&2; exit 2
+    fi
     [[ -f "$dir/msgs/$irt" ]] || echo "watch-bridge: NOTE: --in-reply-to '$irt' is not in $(basename "$dir")/msgs -- retyped? (sync may still be pending)." >&2
   fi
 
@@ -2311,8 +2436,16 @@ handle_existing
 resolve_bridge
 
 # Pull a frontmatter field from the first 15 lines (CR-tolerant, trimmed).
+# The header ends at the second `---` line, after 15 lines at the latest -- the same bound
+# as `kopf_scan` in the fold (since 10.10.2026; before that the fold read without a bound,
+# and two readers had two truths). First hit wins, surrounding whitespace and CR go.
 fm_field() { # $1=field $2=file
-  sed -n "1,15s/^$1:[[:space:]]*//p" "$2" | head -1 | tr -d '\r' | sed 's/[[:space:]]*$//'
+  awk -v f="$1" '
+    NR>15 { exit }
+    { sub(/\r$/, "") }
+    /^---[ \t]*$/ { if (++d >= 2) exit; next }
+    index($0, f ":")==1 { v=substr($0, length(f)+2); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v); print v; exit }
+  ' "$2" 2>/dev/null
 }
 
 # Am I addressed? `to:` may be a list: `to: app, app-b`.
