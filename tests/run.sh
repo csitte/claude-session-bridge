@@ -593,6 +593,42 @@ test_watcher() {
     bad "--fold prints no name check when every name is well-formed"
   else ok "--fold prints no name check when every name is well-formed"; fi
 
+  # --- NO HEADER: an attachment in msgs/ must not get the mv advice -------------------
+  # In the field a bot put two review reports (no front matter) next to its messages; the
+  # name check told every session to rename them, which would turn them into messages
+  # without a header. Mixed fixture: one wrong name WITH a header, one attachment.
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  rm -rf "$b/threads/001-test"
+  post_state "$b" 001-mine 2026-01-01T000000Z__other__h1 other app OPEN
+  printf -- '---\nfrom: other\nto: app\ntype: fyi\ndate: 2026-01-01T01:00:00Z\n---\n\nbody\n' \
+    > "$b/threads/001-mine/msgs/20260101T010000Z__other__h2.md"
+  printf '# Code review\n\nno front matter here\n' > "$b/threads/001-mine/msgs/review-abc.md"
+  fold="$(bash "$WATCHER" --fold app 2>&1)"
+  if printf '%s\n' "$fold" | grep -qE '^ {12}threads/001-mine/msgs/review-abc\.md +NO HEADER$'; then
+    ok "the name check marks a file without a header as NO HEADER"
+  else bad "the name check marks a file without a header as NO HEADER" "$fold"; fi
+  # the counter-test that caught a real defect while building: a file WITH a header must not
+  # carry the mark (with the header reader defined below the fold, every file got it)
+  if printf '%s\n' "$fold" | grep -qE '20260101T010000Z__other__h2\.md +NO HEADER'; then
+    bad "a wrong name WITH a header is not marked NO HEADER" "$fold"
+  else ok "a wrong name WITH a header is not marked NO HEADER"; fi
+  if printf '%s\n' "$fold" | grep -q 'command not found'; then
+    bad "the name check runs without 'command not found'" "$fold"
+  else ok "the name check runs without 'command not found'"; fi
+  if printf '%s\n' "$fold" | grep -q "Do NOT rename anything marked 'NO HEADER'" \
+     && printf '%s\n' "$fold" | grep -q 'Repair: mv'; then
+    ok "mixed list: both pieces of advice appear"
+  else bad "mixed list: both pieces of advice appear" "$fold"; fi
+  # attachment alone: the mv advice must not appear at all
+  rm "$b/threads/001-mine/msgs/20260101T010000Z__other__h2.md"
+  fold="$(bash "$WATCHER" --fold app 2>&1)"
+  if printf '%s\n' "$fold" | grep -q 'Repair: mv'; then
+    bad "only attachments: no mv advice" "$fold"
+  else ok "only attachments: no mv advice"; fi
+  if printf '%s\n' "$fold" | grep -q "Do NOT rename anything marked 'NO HEADER'"; then
+    ok "only attachments: the NO HEADER advice appears"
+  else bad "only attachments: the NO HEADER advice appears" "$fold"; fi
+
   # --- stamp check: right form, wrong value (the name lies ahead of the write time) ---
   # the defect: a message stamped in the future beats a younger, well-formed DONE
   b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety

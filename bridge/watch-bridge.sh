@@ -185,6 +185,19 @@ irt_hint() {
 #     changed, fold again; (2) every slug listed in an INDEX.md (if you keep a generated
 #     index) must exist under threads/ or _archiv/. Both are advisory: whatever is there is
 #     always reported, the warning only says the result is not yet trustworthy.
+# Pull a frontmatter field from the first 15 lines (CR-tolerant, trimmed).
+# The header ends at the second `---` line, after 15 lines at the latest -- the same bound
+# as `kopf_scan` in the fold (since 10.10.2026; before that the fold read without a bound,
+# and two readers had two truths). First hit wins, surrounding whitespace and CR go.
+fm_field() { # $1=field $2=file
+  awk -v f="$1" '
+    NR>15 { exit }
+    { sub(/\r$/, "") }
+    /^---[ \t]*$/ { if (++d >= 2) exit; next }
+    index($0, f ":")==1 { v=substr($0, length(f)+2); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v); print v; exit }
+  ' "$2" 2>/dev/null
+}
+
 # --- Fifth check: filenames that do not sort -----------------------------------
 # Folding and delivery order by the FILENAME, not by `date:` (protocol: "if they
 # disagree, the filename wins"). A name outside the pattern
@@ -203,8 +216,17 @@ irt_hint() {
 # new file and delivers it once — wanted for a repair, it just should not surprise
 # anyone. A quiet line, no upper-case keyword: the finding needs visibility, not
 # urgency. `_archiv/` is included: a wrong name comes back on reactivation.
+#
+# NO HEADER: a file whose header carries neither `from:` nor `to:` -- the same test the
+# delivery path uses -- is not a message with a wrong name but usually an ATTACHMENT that
+# landed in `msgs/` (in the field a bot put two review reports next to its messages). For
+# such a file the `mv` advice is WRONG: a name in message form would turn it into an
+# apparent message without a header, which every watcher retries 40 times -- and under
+# write-once that cannot be undone. Those files get their own mark and their own advice;
+# the `mv` advice only appears if at least one file WITH a header is in the list. Only the
+# candidates are read (usually none), never the whole bridge.
 name_hint() {
-  local bad n f referenced=0
+  local bad n f referenced=0 noheader=0 withheader=0
   bad=$( cd "$bridge" 2>/dev/null || exit 0
          find threads _archiv -mindepth 3 -maxdepth 3 -path '*/msgs/*.md' -not -path 'threads/_*' 2>/dev/null \
          | tr -d '\r' | grep -v -E '/[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{6}Z__[^/]*\.md$' | sort )
@@ -212,11 +234,21 @@ name_hint() {
   n=$(printf '%s\n' "$bad" | wc -l | tr -d ' ')
   echo "Name check: $n file(s) in msgs/ do not start with 'YYYY-MM-DDTHHMMSSZ__' -- folding and push order by the name, not by 'date:':"
   while IFS= read -r f; do
-    if is_referenced "$f"; then referenced=1; printf '            %s   REFERENCED\n' "$f"
-    else                                      printf '            %s\n' "$f"; fi
+    if [[ -z "$(fm_field from "$bridge/$f")" && -z "$(fm_field to "$bridge/$f")" ]]; then
+      noheader=1; printf '            %s   NO HEADER\n' "$f"
+    elif is_referenced "$f"; then withheader=1; referenced=1; printf '            %s   REFERENCED\n' "$f"
+    else                          withheader=1;               printf '            %s\n' "$f"; fi
   done <<< "$bad"
-  echo "            Repair: mv to the correct name (content unchanged). A temp leftover next to its finished"
-  echo "            message is not a message -- ask the author. Running watchers deliver a renamed file once."
+  if [[ $withheader -eq 1 ]]; then
+    echo "            Repair: mv to the correct name (content unchanged). A temp leftover next to its finished"
+    echo "            message is not a message -- ask the author. Running watchers deliver a renamed file once."
+  fi
+  if [[ $noheader -eq 1 ]]; then
+    echo "            Do NOT rename anything marked 'NO HEADER': it has neither 'from:' nor 'to:' -- usually an"
+    echo "            attachment that belongs under artifacts/<id>/, or the sync client is still loading it. A"
+    echo "            message-shaped name would make it a message without a header. Leave it (write-once); ask"
+    echo "            the author to put attachments under artifacts/ and name the path in the message."
+  fi
   [[ $referenced -eq 1 ]] && irt_hint
   return 0
 }
@@ -2435,18 +2467,8 @@ handle_existing
 
 resolve_bridge
 
-# Pull a frontmatter field from the first 15 lines (CR-tolerant, trimmed).
-# The header ends at the second `---` line, after 15 lines at the latest -- the same bound
-# as `kopf_scan` in the fold (since 10.10.2026; before that the fold read without a bound,
-# and two readers had two truths). First hit wins, surrounding whitespace and CR go.
-fm_field() { # $1=field $2=file
-  awk -v f="$1" '
-    NR>15 { exit }
-    { sub(/\r$/, "") }
-    /^---[ \t]*$/ { if (++d >= 2) exit; next }
-    index($0, f ":")==1 { v=substr($0, length(f)+2); sub(/^[ \t]+/, "", v); sub(/[ \t]+$/, "", v); print v; exit }
-  ' "$2" 2>/dev/null
-}
+# `fm_field` lives further up (before `name_hint`, which needs it in the fold -- bash only
+# knows a function from its definition on, and the fold runs before this point).
 
 # Am I addressed? `to:` may be a list: `to: app, app-b`.
 # Compare TOKEN-exact, never as a substring: participant ids grow prefixes of each
@@ -2755,7 +2777,8 @@ while true; do
       # in `--once` mode stdout reaches the session only when the process ends.
       echo "NOTE — file without a readable header ticked off after $n passes, NOT delivered: thread '$slug' — $(basename "$f")"
       echo "       Either the sync client is still loading it (then it is in the next fold), or its"
-      echo "       header has the wrong shape ('To:', '**to:**'). Look at: $f"
+      echo "       header has the wrong shape ('To:', '**to:**'), or it is not a message at all (an"
+      echo "       attachment belongs under artifacts/<id>/). Look at: $f"
       reported=1
       unset "retry[$f]"
     fi

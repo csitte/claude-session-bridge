@@ -941,6 +941,27 @@ to confuse it with a flag. And the counter-test belongs with the feature: on a b
 **nothing** referenced, the extra line must not appear at all. A handle that names a condition
 nobody met reads as though it applied.
 
+### A file without a header is not a misnamed message: `NO HEADER`
+
+The name check had a second unconditional piece of advice. A file whose header carries
+neither `from:` nor `to:` -- the same test the delivery path uses -- is usually an
+**attachment** that landed in `msgs/`: in the field a bot put two review reports next to the
+messages that referred to them. The fold told every session to `mv` them to a proper name,
+which would have turned each into an apparent message without a header, retried 40 times by
+every watcher, and irreversible under write-once.
+
+Such files are now marked `NO HEADER` and get their own advice: leave them, ask the author
+to put attachments under `artifacts/<id>/` and name the path in the message. The `mv` advice
+only appears if at least one file **with** a header is in the list. Only the candidates are
+read, never the bridge. The watcher's NOTE after 40 passes names the attachment as a third
+possibility.
+
+The probe found a silent defect before it shipped: the header reader `fm_field` was defined
+far **below** the fold, and bash only knows a function from its definition on. The check got
+"command not found" on stderr and empty values -- so **every** listed file was marked
+`NO HEADER`, including one with a correct header. It showed only because the probe also ran
+the case "wrong name, correct header"; that case is now a test.
+
 ### The fold names thread numbers handed out twice
 
 `--new-thread` allocates numbers collision-free, but **renaming** bypasses it: whoever

@@ -15,6 +15,11 @@ commit it names will say why.
 ## Unreleased
 
 ### Fixed
+- **The fold no longer tells you to rename an attachment.** A file in `msgs/` whose header
+  has neither `from:` nor `to:` (usually an attachment that belongs under `artifacts/`) is
+  now marked `NO HEADER` in the name check, with its own advice to leave it; the `mv` advice
+  only appears for files that do have a header. The watcher's NOTE after 40 passes names the
+  attachment case too. Group `watcher`.
 - **The watcher's mark is pruned to what exists, survives a day's pause, and the baseline
   waits for a loading drive.** The mark used to grow with the bridge's history (1,440 lines,
   613 of them gone, on one machine) -- it now keeps only the files the glob finds. A mark
