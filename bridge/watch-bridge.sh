@@ -2639,7 +2639,52 @@ baseline_rounds="${WATCH_BRIDGE_BASELINE_ROUNDS:-3}"
 # dead line). A message that demands an ACTION belongs in the channel that reaches the
 # session; the adoption message stays on stderr because it is the normal case and fires
 # around a dozen times per sitting.
+# Session start: at start a session arms and folds right after (see the arm paragraph), so
+# the fold already covers the gap. After a night the mark is always stale, though, and until
+# 2026-10-20 the start arm therefore ended after five seconds with an ATTENTION that asks for
+# an action that was just taken: one extra re-arm per session per morning, for nothing. The
+# start is recognised from the session registry (`~/.claude/sessions/*.json`, fields `cwd`
+# and `startedAt`): if a session in a directory of this id started at most
+# `WATCH_BRIDGE_START_WINDOW` seconds ago (default 600, 0 turns it off), this arm counts as
+# the start arm -- a line on stderr, no exit.
+# The price, named: a SECOND session in the same directory, freshly started, would make the
+# re-arm of an old one whose watcher was gone for over an hour look like a start as well. The
+# registry does not say which process started us (the parent chain breaks on Windows).
+# Path matching as in `session_inventory`: the whole path, and a path claimed by several ids
+# does not count -- report, don't guess.
+start_window="${WATCH_BRIDGE_START_WINDOW:-600}"
+start_arm=0
+session_start_arm() {
+  [[ "$start_window" =~ ^[0-9]+$ ]] && (( start_window > 0 )) || return 1
+  local dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
+  [[ -d "$dir" && -r "$bridge/README.md" ]] || return 1
+  local map paths now f cwd st n
+  map="$(readme_pathmap "$bridge/README.md")"
+  paths="$(awk -F'\t' -v i="$me" '$1==i{print $2}' <<<"$map")"
+  [[ -n "$paths" ]] || return 1
+  now=$(date -u +%s)
+  for f in "$dir"/*.json; do
+    [[ -f "$f" ]] || continue
+    cwd=$(grep -oE '"cwd":"[^"]*"' "$f" | head -1 | cut -d'"' -f4 | path_norm)
+    [[ -n "$cwd" ]] || continue
+    grep -qxF -- "$cwd" <<<"$paths" || continue
+    n=$(awk -F'\t' -v c="$cwd" '$2==c{print $1}' <<<"$map" | sort -u | wc -l)
+    (( n == 1 )) || continue
+    st=$(grep -oE '"startedAt":[0-9]+' "$f" | head -1 | cut -d: -f2)
+    [[ -n "$st" ]] || continue
+    st=$(( now - st / 1000 ))
+    if (( st >= 0 && st <= start_window )); then start_age=$st; return 0; fi
+  done
+  return 1
+}
+
 state_unusable() {
+  if session_start_arm; then
+    start_arm=1
+    echo "watch-bridge: the mark for '$me' $1 -- session start detected (session up ${start_age}s)." >&2
+    echo "              The start scan (--fold) covers the gap; this arm stays." >&2
+    return 0
+  fi
   echo "watch-bridge: ATTENTION -- the mark for '$me' $1 and was not adopted."
   echo "              Whatever arrived in the re-arm gap is baseline to this watcher."
   echo "              Fold once now: watch-bridge.sh --fold $me"
@@ -2741,7 +2786,8 @@ state_load && baseline=0
 # `--once` stdout only reaches the session when the process ENDS. So end after the baseline
 # pass, so the notice arrives; the session folds and re-arms.
 once_exit_after_baseline=0
-(( once )) && [[ $baseline -eq 1 && -n "$state_file" && -e "$state_file" ]] && once_exit_after_baseline=1
+# Not for the start arm: its message asked for nothing, see `session_start_arm`.
+(( once )) && (( ! start_arm )) && [[ $baseline -eq 1 && -n "$state_file" && -e "$state_file" ]] && once_exit_after_baseline=1
 while true; do
   if (( parent_watch )) && ! kill -0 "$parent_pid" 2>/dev/null; then
     echo "watch-bridge: the shell (msys pid $parent_pid) is gone — this watcher for '$me' ends." >&2

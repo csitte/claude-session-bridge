@@ -14,6 +14,16 @@ commit it names will say why.
 
 ## Unreleased
 
+### Changed
+- **The start arm no longer ends on a stale mark.** After a night the watcher's mark is
+  always older than its limit, so the `--once` arm at session start used to print ATTENTION
+  and end after five seconds -- asking for the fold the session runs in the same turn anyway.
+  If the session registry (`~/.claude/sessions/*.json`, `cwd` and `startedAt`) shows a
+  session of this id that started at most `WATCH_BRIDGE_START_WINDOW` seconds ago (default
+  600, `0` turns it off), the arm now says so on stderr and keeps delivering. Without a
+  registry, without a README path for the id, or with an older session, nothing changes.
+  Group `mark`.
+
 ### Fixed
 - **The fold no longer tells you to rename an attachment.** A file in `msgs/` whose header
   has neither `from:` nor `to:` (usually an attachment that belongs under `artifacts/`) is

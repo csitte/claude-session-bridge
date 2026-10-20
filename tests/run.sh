@@ -1678,6 +1678,38 @@ test_mark() {
   assert_eq "another bridge, same id: its own baseline, not the foreign mark" "0" "$(mark_reported "$log")"
   if ls "$td"/watch-bridge-seen-app-* 2>/dev/null | wc -l | grep -q '2'; then ok "... two marks side by side, one per bridge"; else bad "... two marks side by side, one per bridge" "$(ls "$td")"; fi
 
+  # The START arm: a stale mark is the normal case after a night, and the session folds in
+  # the same turn anyway. If the session registry shows a session of this id that started
+  # moments ago, the --once arm must NOT end on the ATTENTION -- it stays and delivers.
+  # The counter-case (same setup, session two hours old) must still end with ATTENTION,
+  # otherwise the first assertion would pass on a watcher that never ends at all.
+  start_case() { # $1=session age in s -> prints the run dir (out, err)
+    local r="$TMPROOT/start.$RANDOM" age="$1"
+    local sb="$r/bridge" proj="$r/proj" cfg="$r/cfg" tdir="$r/tmp"
+    mkdir -p "$sb/threads/001-test/msgs" "$proj" "$cfg/sessions" "$tdir"
+    printf '| Id | Role | Path |\n|---|---|---|\n| `app` | probe | `%s` |\n' "$proj" > "$sb/README.md"
+    post "$sb" 2026-01-01T000000Z__other__s1 other app
+    printf '{"pid":1,"cwd":"%s","startedAt":%s}\n' "$proj" "$(( ($(date -u +%s) - age) * 1000 ))" > "$cfg/sessions/1.json"
+    ( export TMPDIR="$tdir" SESSION_BRIDGE_DIR="$sb" WATCH_BRIDGE_NO_REAP=1 CLAUDE_CONFIG_DIR="$cfg" WATCH_BRIDGE_START_WINDOW=0
+      bash "$WATCHER" app 1 >/dev/null 2>&1 & local pid=$!; sleep 3; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ) >/dev/null 2>&1
+    ( export TMPDIR="$tdir" SESSION_BRIDGE_DIR="$sb" WATCH_BRIDGE_NO_REAP=1 CLAUDE_CONFIG_DIR="$cfg" WATCH_BRIDGE_STATE_MAX_AGE=0
+      sleep 1
+      bash "$WATCHER" app 1 --once > "$r/out" 2> "$r/err" & local pid=$!
+      sleep 3
+      if kill -0 "$pid" 2>/dev/null; then echo alive > "$r/alive"; fi
+      post "$sb" 2026-01-02T000000Z__other__s2 other app
+      sleep 3
+      kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ) >/dev/null 2>&1
+    printf '%s' "$r"
+  }
+  local r
+  r="$(start_case 30)"
+  if [[ -f "$r/alive" ]]; then ok "start arm (session 30 s old): a stale mark does not end the --once arm"; else bad "start arm: a stale mark does not end the --once arm" "stdout=[$(cat "$r/out")] stderr=[$(cat "$r/err")]"; fi
+  if ! grep -q 'ATTENTION' "$r/out" && grep -q 'session start detected' "$r/err"; then ok "... it says so on stderr, and nothing on the notification channel"; else bad "... it says so on stderr only" "stdout=[$(cat "$r/out")] stderr=[$(cat "$r/err")]"; fi
+  if grep -q 's2' "$r/out"; then ok "... and it delivers what arrives afterwards"; else bad "... and it delivers what arrives afterwards" "stdout=[$(cat "$r/out")]"; fi
+  r="$(start_case 7200)"
+  if [[ ! -f "$r/alive" ]] && grep -q 'ATTENTION' "$r/out"; then ok "an old session (2 h): the stale mark still ends the arm with ATTENTION (the counter-case)"; else bad "an old session: the stale mark still ends the arm with ATTENTION" "alive=$([[ -f "$r/alive" ]] && echo y) stdout=[$(cat "$r/out")]"; fi
+
   unset SESSION_BRIDGE_DIR
 }
 
