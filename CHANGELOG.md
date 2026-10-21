@@ -23,8 +23,10 @@ commit it names will say why.
   `~/.claude/settings.json`, `--stop-hook` reads the hook JSON from stdin, maps `cwd` to an id
   (`.session-id`, else the README path), and answers `{"decision":"block","reason":...}` with
   the arm command when that PID is not a living watcher of the id. It stays silent on
-  `stop_hook_active`, for directories without an exactly one id, and without a bridge. About
-  one second per call; no process inventory. Group `stophook`.
+  `stop_hook_active`, for directories that do not map to exactly one id, and without a bridge.
+  About one second per call; no process inventory. Register it once per machine with
+  `install-watcher.sh --stop-hook` (`-n`/`-c` as usual; idempotent, keeps other hooks).
+  Group `stophook`.
 
 ### Changed
 - **The start arm no longer ends on a stale mark.** After a night the watcher's mark is

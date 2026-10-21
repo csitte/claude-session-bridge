@@ -1652,6 +1652,20 @@ test_stophook() {
   if grep -q "watch-bridge.sh other-id --once" <<<"$out"; then ok "a .session-id file names the id (shared checkout)"
   else bad "a .session-id file names the id" "[$out]"; fi
 
+  # install-watcher --stop-hook: registers the Stop hook in the user profile, once.
+  local cfg="$r/cfg"; mkdir -p "$cfg"
+  printf '{\n  "model": "x",\n  "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo other"}]}]}\n}\n' > "$cfg/settings.json"
+  local iw; iw="$(dirname "$WATCHER")/install-watcher.sh"
+  CLAUDE_CONFIG_DIR="$cfg" bash "$iw" --stop-hook -c >/dev/null 2>&1
+  assert_eq "install --stop-hook -c on a profile without it: exit 1" "1" "$?"
+  CLAUDE_CONFIG_DIR="$cfg" bash "$iw" --stop-hook >/dev/null 2>&1
+  CLAUDE_CONFIG_DIR="$cfg" bash "$iw" --stop-hook >/dev/null 2>&1
+  assert_eq "... registered exactly once, even when run twice" "1" "$(grep -c -- '--stop-hook' "$cfg/settings.json")"
+  if grep -q 'echo other' "$cfg/settings.json" && grep -q '"model": "x"' "$cfg/settings.json"; then ok "... and the other hook and keys are kept"
+  else bad "... and the other hook and keys are kept" "$(cat "$cfg/settings.json")"; fi
+  CLAUDE_CONFIG_DIR="$cfg" bash "$iw" --stop-hook -c >/dev/null 2>&1
+  assert_eq "... -c now reports it current: exit 0" "0" "$?"
+
   unset -f hook
 }
 

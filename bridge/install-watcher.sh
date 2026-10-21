@@ -23,6 +23,9 @@
 # uses the shared form is RECOGNISED as such; -u alone never writes the fixed id
 # back. The flag is only needed to convert a file for the first time.
 #
+# --stop-hook [-n|-c] instead registers the Stop hook (`watch-bridge.sh --stop-hook`) in
+# ~/.claude/settings.json, once per machine; no id needed.
+#
 # Writes NOTHING into the bridge. The paragraph names BOTH machine paths, because
 # CLAUDE.md files travel between machines (via git or file sync).
 
@@ -47,6 +50,7 @@ force=0
 update=0
 shared=0
 standin=""
+stophook=0
 while true; do
   case "${1:-}" in
     -n|--dry-run) dry=1; shift ;;
@@ -54,15 +58,18 @@ while true; do
     -f|--force)   force=1; shift ;;
     -u|--update)  update=1; shift ;;
     -s|--shared)  shared=1; shift ;;
+    --stop-hook)  stophook=1; shift ;;
     -v|--stand-in) standin="${2:?-v/--stand-in needs a list, e.g. alice,bot}"; shift 2 ;;
     -h|--help)
-      sed -n '3,24p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,27p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) break ;;
   esac
 done
 
-me="${1:?usage: install-watcher.sh [-n] [-c] [-u] [-f] [-s] <session-id> [project-dir]}"
+if (( stophook )); then me=""; else
+me="${1:?usage: install-watcher.sh [-n] [-c] [-u] [-f] [-s] <session-id> [project-dir] | --stop-hook [-n|-c]}"
+fi
 proj="${2:-$PWD}"
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -84,6 +91,52 @@ script_pc="C:/tools/claude-session-bridge/watch-bridge.sh"
 script_nb="D:/tools/claude-session-bridge/watch-bridge.sh"
 
 [[ -f "$repo/watch-bridge.sh" ]] || { echo "install-watcher: watch-bridge.sh missing in $repo" >&2; exit 1; }
+
+# ---------- --stop-hook: register this machine's Stop hook ----------
+# A `--once` arm ends after every delivery, and the re-arm depended on the session's memory.
+# `watch-bridge.sh --stop-hook` checks at the end of every answer whether a watcher is alive
+# for the directory's id, and blocks with the arm command otherwise. It goes into the user
+# profile (`~/.claude/settings.json`), not the project: it applies to every session on the
+# machine and stays silent where no id matches. Hence once per machine, with the path the
+# script has HERE.
+# NOTE: writing that file reaches into every running session. The hook itself is harmless
+# there: a session with an older watcher is asked to re-arm once; that arm steps aside and
+# writes the sign of life for its predecessor.
+if (( stophook )); then
+  user_settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+  hook_cmd="bash $script --stop-hook"
+  if [[ -f "$user_settings" ]] && grep -qF "\"$hook_cmd\"" "$user_settings"; then
+    echo "stop-hook   : CURRENT ($user_settings)"; exit 0
+  fi
+  if [[ -f "$user_settings" ]] && grep -qF -- "--stop-hook" "$user_settings"; then
+    echo "stop-hook   : DIFFERENT -- $user_settings has another --stop-hook entry." >&2
+    echo "              Check by hand; expected: $hook_cmd" >&2
+    exit 3
+  fi
+  if (( dry )); then
+    echo "stop-hook   : MISSING -- [dry-run] would register: $hook_cmd"
+    (( check )) && exit 1 || exit 0
+  fi
+  command -v node >/dev/null 2>&1 || {
+    echo "install-watcher: no node found -- please register the Stop hook by hand: $hook_cmd" >&2; exit 1; }
+  node -e '
+    const fs = require("fs"), [file, cmd] = process.argv.slice(1);
+    let j = {};
+    if (fs.existsSync(file)) {
+      const raw = fs.readFileSync(file, "utf8").trim();
+      if (raw) j = JSON.parse(raw);
+    }
+    j.hooks = j.hooks || {};
+    j.hooks.Stop = j.hooks.Stop || [];
+    j.hooks.Stop.push({ hooks: [{ type: "command", command: cmd, timeout: 15 }] });
+    const tmp = file + ".tmp." + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(j, null, 2) + "\n");
+    fs.renameSync(tmp, file);
+  ' "$user_settings" "$hook_cmd" \
+    && echo "stop-hook   : registered in $user_settings -- certain for sessions started from now on, for running ones depending on the Claude Code build." \
+    || { echo "install-watcher: $user_settings not writable (broken JSON?) -- nothing changed." >&2; exit 1; }
+  exit 0
+fi
 
 # Check the session id against the participant table in the bridge README. Abort on an
 # unknown id — a typo would otherwise insert a second paragraph that the idempotence
