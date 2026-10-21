@@ -1627,6 +1627,32 @@ test_stophook() {
   if grep -q 'h2' "$r/out"; then ok "... the watcher delivered and ended (--once)"; else bad "... the watcher delivered and ended" "[$(cat "$r/out")]"; fi
   if ! ls "$tdir"/watch-bridge-alive-app-* >/dev/null 2>&1; then ok "... and its exit removed the sign of life"
   else bad "... and its exit removed the sign of life" "$(ls "$tdir")"; fi
+  if ! ls "$tdir"/watch-bridge-arming-app-* >/dev/null 2>&1; then ok "... and no provisional sign of life is left behind"
+  else bad "... and no provisional sign of life is left behind" "$(ls "$tdir")"; fi
+
+  # An arm that is still starting (lock, inventory, handover wait: 11 s measured) has no
+  # sign of life yet. The answer ends right after the re-arm, so the hook ran in exactly
+  # that window and demanded an arm that was already on its way. A held arm lock keeps the
+  # new arm in its startup phase for the length of the test. The safety rail
+  # WATCH_BRIDGE_NO_REAP=1 would skip that phase entirely, so it is lifted here -- and only
+  # here is that harmless: the lock wait lasts 30 s, `timeout 6` ends the arm long before it
+  # could reach the inventory, let alone stop a process.
+  mkdir -p "$tdir/watch-bridge-arm.lock"
+  ( export TMPDIR="$tdir" SESSION_BRIDGE_DIR="$sb" WATCH_BRIDGE_START_WINDOW=0
+    unset WATCH_BRIDGE_NO_REAP
+    timeout 6 bash "$WATCHER" app 1 --once > "$r/out2" 2> "$r/err2" & local pid=$!
+    sleep 2
+    printf '%s' "$(hook "$proj" false)" > "$r/starting"
+    ls "$tdir"/watch-bridge-alive-app-* > "$r/alive2" 2>/dev/null
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ) >/dev/null 2>&1
+  rmdir "$tdir/watch-bridge-arm.lock" 2>/dev/null
+  if [[ -f "$r/starting" && ! -s "$r/starting" && ! -s "$r/alive2" ]]; then
+    ok "an arm still starting (no sign of life yet): the hook stays silent"
+  else bad "an arm still starting: the hook stays silent" "starting=[$(cat "$r/starting" 2>&1)] alive=[$(cat "$r/alive2" 2>&1)] err=[$(cat "$r/err2")]"; fi
+  out="$(hook "$proj" false)"
+  if grep -q '"decision":"block"' <<<"$out"; then ok "... and once that arm is gone, the hook blocks again"
+  else bad "... and once that arm is gone, the hook blocks again" "[$out]"; fi
+  rm -f "$tdir"/watch-bridge-arming-app-*
   out="$(hook "$proj" false)"
   if grep -q '"decision":"block"' <<<"$out"; then ok "after the delivery: the hook demands the re-arm (the case it exists for)"
   else bad "after the delivery: the hook demands the re-arm" "[$out]"; fi

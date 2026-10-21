@@ -39,6 +39,13 @@ commit it names will say why.
   Group `mark`.
 
 ### Fixed
+- **The Stop hook no longer blocks right after a re-arm.** An arm needs about ten seconds
+  (lock, inventory, handover wait) before it writes its sign of life, and the re-arm is the
+  last step of an answer -- so the hook ran in that window and demanded an arm that was
+  already starting. The arm now writes its PID to `$TMPDIR/watch-bridge-arming-<id>-<key>`
+  before that phase and removes it once the sign of life is written, or on exit; the hook
+  accepts either file under the same checks (living PID, command line of this id). Group
+  `stophook`.
 - **The fold no longer tells you to rename an attachment.** A file in `msgs/` whose header
   has neither `from:` nor `to:` (usually an attachment that belongs under `artifacts/`) is
   now marked `NO HEADER` in the name check, with its own advice to leave it; the `mv` advice

@@ -2236,6 +2236,14 @@ new_message() {
 alive_path() { # $1 = id, $2 = bridge
   printf '%s/watch-bridge-alive-%s-%s' "${TMPDIR:-/tmp}" "$1" "$(printf '%s' "$2" | cksum | tr -cd '0-9')"
 }
+# Sign of life of an arm that is still starting. Between its start and `alive_file` lie the
+# arm lock, the inventory and the handover wait: about 10 s measured. The re-arm is the last
+# step of an answer, so the hook ran in exactly that window and demanded an arm that was
+# already on its way. A separate file instead of the watcher's: an arm that is about to step
+# aside must not overwrite the sign of life of the one that delivers.
+arming_path() { # $1 = id, $2 = bridge
+  printf '%s/watch-bridge-arming-%s-%s' "${TMPDIR:-/tmp}" "$1" "$(printf '%s' "$2" | cksum | tr -cd '0-9')"
+}
 # An arm that steps aside writes the sign of life for the watcher that is delivering. Without
 # this a predecessor without the file (started by an older version, or after the file was
 # lost) would stay invisible to the Stop hook: it would demand a re-arm after every answer,
@@ -2289,12 +2297,13 @@ stop_hook() {
     id="$ids"
   fi
   [[ "$id" =~ ^[a-z0-9.-]+$ ]] || return 0
-  f="$(alive_path "$id" "$bridge")"
-  pid="$(head -1 "$f" 2>/dev/null | tr -cd '0-9')"
-  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null &&
-     tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -qE "watch-bridge\.sh ${id//./\\.}( |$)"; then
-    return 0
-  fi
+  for f in "$(alive_path "$id" "$bridge")" "$(arming_path "$id" "$bridge")"; do
+    pid="$(head -1 "$f" 2>/dev/null | tr -cd '0-9')"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null &&
+       tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -qE "watch-bridge\.sh ${id//./\\.}( |$)"; then
+      return 0
+    fi
+  done
   self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
   reason="No bridge watcher for '$id' -- nothing is delivered to this session. Arm now:"
   reason+=" Bash tool with run_in_background: true, description \"Session bridge: new messages for $id\","
@@ -2539,6 +2548,17 @@ handle_existing() {
   [[ $locked -eq 1 ]] && rmdir "$lock" 2>/dev/null
   return 0
 }
+# Before `handle_existing`, not after: its run time is the window (see `arming_path`). The
+# bridge is resolved in a subshell like in `alive_adopt` -- a missing folder still fails
+# further down, as before.
+arming_file=""
+if (( ! service )); then
+  arming_file="$(b="$(resolve_bridge 2>/dev/null; printf '%s' "$bridge")"; [[ -n "$b" ]] && arming_path "$me" "$b")"
+  if [[ -n "$arming_file" ]]; then
+    printf '%s\n' "$$" > "$arming_file" 2>/dev/null || true
+    trap '[[ "$(head -1 "$arming_file" 2>/dev/null)" == "$$" ]] && rm -f "$arming_file"' EXIT
+  fi
+fi
 handle_existing
 
 resolve_bridge
@@ -2702,6 +2722,8 @@ fi
 alive_file="$(alive_path "$me" "$bridge")"
 if (( ! service )); then
   printf '%s\n' "$$" > "$alive_file" 2>/dev/null || true
+  # The final file first, then the provisional one goes: the hook always sees one of them.
+  [[ -n "$arming_file" && "$(head -1 "$arming_file" 2>/dev/null)" == "$$" ]] && rm -f "$arming_file"
   trap '[[ "$(head -1 "$alive_file" 2>/dev/null)" == "$$" ]] && rm -f "$alive_file"' EXIT
 fi
 
