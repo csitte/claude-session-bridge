@@ -1581,6 +1581,80 @@ test_orphan() {
   else bad "--once is documented behind the id in the usage" "$(grep -n 'usage: watch-bridge' "$WATCHER")"; fi
 }
 
+# --------------------------------------------------------------------------
+# Stop hook: a session without a living watcher may not end its answer
+# --------------------------------------------------------------------------
+# A `--once` arm ends after every delivery. The re-arm used to depend on the session alone,
+# and in production a session forgot it twice in a row. `--stop-hook` checks a sign-of-life
+# file the delivering arm writes, and blocks with the arm command when nobody is alive.
+test_stophook() {
+  head_ "stop hook: a missing arm blocks the end of the answer"
+
+  local r="$TMPROOT/stophook.$RANDOM"
+  local sb="$r/bridge" proj="$r/proj" tdir="$r/tmp" other="$r/other" twin="$r/twin"
+  mkdir -p "$sb/threads/001-test/msgs" "$proj" "$tdir" "$other" "$twin"
+  printf '| Id | Role | Path |\n|---|---|---|\n| `app` | probe | `%s` |\n| `t1` | twin | `%s` |\n| `t2` | twin | `%s` |\n' \
+    "$proj" "$twin" "$twin" > "$sb/README.md"
+  post "$sb" 2026-01-01T000000Z__other__h1 other app
+
+  hook() { # $1=cwd $2=stop_hook_active -> hook stdout
+    printf '{"session_id":"s","cwd":"%s","stop_hook_active":%s}' "$1" "$2" |
+      TMPDIR="$tdir" SESSION_BRIDGE_DIR="$sb" bash "$WATCHER" --stop-hook 2>/dev/null
+  }
+
+  local out
+  out="$(hook "$proj" false)"
+  if grep -q '"decision":"block"' <<<"$out" && grep -q -- "watch-bridge.sh app --once" <<<"$out"; then
+    ok "no watcher: the hook blocks, and the reason carries the arm command"
+  else bad "no watcher: the hook blocks with the arm command" "[$out]"; fi
+  if python3 -c 'import json,sys; json.loads(sys.argv[1])' "$out" 2>/dev/null || python -c 'import json,sys; json.loads(sys.argv[1])' "$out" 2>/dev/null; then
+    ok "... and its output is valid JSON (quotes in the reason are escaped)"
+  else bad "... and its output is valid JSON" "[$out]"; fi
+  assert_eq "stop_hook_active: silent, so the hook can never loop" "" "$(hook "$proj" true)"
+  assert_eq "a directory without an id: silent" "" "$(hook "$other" false)"
+  assert_eq "a path claimed by two ids: silent (no guessing)" "" "$(hook "$twin" false)"
+
+  # A living watcher writes its PID; the hook stays silent while it runs.
+  ( export TMPDIR="$tdir" SESSION_BRIDGE_DIR="$sb" WATCH_BRIDGE_NO_REAP=1 WATCH_BRIDGE_START_WINDOW=0
+    bash "$WATCHER" app 1 --once > "$r/out" 2> "$r/err" & local pid=$!
+    sleep 3
+    printf '%s' "$(hook "$proj" false)" > "$r/during"
+    post "$sb" 2026-01-02T000000Z__other__h2 other app
+    sleep 3
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null ) >/dev/null 2>&1
+  if [[ -f "$r/during" && ! -s "$r/during" ]]; then ok "a living watcher: the hook stays silent"
+  else bad "a living watcher: the hook stays silent" "during=[$(cat "$r/during" 2>&1)] err=[$(cat "$r/err")]"; fi
+  if grep -q 'h2' "$r/out"; then ok "... the watcher delivered and ended (--once)"; else bad "... the watcher delivered and ended" "[$(cat "$r/out")]"; fi
+  if ! ls "$tdir"/watch-bridge-alive-app-* >/dev/null 2>&1; then ok "... and its exit removed the sign of life"
+  else bad "... and its exit removed the sign of life" "$(ls "$tdir")"; fi
+  out="$(hook "$proj" false)"
+  if grep -q '"decision":"block"' <<<"$out"; then ok "after the delivery: the hook demands the re-arm (the case it exists for)"
+  else bad "after the delivery: the hook demands the re-arm" "[$out]"; fi
+
+  # A leftover file whose PID is gone (kill -9, reboot) must not reassure the hook.
+  local f; f="$(ls "$tdir"/watch-bridge-seen-app-* 2>/dev/null | head -1)"
+  f="${f/watch-bridge-seen-/watch-bridge-alive-}"
+  ( sleep 0 ) & local dead=$!; wait "$dead"
+  printf '%s\n' "$dead" > "$f"
+  out="$(hook "$proj" false)"
+  if grep -q '"decision":"block"' <<<"$out"; then ok "a leftover file with a dead PID: still blocks"
+  else bad "a leftover file with a dead PID: still blocks" "file=[$f] [$out]"; fi
+  # A living PID that is not a watcher of this id (PID reuse) must not reassure it either.
+  printf '%s\n' "$$" > "$f"
+  out="$(hook "$proj" false)"
+  if grep -q '"decision":"block"' <<<"$out"; then ok "a living PID that is not this id's watcher: still blocks"
+  else bad "a living PID that is not this id's watcher: still blocks" "[$out]"; fi
+  rm -f "$f"
+
+  # A shared checkout names its id in `.session-id`; that wins over the README path.
+  printf 'other-id\n' > "$twin/.session-id"
+  out="$(hook "$twin" false)"
+  if grep -q "watch-bridge.sh other-id --once" <<<"$out"; then ok "a .session-id file names the id (shared checkout)"
+  else bad "a .session-id file names the id" "[$out]"; fi
+
+  unset -f hook
+}
+
 test_mark() {
   head_ "watcher: the mark closes the re-arm gap"
 
@@ -5489,6 +5563,7 @@ STUB
 case "${1:-all}" in
   watcher) test_watcher ;;
   mark) test_mark; test_markrules ;;
+  stophook) test_stophook ;;
   orphan) test_orphan ;;
   hook) test_hook ;;
   handover) test_handover ;;
@@ -5524,7 +5599,7 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_markrules; test_orphan; test_hook; test_handover; test_selftree; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_header; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_mark; test_markrules; test_stophook; test_orphan; test_hook; test_handover; test_selftree; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_header; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|new_message|header|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 

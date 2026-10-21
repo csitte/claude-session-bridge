@@ -62,6 +62,7 @@ usage: watch-bridge.sh <session-id> [poll-seconds] [--once]
        watch-bridge.sh --new-message <slug|nr> --from <id> --to <a,b> [--type t] [--in-reply-to f]
                        [--sets-owner id] [--sets-status s] [--cc a,b] [--body file]   (text from stdin)
        watch-bridge.sh --reap [--dry-run] [--all]
+       watch-bridge.sh --stop-hook        (Claude Code Stop hook, JSON on stdin)
 EOF
   exit 64
 }
@@ -2230,7 +2231,81 @@ new_message() {
   echo "$n"
 }
 
+# A watcher's sign of life: per id AND bridge, like the mark (a test bridge must not reassure
+# production). Written by the delivering arm (see `alive_file`), read by the Stop hook.
+alive_path() { # $1 = id, $2 = bridge
+  printf '%s/watch-bridge-alive-%s-%s' "${TMPDIR:-/tmp}" "$1" "$(printf '%s' "$2" | cksum | tr -cd '0-9')"
+}
+# An arm that steps aside writes the sign of life for the watcher that is delivering. Without
+# this a predecessor without the file (started by an older version, or after the file was
+# lost) would stay invisible to the Stop hook: it would demand a re-arm after every answer,
+# and every re-arm would step aside again. The inventory yields the Windows PID; the hook
+# checks the msys PID (`kill -0`, /proc), so translate here.
+alive_adopt() { # $1 = Windows PID of the delivering script
+  local b d
+  b="$(resolve_bridge 2>/dev/null; printf '%s' "$bridge")"
+  [[ -n "$b" && -n "${1:-}" ]] || return 0
+  for d in /proc/[0-9]*; do
+    [[ "$(cat "$d/winpid" 2>/dev/null)" == "$1" ]] || continue
+    printf '%s\n' "${d#/proc/}" > "$(alive_path "$me" "$b")" 2>/dev/null
+    return 0
+  done
+  return 0
+}
+
+# --- Stop hook: no arm, no end of the answer -------------------------------------------------
+# Registered as a `Stop` hook in `~/.claude/settings.json`, per machine. Claude Code calls it
+# at the end of every answer with JSON on stdin (`cwd`, `stop_hook_active`). If no watcher is
+# alive for the id of that directory, it answers `decision: block`: the session may not stop
+# and gets the arm command as the reason. The re-arm no longer depends on the session's memory
+# -- a `--once` arm ends after every delivery, and in production one session forgot the re-arm
+# twice in a row, with an up-to-date arm paragraph in its CLAUDE.md.
+#
+# Silent in every case of doubt (exit 0, no output): no bridge, no id for the directory, a path
+# claimed by several ids, and `stop_hook_active` -- then it already blocked once in this answer,
+# the fresh arm may not be visible yet, and a loop would cost more than a gap until the next
+# answer. A hook that holds a session hostage is worse than one that stays quiet once.
+#
+# Fast, because it runs after EVERY answer of every session: no process inventory (`--status`
+# takes 15 s on a busy Windows machine), only the sign-of-life file, `kill -0` and /proc. The
+# reason is ASCII: it passes a Windows code page before it reaches the session.
+stop_hook() {
+  local in cwd u key ids id f pid self reason
+  in="$(cat)"
+  [[ "$in" =~ \"stop_hook_active\"[[:space:]]*:[[:space:]]*true ]] && return 0
+  cwd="$(grep -oE '"cwd"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' <<<"$in" | head -1 |
+         sed -E 's/^"cwd"[[:space:]]*:[[:space:]]*"//; s/"$//')"
+  cwd="${cwd//\\\\/\\}"
+  [[ -n "$cwd" ]] || return 0
+  bridge="$(resolve_bridge 2>/dev/null; printf '%s' "$bridge")"
+  [[ -n "$bridge" && -r "$bridge/README.md" ]] || return 0
+  u="$(cygpath -u "$cwd" 2>/dev/null)" || u="$cwd"
+  if [[ -f "$u/.session-id" ]]; then
+    id="$(head -1 "$u/.session-id" | tr -d '\r[:space:]')"
+  else
+    key="$(printf '%s\n' "$cwd" | path_norm)"
+    ids="$(readme_pathmap "$bridge/README.md" | awk -F'\t' -v c="$key" '$2==c{print $1}' | sort -u)"
+    [[ -n "$ids" && "$(wc -l <<<"$ids")" -eq 1 ]] || return 0
+    id="$ids"
+  fi
+  [[ "$id" =~ ^[a-z0-9.-]+$ ]] || return 0
+  f="$(alive_path "$id" "$bridge")"
+  pid="$(head -1 "$f" 2>/dev/null | tr -cd '0-9')"
+  if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null &&
+     tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | grep -qE "watch-bridge\.sh ${id//./\\.}( |$)"; then
+    return 0
+  fi
+  self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && { pwd -W 2>/dev/null || pwd; })"
+  reason="No bridge watcher for '$id' -- nothing is delivered to this session. Arm now:"
+  reason+=" Bash tool with run_in_background: true, description \"Session bridge: new messages for $id\","
+  reason+=" command: bash $self/watch-bridge.sh $id --once"
+  reason+=" -- then end the answer without text (arm paragraph of your CLAUDE.md). Reported by the Stop hook."
+  reason="${reason//\\/\\\\}"; reason="${reason//\"/\\\"}"
+  printf '{"decision":"block","reason":"%s"}\n' "$reason"
+}
+
 case "${1:-}" in
+  --stop-hook) stop_hook; exit 0 ;;
   --status|-s) status_report "${2:-}"; exit 0 ;;
   --fold|--scan) [[ -n "${2:-}" ]] || usage; fold_report "$2"; exit 0 ;;
   --numbers) numbers_report; exit 0 ;;
@@ -2430,6 +2505,7 @@ handle_existing() {
     echo "watch-bridge: a watcher for '$me' is already delivering (PID $script_pid) —" \
          "this arm ends. Whether the predecessor keeps running, only" \
          "'watch-bridge.sh --status $me' can tell."
+    alive_adopt "$script_pid"
     exit 0
   fi
 
@@ -2617,6 +2693,18 @@ if [[ "${WATCH_BRIDGE_STATE:-1}" != "0" ]]; then
   # reports its age, and the first save replaces it; marks of dead ids are still removed.
   find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'watch-bridge-seen-*' ! -name "watch-bridge-seen-${me}-*" -mmin +1440 -delete 2>/dev/null || true
 fi
+# Sign of life for the Stop hook. A `--once` arm ends after every delivery, and until now the
+# re-arm depended on the session's discipline alone. The mark is no sign of life: right after a
+# delivery it is fresh while the watcher is already gone. Hence a file of its own with the PID,
+# written only HERE, after `handle_existing`: an arm that steps aside has already ended by then
+# and does not overwrite the file of the watcher that delivers. Only its owner removes it. A
+# leftover after `kill -9` does no harm, `--stop-hook` checks the PID.
+alive_file="$(alive_path "$me" "$bridge")"
+if (( ! service )); then
+  printf '%s\n' "$$" > "$alive_file" 2>/dev/null || true
+  trap '[[ "$(head -1 "$alive_file" 2>/dev/null)" == "$$" ]] && rm -f "$alive_file"' EXIT
+fi
+
 state_max_age="${WATCH_BRIDGE_STATE_MAX_AGE:-3600}"
 # How often the mark proves it is still alive while nothing arrives (reasoning at the loop).
 state_touch_every="${WATCH_BRIDGE_STATE_TOUCH:-60}"
