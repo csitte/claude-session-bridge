@@ -56,6 +56,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: watch-bridge.sh <session-id> [poll-seconds] [--once]
        watch-bridge.sh --status [session-id]
+       watch-bridge.sh --sessions         (running sessions: id|name|pid|status|path)
        watch-bridge.sh --fold <session-id>
        watch-bridge.sh --numbers
        watch-bridge.sh --new-thread <slug> --title "<title>" [number]
@@ -1373,7 +1374,12 @@ live_claude_pids() {
 
 # -> lines "participant-id|window-name|pid|status" for every running session that
 # can be attributed to a participant id.
+# With --alle (the `--sessions` switch, meant for scripts that address every running
+# session) the others are listed too, so a consumer can name them instead of silently
+# leaving them out: id `-` = the path is in no README row, `!` = several ids claim it.
+# A fifth field carries the path.
 session_inventory() {
+  local alle=0; [[ "${1:-}" == --alle ]] && alle=1
   local dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions"
   [[ -d "$dir" ]] || return 0
   local br; br="$(bridge_soft)"
@@ -1398,12 +1404,17 @@ session_inventory() {
     # inventory that states something it does not know is worse than one that is short.
     local ids
     ids=$(awk -F'\t' -v c="$cwd" '$2==c{print $1}' <<<"$map" | sort -u)
-    [[ -n "$ids" ]] || continue
-    [[ $(printf '%s\n' "$ids" | wc -l) -eq 1 ]] || continue
-    id="$ids"
+    if [[ -z "$ids" ]]; then
+      (( alle )) || continue; id="-"
+    elif [[ $(printf '%s\n' "$ids" | wc -l) -ne 1 ]]; then
+      (( alle )) || continue; id="!"
+    else
+      id="$ids"
+    fi
     name=$(grep -oE '"name":"[^"]*"' "$f" | head -1 | cut -d'"' -f4)
     st=$(grep -oE '"status":"[^"]*"' "$f" | head -1 | cut -d'"' -f4)
-    echo "$id|${name:-?}|$pid|${st:-?}"
+    if (( alle )); then echo "$id|${name:-?}|$pid|${st:-?}|$cwd"
+    else echo "$id|${name:-?}|$pid|${st:-?}"; fi
   done
 }
 
@@ -2316,6 +2327,7 @@ stop_hook() {
 case "${1:-}" in
   --stop-hook) stop_hook; exit 0 ;;
   --status|-s) status_report "${2:-}"; exit 0 ;;
+  --sessions) session_inventory --alle; exit 0 ;;
   --fold|--scan) [[ -n "${2:-}" ]] || usage; fold_report "$2"; exit 0 ;;
   --numbers) numbers_report; exit 0 ;;
   --new-thread) shift; new_thread "$@"; exit 0 ;;

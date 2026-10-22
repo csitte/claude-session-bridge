@@ -2615,10 +2615,12 @@ MD
 
 # One session entry, shaped like the real registry (JSON, escaped backslashes
 # allowed — both spellings must normalise to the same path).
-write_session() { # $1=registry-dir $2=pid $3=cwd $4=name
+# $5 = file name, default the pid. Several sessions that must share one usable pid
+# need distinct files, or each write replaces the one before.
+write_session() { # $1=registry-dir $2=pid $3=cwd $4=name [$5=file]
   mkdir -p "$1/sessions"
   printf '{"pid":%s,"sessionId":"t","cwd":"%s","name":"%s","kind":"interactive","status":"shell"}\n' \
-    "$2" "$3" "$4" > "$1/sessions/$2.json"
+    "$2" "$3" "$4" > "$1/sessions/${5:-$2}.json"
 }
 
 # A pid the check will accept as alive: on a machine with running claude
@@ -2677,8 +2679,8 @@ test_coverage() {
       printf '%s\n' '| `delta` | names one path twice | `/repos/twice` and again `/repos/twice` |'
     } > "$b2/README.md"
     reg2="$TMPROOT/cfg2.$RANDOM"
-    write_session "$reg2" "$pid" '/repos/shared' 'Ambiguous Window'
-    write_session "$reg2" "$pid" '/repos/own' 'Clear Window'
+    write_session "$reg2" "$pid" '/repos/shared' 'Ambiguous Window' s1
+    write_session "$reg2" "$pid" '/repos/own' 'Clear Window' s2
     out2="$(SESSION_BRIDGE_DIR="$b2" CLAUDE_CONFIG_DIR="$reg2" bash "$WATCHER" --status 2>/dev/null)"
     if printf '%s\n' "$out2" | grep -q '^NOTE: 1 path'; then
       ok "a path claimed by two ids is reported, on stdout"
@@ -2697,6 +2699,21 @@ test_coverage() {
     if printf '%s\n' "$out2" | grep -q 'gamma'; then
       ok "... while an unambiguous session is still reported"
     else bad "... while an unambiguous session is still reported" "$out2"; fi
+
+    # --sessions: the same inventory for scripts, and it leaves nobody out. The ambiguous
+    # session appears as `!`, a session outside the table as `-`, each with its path.
+    write_session "$reg2" "$pid" '/repos/elsewhere' 'Stranger Window' s3
+    local sx
+    sx="$(SESSION_BRIDGE_DIR="$b2" CLAUDE_CONFIG_DIR="$reg2" bash "$WATCHER" --sessions 2>/dev/null)"
+    if printf '%s\n' "$sx" | grep -qx "gamma|Clear Window|$pid|shell|/repos/own"; then
+      ok "--sessions: id|name|pid|status|path for an attributed session"
+    else bad "--sessions: id|name|pid|status|path for an attributed session" "$sx"; fi
+    if printf '%s\n' "$sx" | grep -qx "!|Ambiguous Window|$pid|shell|/repos/shared"; then
+      ok "--sessions: a path claimed by two ids is listed as '!', not guessed"
+    else bad "--sessions: a path claimed by two ids is listed as '!', not guessed" "$sx"; fi
+    if printf '%s\n' "$sx" | grep -qx -- "-|Stranger Window|$pid|shell|/repos/elsewhere"; then
+      ok "--sessions: a session outside the table is listed as '-'"
+    else bad "--sessions: a session outside the table is listed as '-'" "$sx"; fi
 
     # Escaped backslashes normalise to the same path as forward slashes.
     rm -rf "$reg"

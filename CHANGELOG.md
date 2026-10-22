@@ -15,6 +15,10 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **`watch-bridge.sh --sessions`: the running sessions, one line each, for scripts.**
+  `id|name|pid|status|path` from the session registry (living pids only). Sessions that
+  `--status` skips are listed too, as `-` (path in no README row) or `!` (path claimed by
+  several ids), so a consumer can name them. `--status` is unchanged. Group `coverage`.
 - **`watch-bridge.sh --stop-hook`: a session without a living watcher cannot end its
   answer.** A `--once` arm ends after every delivery, and the re-arm depended on the session
   remembering it. The delivering arm now writes its PID to

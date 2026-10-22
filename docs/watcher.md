@@ -653,6 +653,19 @@ Get-CimInstance Win32_Process -Filter "Name='conhost.exe'" |
   Where-Object { ($_.KernelModeTime+$_.UserModeTime)/10000000 -gt 300 }
 ```
 
+## Running sessions for scripts: `--sessions`
+
+```bash
+bash watch-bridge.sh --sessions     # one line per running session: id|name|pid|status|path
+```
+
+The inventory `--status` uses, in a form a script can read. Unlike `--status` it leaves no
+running session out: one whose path is in no README row gets the id `-`, one whose path
+several ids claim gets `!`. A script that wants to address every running session (for
+example: ask each one to save its state before the machine shuts down) can then name the
+ones it cannot reach instead of skipping them silently. Same liveness rule as `--status`:
+a registry entry counts only with a living pid.
+
 ## Three states, not two
 
 ```
