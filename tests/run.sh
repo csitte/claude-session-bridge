@@ -1614,6 +1614,20 @@ test_stophook() {
   assert_eq "a directory without an id: silent" "" "$(hook "$other" false)"
   assert_eq "a path claimed by two ids: silent (no guessing)" "" "$(hook "$twin" false)"
 
+  # `cwd` is the CURRENT directory and moves with a `cd` in the Bash tool; the registry entry
+  # keeps the start directory. Started in proj, now standing in other: the hook must still
+  # ask for `app`, not fall silent or name another id. Without a registry match, `cwd` holds.
+  local cfg="$r/cfg"; mkdir -p "$cfg/sessions"
+  printf '{"pid":1,"sessionId":"abc-123","cwd":"%s","status":"busy"}' "$proj" > "$cfg/sessions/1.json"
+  out="$(printf '{"session_id":"abc-123","cwd":"%s","stop_hook_active":false}' "$other" |
+         TMPDIR="$tdir" SESSION_BRIDGE_DIR="$sb" CLAUDE_CONFIG_DIR="$cfg" bash "$WATCHER" --stop-hook 2>/dev/null)"
+  if grep -q -- "watch-bridge.sh app --once" <<<"$out"; then
+    ok "moved working directory: the id comes from the registry's start directory"
+  else bad "moved working directory: the id comes from the registry's start directory" "[$out]"; fi
+  out="$(printf '{"session_id":"fff-999","cwd":"%s","stop_hook_active":false}' "$other" |
+         TMPDIR="$tdir" SESSION_BRIDGE_DIR="$sb" CLAUDE_CONFIG_DIR="$cfg" bash "$WATCHER" --stop-hook 2>/dev/null)"
+  assert_eq "... no registry match: cwd decides as before (here: no id, silent)" "" "$out"
+
   # A living watcher writes its PID; the hook stays silent while it runs.
   ( export TMPDIR="$tdir" SESSION_BRIDGE_DIR="$sb" WATCH_BRIDGE_NO_REAP=1 WATCH_BRIDGE_START_WINDOW=0
     bash "$WATCHER" app 1 --once > "$r/out" 2> "$r/err" & local pid=$!

@@ -2293,16 +2293,34 @@ alive_adopt() { # $1 = Windows PID of the delivering script
 # the fresh arm may not be visible yet, and a loop would cost more than a gap until the next
 # answer. A hook that holds a session hostage is worse than one that stays quiet once.
 #
+# The directory comes from the session's registry entry (`session_id` from stdin against
+# `sessionId` in ~/.claude/sessions/*.json), and only as a fallback from `cwd`. `cwd` is the
+# CURRENT directory: a `cd` in the Bash tool moves it, and after a `cd` into another
+# project's folder the hook demanded an arm for THAT project's id. Obeying it would have
+# intercepted the other session's messages. The registry entry keeps the start directory
+# (measured while the working directory had moved).
+#
 # Fast, because it runs after EVERY answer of every session: no process inventory (`--status`
 # takes 15 s on a busy Windows machine), only the sign-of-life file, `kill -0` and /proc. The
 # reason is ASCII: it passes a Windows code page before it reaches the session.
+hook_field() { # $1 = field name, $2 = JSON -> string value, backslashes unescaped
+  local v
+  v="$(grep -oE "\"$1\"[[:space:]]*:[[:space:]]*\"([^\"\\\\]|\\\\.)*\"" <<<"$2" | head -1 |
+       sed -E "s/^\"$1\"[[:space:]]*:[[:space:]]*\"//; s/\"\$//")"
+  printf '%s' "${v//\\\\/\\}"
+}
+
 stop_hook() {
-  local in cwd u key ids id f pid self reason
+  local in cwd sid reg u key ids id f pid self reason
   in="$(cat)"
   [[ "$in" =~ \"stop_hook_active\"[[:space:]]*:[[:space:]]*true ]] && return 0
-  cwd="$(grep -oE '"cwd"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"' <<<"$in" | head -1 |
-         sed -E 's/^"cwd"[[:space:]]*:[[:space:]]*"//; s/"$//')"
-  cwd="${cwd//\\\\/\\}"
+  cwd=""
+  sid="$(hook_field session_id "$in")"
+  if [[ "$sid" =~ ^[0-9a-f-]+$ ]]; then
+    reg="$(grep -lF "\"sessionId\":\"$sid\"" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/sessions/*.json 2>/dev/null | head -1)"
+    [[ -n "$reg" ]] && cwd="$(hook_field cwd "$(cat "$reg" 2>/dev/null)")"
+  fi
+  [[ -n "$cwd" ]] || cwd="$(hook_field cwd "$in")"
   [[ -n "$cwd" ]] || return 0
   bridge="$(resolve_bridge 2>/dev/null; printf '%s' "$bridge")"
   [[ -n "$bridge" && -r "$bridge/README.md" ]] || return 0

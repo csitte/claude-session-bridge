@@ -46,6 +46,13 @@ commit it names will say why.
   Group `mark`.
 
 ### Fixed
+- **The Stop hook names the session's own id after a `cd`.** It took the id from `cwd` in
+  the hook JSON, which is the current directory and moves with a `cd` in the Bash tool:
+  standing in another project's folder, the hook demanded an arm for that project's id, and
+  obeying it would intercept the other session's messages. It now looks up the session's
+  registry entry (`session_id` against `sessionId` in `~/.claude/sessions/*.json`) and uses
+  its `cwd`, which stays the start directory; without a match, `cwd` decides as before.
+  Group `stophook`.
 - **The Stop hook no longer blocks right after a re-arm.** An arm needs about ten seconds
   (lock, inventory, handover wait) before it writes its sign of life, and the re-arm is the
   last step of an answer -- so the hook ran in that window and demanded an arm that was
