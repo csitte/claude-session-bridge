@@ -15,6 +15,9 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **`--new-message` warns when a thread's first message sets no owner.** The fold folds on
+  `owner == me`, so such a thread belongs to nobody until someone sets one. The message is
+  still written (notices need no owner); `--sets-status DONE` stays quiet.
 - **`watch-bridge.sh --sessions`: the running sessions, one line each, for scripts.**
   `id|name|pid|status|path` from the session registry (living pids only). Sessions that
   `--status` skips are listed too, as `-` (path in no README row) or `!` (path claimed by

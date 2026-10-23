@@ -2378,6 +2378,19 @@ test_new_message() {
   out="$(echo x | bash "$WATCHER" --new-message 440-demo --from session-a --to all 2>&1 >/dev/null)"; rc=$?
   assert_eq "to: all is allowed" "0" "$rc"
   if printf '%s' "$out" | grep -qi "notice"; then ok "... but named as a notice, not a delivery path"; else bad "... but named as a notice" "$out"; fi
+  # The first message of a thread without an owner warns (nobody would fold it); with an
+  # owner, with DONE, or as a later message it stays quiet.
+  mkdir -p "$b/threads/441-fresh/msgs" "$b/threads/442-owned/msgs" "$b/threads/443-closed/msgs"
+  out="$(echo x | bash "$WATCHER" --new-message 441 --from session-a --to session-b 2>&1 >/dev/null)"; rc=$?
+  assert_eq "a first message without an owner is written (a warning, not a refusal)" "0" "$rc"
+  if printf '%s' "$out" | grep -q "without --sets-owner"; then ok "... and warns that nobody folds the thread"
+  else bad "... and warns that nobody folds the thread" "$out"; fi
+  out="$(echo x | bash "$WATCHER" --new-message 441 --from session-a --to session-b 2>&1 >/dev/null)"
+  assert_eq "a later message without an owner stays quiet" "" "$(printf '%s' "$out" | grep "without --sets-owner")"
+  out="$(echo x | bash "$WATCHER" --new-message 442 --from session-a --to session-b --sets-owner session-b 2>&1 >/dev/null)"
+  assert_eq "a first message with an owner stays quiet" "" "$(printf '%s' "$out" | grep "without --sets-owner")"
+  out="$(echo x | bash "$WATCHER" --new-message 443 --from session-a --to session-b --sets-status DONE 2>&1 >/dev/null)"
+  assert_eq "a first message that closes the thread stays quiet" "" "$(printf '%s' "$out" | grep "without --sets-owner")"
 
   # --- the body may come from a file, and CR is stripped ------------------------------------
   printf '# From file\r\n\r\nline\r\n' > "$TMPROOT/body.txt"

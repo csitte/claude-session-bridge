@@ -2194,6 +2194,14 @@ new_message() {
     fi
     [[ -f "$dir/msgs/$irt" ]] || echo "watch-bridge: NOTE: --in-reply-to '$irt' is not in $(basename "$dir")/msgs -- retyped? (sync may still be pending)." >&2
   fi
+  # First message without an owner: the fold folds on `owner==me`, so a thread without an
+  # owner belongs to nobody. The fold reports it afterwards (a NOTE to every session, see
+  # orphan_hint); this warns the writer, who is the one who can fix it. A warning, not a
+  # refusal: notices and operational reports need no owner. `--sets-status DONE` stays
+  # quiet, like the fold check.
+  if [[ -z "$owner" && "$status" != DONE ]] && ! compgen -G "$dir/msgs/*.md" >/dev/null; then
+    echo "watch-bridge: NOTE: first message in $(basename "$dir") without --sets-owner -- nobody folds this thread, the fold reports it to every session. Set one: --sets-owner <id>." >&2
+  fi
 
   # Body: a file or stdin. A body that itself starts with `---` would be a second front
   # matter -- the most common shape when someone passes the whole message instead of the text.

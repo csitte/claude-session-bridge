@@ -110,7 +110,9 @@ refused, because the value lands verbatim in the header and a line break in it w
 second header line), `--cc` gets the same form check as `--to`, and the command prints the
 filename -- the `in-reply-to` of the next reply. A thread may be named by its number when that
 number matches exactly one folder in `threads/`, or by its name part alone (`demo` for
-`440-demo`) when that matches exactly one.
+`440-demo`) when that matches exactly one. A thread's first message without `--sets-owner`
+gets a NOTE on stderr: the fold folds on `owner == me`, so nobody would pick the thread up. It
+is a warning, not a refusal (notices need no owner), and `--sets-status DONE` stays quiet.
 
 Create it with temp-then-rename so a concurrent reader never sees a half-written file:
 
