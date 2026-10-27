@@ -633,6 +633,12 @@ watch-bridge.sh --reap --dry-run --all
 watch-bridge.sh --reap --all         # plus the idle leftovers (> 24 h)
 ```
 
+> **Caution: `--all` can close open terminals.** A Git Bash window opened by hand owns a
+> `conhost` whose parent is already gone, created in the same second as its `mintty`. Once
+> the window is older than 24 h, that console falls into the set, and killing it closes the
+> window together with anything running in it (measured on Windows 11, 2026-10-27). Before
+> `--all`, hold the dry run against the start times of the open `mintty` windows.
+
 `--status` reports findings on its own, **regardless of the id filter** (a spinner belongs to
 no session): `WARNING` for spinners, `note` for idle leftovers. The arm kills spinners on the
 way in, even when it steps aside.

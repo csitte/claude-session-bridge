@@ -14,6 +14,11 @@ commit it names will say why.
 
 ## Unreleased
 
+### Documentation
+- **`--reap --all` can close a hand-opened terminal older than 24 h** (`docs/watcher.md`).
+  Its console looks exactly like an idle leftover; killing it ends the window. Run the dry
+  run first and compare against open `mintty` windows.
+
 ### Added
 - **`--new-message` warns when a thread's first message sets no owner.** The fold folds on
   `owner == me`, so such a thread belongs to nobody until someone sets one. The message is
