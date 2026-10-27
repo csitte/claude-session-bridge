@@ -1192,7 +1192,20 @@ foreach ($p in $all.Values) {
 # user's own open terminal was on the kill list. A conhost that has been orphaned and
 # idle for a DAY, on the other hand, belongs to no window any more. Spinners do not need
 # that limit: sustained load is proof by itself.
+#
+# CORRECTION 2026-10-27: the DAY does not protect, terminals stay open for days. EVERY
+# mintty window owns such a console, whether opened by hand or by the fleet launcher
+# (measured: 14 of 14 launcher windows, reproduced on three probe windows). It is created
+# 56 to 174 ms after its mintty; its parent is dead and is not the mintty's parent --
+# Win32_Process has no edge to the window, only the start time. Hence a fourth criterion
+# that PROTECTS against the three above: a console created at most $termWin seconds after
+# a LIVE mintty belongs to that window and is never touched -- not even as a spinner,
+# because the arm kills spinners without asking. When the window dies the protection goes
+# with it. The price: a real leftover that happens to start inside that window stays until
+# its terminal closes -- 8 MB against a closed window.
+# WATCH_BRIDGE_TERM_WINDOW=0 switches the protection off (for measurements only).
 $minAge = 120;   if ($env:WATCH_BRIDGE_SPIN_MINAGE)   { $minAge = [int]$env:WATCH_BRIDGE_SPIN_MINAGE }
+$termWin = 3;    if ($null -ne $env:WATCH_BRIDGE_TERM_WINDOW -and $env:WATCH_BRIDGE_TERM_WINDOW -ne '') { $termWin = [double]$env:WATCH_BRIDGE_TERM_WINDOW }
 $minPct = 5;     if ($env:WATCH_BRIDGE_SPIN_MINPCT)   { $minPct = [double]$env:WATCH_BRIDGE_SPIN_MINPCT }
 $zomAge = 86400; if ($env:WATCH_BRIDGE_ZOMBIE_MINAGE) { $zomAge = [int]$env:WATCH_BRIDGE_ZOMBIE_MINAGE }
 $sample = 1.5;   if ($env:WATCH_BRIDGE_SPIN_SAMPLE)   { $sample = [double]$env:WATCH_BRIDGE_SPIN_SAMPLE }
@@ -1208,6 +1221,13 @@ $sample = 1.5;   if ($env:WATCH_BRIDGE_SPIN_SAMPLE)   { $sample = [double]$env:W
 # (or a synthetic one in a test table) simply has no delta.
 $delta = @{}
 $cands = @($all.Values | Where-Object { $_.Name -eq 'conhost.exe' -and -not $all.ContainsKey([int]$_.ParentProcessId) })
+if ($termWin -gt 0 -and $cands.Count -gt 0) {
+  $termAt = @($all.Values | Where-Object { $_.Name -eq 'mintty.exe' } | ForEach-Object { $_.CreationDate })
+  $cands = @($cands | Where-Object {
+    $c = $_
+    -not ($termAt | Where-Object { $d = ($c.CreationDate - $_).TotalSeconds; $d -ge 0 -and $d -le $termWin })
+  })
+}
 if ($sample -gt 0 -and $cands.Count -gt 0) {
   Start-Sleep -Milliseconds ([int]($sample * 1000))
   $el = ((Get-Date) - $now).TotalSeconds

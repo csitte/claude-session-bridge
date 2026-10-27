@@ -14,10 +14,18 @@ commit it names will say why.
 
 ## Unreleased
 
+### Fixed
+- **`--reap` never touches the console of an open terminal.** Every `mintty` window owns an
+  orphaned, idle `conhost` -- hand-opened and fleet windows alike; after 24 h `--reap --all`
+  listed it as a leftover, and killing it can end the window. A console created at most 3 s
+  after a live `mintty` is now protected, also as a spinner (`WATCH_BRIDGE_TERM_WINDOW=0`
+  switches this off). Group `reap`.
+- **`close-cc-sessions.ps1` kills the console of a window it had to force.** A force-killed
+  `mintty` left its console behind; a gently closed one does not.
+
 ### Documentation
 - **`--reap --all` can close a hand-opened terminal older than 24 h** (`docs/watcher.md`).
-  Its console looks exactly like an idle leftover; killing it ends the window. Run the dry
-  run first and compare against open `mintty` windows.
+  Superseded the same day by the fix above; the dry run is no longer needed for that.
 
 ### Added
 - **`--new-message` warns when a thread's first message sets no owner.** The fold folds on

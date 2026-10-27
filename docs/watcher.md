@@ -633,11 +633,19 @@ watch-bridge.sh --reap --dry-run --all
 watch-bridge.sh --reap --all         # plus the idle leftovers (> 24 h)
 ```
 
-> **Caution: `--all` can close open terminals.** A Git Bash window opened by hand owns a
-> `conhost` whose parent is already gone, created in the same second as its `mintty`. Once
-> the window is older than 24 h, that console falls into the set, and killing it closes the
-> window together with anything running in it (measured on Windows 11, 2026-10-27). Before
-> `--all`, hold the dry run against the start times of the open `mintty` windows.
+> **Consoles of open terminals are protected (since 2026-10-27).** Every `mintty` window
+> owns a `conhost` whose parent is already gone, created 56 to 174 ms after the `mintty` --
+> windows opened by hand and windows from the fleet launcher alike (14 of 14 measured). Until
+> then, once a window was older than 24 h its console fell under `--all`, and on a window
+> opened by hand killing it closed the window together with anything running in it. (A probe
+> window running only `sleep` stayed open; a Claude session was not measured.) Now a console
+> created at most 3 s after a **live** `mintty` is never touched, not even as a spinner.
+> Measured: with the protection 0 of 14 window consoles listed, without it 14 of 14; the
+> leftover of a force-killed probe window is still found. `WATCH_BRIDGE_TERM_WINDOW=0`
+> switches it off (for measurements only). The source of the leftovers -- a window closed by
+> **force** (1 of 1 left its console, 0 of 2 closed gently) -- is handled by
+> `launcher/close-cc-sessions.ps1` since the same day: it kills the console of a window it had
+> to force.
 
 `--status` reports findings on its own, **regardless of the id filter** (a spinner belongs to
 no session): `WARNING` for spinners, `note` for idle leftovers. The arm kills spinners on the

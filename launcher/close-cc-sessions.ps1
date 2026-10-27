@@ -267,6 +267,30 @@ foreach ($p in $targets) {
 # because the launcher starts every window with '-o ConfirmExit=no'.
 # The old '/T /F' hit mintty ALONE (msys tears the process tree apart, /T never reaches the
 # shell) and left three stuck bash.exe per window - see the fourth line.
+# Remember each window's console BEFORE closing (2026-10-27). Every mintty window owns a
+# conhost.exe with a dead parent, created 56 to 174 ms after it (14 of 14 windows measured).
+# Closed gently it goes along (two probe windows), FORCED it stays behind (one probe window) -
+# as an idle leftover that 'watch-bridge.sh --reap' only saw after a day. Win32_Process has no
+# edge to the window, so the console is matched by start time, to the YOUNGEST mintty before
+# it, among ALL windows. If it belongs to a window this script does not close (a terminal
+# opened by hand), it is left alone. It is killed only once its window is gone - and only if
+# the same console still stands under that pid.
+$before       = @(Get-CimInstance Win32_Process)
+$aliveBefore  = @{}; foreach ($q in $before) { $aliveBefore[[int]$q.ProcessId] = $true }
+$allMintty    = @($before | Where-Object { $_.Name -eq 'mintty.exe' })
+$targetPids   = @{}; foreach ($p in $targets) { $targetPids[[int]$p.ProcessId] = $true }
+$windowConsoles = @()
+foreach ($k in ($before | Where-Object { $_.Name -eq 'conhost.exe' -and -not $aliveBefore.ContainsKey([int]$_.ParentProcessId) })) {
+    $owner = $null; $gap = 4
+    foreach ($m in $allMintty) {
+        $d = ($k.CreationDate - $m.CreationDate).TotalSeconds
+        if ($d -ge 0 -and $d -lt $gap) { $gap = $d; $owner = $m }
+    }
+    if ($owner -and $gap -le 3 -and $targetPids.ContainsKey([int]$owner.ProcessId)) {
+        $windowConsoles += [pscustomobject]@{ Window = [int]$owner.ProcessId; Console = [int]$k.ProcessId; Since = $k.CreationDate }
+    }
+}
+
 foreach ($p in $targets) {
     taskkill /PID $p.ProcessId | Out-Null
 }
@@ -280,6 +304,16 @@ foreach ($p in $left) {
     # fourth line at the end removes them.
     Write-Host ("  - PID {0} does not respond, forcing" -f $p.ProcessId)
     Stop-Target -Target $p.ProcessId -What "window" -WithTree
+}
+
+# The remembered consoles: window gone, console still there -> kill it. The ordinary case
+# (closed gently, console already gone along) stays quiet.
+foreach ($f in $windowConsoles) {
+    if (Test-ProcessThere $f.Window) { continue }
+    $k = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $f.Console) -ErrorAction SilentlyContinue
+    if (-not $k -or $k.Name -ne 'conhost.exe' -or $k.CreationDate -ne $f.Since) { continue }
+    Write-Host ("  - console of window PID {0} stayed behind (PID {1}), killing it" -f $f.Window, $f.Console)
+    Stop-Target -Target $f.Console -What "console of a window"
 }
 
 # -Pattern is a test switch: with a pattern of your own the script hits probe windows only.

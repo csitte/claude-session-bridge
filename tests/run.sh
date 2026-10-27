@@ -3677,12 +3677,17 @@ STUB
     P 33 999 90000 1    'conhost.exe'      # orphan, 25 h, idle: zombie
     P 34 999 90000 30000 'conhost.exe'     # orphan, 25 h, 33 %: spinner
     P 40 999 90000 0    'claude.exe'
+    P 50 999 100000 0     'mintty.exe'     # a live terminal, open for 28 h
+    P 51 999 99999.9 1    'conhost.exe'    # its console, 0.1 s after it: idle and old, but protected
+    P 52 999 99999.8 33000 'conhost.exe'   # 0.2 s after it, 33 %: protected even as a spinner
+    P 53 999 99995  1     'conhost.exe'    # 5 s after it: outside the window -- zombie
     . '$(cygpath -w "$W/classify.ps1" 2>/dev/null || printf '%s' "$W/classify.ps1")'
   " 2>&1 | tr -d '\r' | sed 's/|[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]$//' | sort | paste -sd' ' -)"
-  # Expected: the 3-minute spinner, the day-old spinner, the day-old idle orphan -- and
-  # neither the window with a live parent, nor the 30-second one, nor the 1-hour idle one.
-  assert_eq "classification: only the two spinners and the day-old idle orphan" \
-    "spinner|-|31|180|33 spinner|-|34|90000|33 zombie|-|33|90000|0" "$out"
+  # Expected: the 3-minute spinner, the day-old spinner, the day-old idle orphans -- and
+  # neither the window with a live parent, nor the 30-second one, nor the 1-hour idle one,
+  # nor the two consoles that started right after a live mintty.
+  assert_eq "classification: only the two spinners and the day-old idle orphans" \
+    "spinner|-|31|180|33 spinner|-|34|90000|33 zombie|-|33|90000|0 zombie|-|53|99995|0" "$out"
 }
 
 # --------------------------------------------------------------------------
