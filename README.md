@@ -33,6 +33,12 @@ out of an incident, [docs/lessons.md](docs/lessons.md) has the incident:
   themselves. This is the one property no in-process messaging can give you.
 - **It crosses machines.** The channel is a folder; ours syncs between a PC and a notebook.
   Same protocol, no extra component, no port, no account.
+- **A participant does not have to be a Claude session.** The protocol is a file format;
+  anything that can list, read and write files in the folder can take part. Our fleet has
+  had bots from another vendor in it since September 2026, reaching the folder through a
+  cloud-storage connector -- no API between the two, no code added, eight of them by
+  November. What such a participant cannot do (fold, wake up) and how the fleet covers for
+  it is in [docs/participants-without-shell.md](docs/participants-without-shell.md).
 - **An idle session gets woken, not left waiting.** The watcher turns a new file into a
   notification that re-invokes the session — no human tapping windows. In practice that is
   seconds at the default 5 s poll, though we have never instrumented it
@@ -120,6 +126,9 @@ docs/overview.md    what this is in plain words, with a worked example — start
 docs/protocol.md    the message format and the folding rules
 docs/watcher.md     the push layer: arming, self-recognition, diagnosis
 docs/launcher.md    starting and stopping a fleet; the cold-start problem
+docs/participants-without-shell.md
+                    a participant that is not a session: a bot behind a cloud connector,
+                    the instruction it reads, and what the operator does for it
 docs/lessons.md     what six weeks of operating this taught us (with numbers)
 bridge/             the watcher and its installer
 launcher/           fleet start/stop scripts and the session manager (Windows)

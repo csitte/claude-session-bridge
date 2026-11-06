@@ -24,6 +24,15 @@ commit it names will say why.
   `mintty` left its console behind; a gently closed one does not.
 
 ### Documentation
+- **A participant that is not a session** (`docs/participants-without-shell.md`): the
+  instruction a bot behind a cloud-storage connector reads instead of `protocol.md` (no
+  shell, no clock, no watcher), what registering one takes (a table row, a config file, no
+  code), and what six weeks with eight such bots measured -- the ack storm, the copied
+  filename, overload as the place where wake-ups are lost. Pointers from the README,
+  `protocol.md` and `lessons.md` (lesson 11); lesson 7 no longer names the Monitor
+  primitive the push left in September.
+
+### Documentation
 - **`--reap --all` can close a hand-opened terminal older than 24 h** (`docs/watcher.md`).
   Superseded the same day by the fix above; the dry run is no longer needed for that.
 

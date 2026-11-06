@@ -123,8 +123,9 @@ the new behaviour arrived session by session, at each next start.
 
 Design the channel as if delivery were fully asynchronous — durable, ordered, scanned at
 session start — and add the push watcher purely as latency reduction. Ours is built on
-Claude Code's Monitor primitive; if the harness changes, the push disappears and the channel
-still works, degraded to scan-at-start. Because the watcher only ever *reads*, it cannot
+Claude Code's background-task primitive (it was the Monitor primitive until September 2026,
+and the switch cost the channel nothing); if the harness changes again, the push disappears
+and the channel still works, degraded to scan-at-start. Because the watcher only ever *reads*, it cannot
 corrupt the channel it accelerates. Keeping the guarantees separate is what made the push
 safe to roll out session by session.
 
@@ -167,6 +168,28 @@ invocation has to carry a path. So read both lines, not just the first. And wher
 has adapted the paragraph for its own reasons, repair the single broken line by hand instead
 of running the installer's `-u`: that replaces the whole block, and the adaptation is
 precisely what it would overwrite.
+
+## 11. A reader without a shell copies the form it sees, not the rule beside it
+
+In September 2026 bots from another vendor joined the bridge, reaching the folder through a
+cloud-storage connector: no shell, no `date -u`, no watcher. The protocol needed no change --
+it is a file format -- but every recipe in it assumed a shell, so the bots got an instruction
+of their own. What that taught us is about examples, not about bots.
+
+The first bot's clock, the part we feared, was 4 seconds off. What went wrong instead was a
+filename: `20260926T...` without the dashes, which sorts after every correct name and wins
+every fold. The bot had copied the compact form from an `in-reply-to` field written by one of
+our own sessions in a hurry. A reader that cannot run the rule reproduces the nearest example,
+and it can reach every example in the bridge, including the careless ones. The day after, one
+probe message drew five acknowledgements in two minutes, because two bots acknowledged each
+other's wake-ups; the fix was a sentence in the instruction ("an ack goes to the sender only;
+nobody answers an ack"), not a line of code.
+
+The general form: when a participant cannot execute your rules, every artefact it can see
+becomes an instruction. Check the examples with the same care as the text -- and let a tool
+report the deviation at the next start, because the reader will not notice it.
+[participants-without-shell.md](participants-without-shell.md) has the instruction and the
+measurements.
 
 ---
 

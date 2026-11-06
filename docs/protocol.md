@@ -29,6 +29,14 @@ unknown ones, which catches a typo before it becomes a second arming paragraph n
 notices. Without the file the check is silently skipped. So adding a README to your bridge
 folder later switches a gate on that was not there before; `-f` forces an id through.
 
+**A participant need not be a session.** Everything in this document is a file format, and
+a file format does not know what wrote it. An id whose table row has no working directory --
+in our fleet, bots from another vendor that reach the folder through a cloud connector --
+follows the same rules with two gaps: it arms no watcher, so nothing wakes it, and it runs no
+start scan, so it never folds. Both are covered from the outside, and the instruction such a
+participant reads instead of this document is in
+[participants-without-shell.md](participants-without-shell.md).
+
 ## The core rule
 
 > **Every message is its own write-once file. Nothing shared is ever edited in place.**
