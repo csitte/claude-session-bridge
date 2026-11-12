@@ -255,6 +255,53 @@ name_hint() {
   return 0
 }
 
+# --- Messages outside msgs/ (since 12.11.2026) ---------------------------------
+# Watcher, push and fold read only `threads/<topic>/msgs/*.md`. A message lying next to
+# that folder reaches NOBODY, and no check saw it: in the field a bot put its message
+# straight into `threads/<topic>/`, without `msgs/` and without `thread.md`. It lay there
+# for two days and the addressee never got the task. The fold showed the thread only as
+# "no owner" -- the cause was invisible because it sat in the one place no tool reads.
+#
+# A candidate is every `.md` under `threads/<topic>/` outside `msgs/`, except the cover
+# sheet `thread.md`. It is reported only if it LOOKS like a message: a header with `from:`
+# or `to:` (the same criterion as the delivery path and NO HEADER above) or a name in
+# message form. Attachments without a header next to `thread.md` are allowed and common;
+# naming them would be noise without an action.
+#
+# Only `threads/`, not `_archiv/`: nothing is delivered from there, the finding would have
+# no consequence. `msgs/` is pruned, so the pass reads only the thread folders themselves;
+# `thread.md` is skipped before any header is read (it would fail the criterion anyway --
+# the exclusion saves one read per thread on a cloud-sync folder, nothing else).
+# The repair is an `mv` into `msgs/`: the file name stays, so every `in-reply-to` stays
+# valid (it compares the name only) -- unlike a rename in `name_hint`, there is no
+# REFERENCED caveat here.
+placement_hint() {
+  local cand f n=0 list="" extra d
+  cand=$( cd "$bridge" 2>/dev/null || exit 0
+          find threads -mindepth 2 \( -type d -name msgs -prune \) -o \
+               \( -type f -name '*.md' -print \) 2>/dev/null \
+          | tr -d '\r' | grep -v -E '^threads/_|^threads/[^/]*/thread\.md$' | sort )
+  [[ -n "$cand" ]] || return 0
+  while IFS= read -r f; do
+    if [[ -n "$(fm_field from "$bridge/$f")" || -n "$(fm_field to "$bridge/$f")" ]] \
+       || [[ "${f##*/}" =~ ^[0-9]{4}-?[0-9]{2}-?[0-9]{2}T[0-9]{6}Z__ ]]; then
+      n=$((n+1))
+      d="${f#threads/}"; d="threads/${d%%/*}"
+      extra=""
+      [[ -d "$bridge/$d/msgs" ]]      || extra+="msgs/ missing"
+      [[ -f "$bridge/$d/thread.md" ]] || extra+="${extra:+, }thread.md missing"
+      list+=$(printf '            %s%s' "$f" "${extra:+   ($extra)}")$'\n'
+    fi
+  done <<< "$cand"
+  [[ $n -gt 0 ]] || return 0
+  echo "Placement: $n message(s) outside msgs/ -- watcher, push and fold read only threads/<topic>/msgs/, none of them was ever delivered:"
+  printf '%s' "$list"
+  echo "            Repair: move into the thread's msgs/ folder (mkdir if missing; name and content stay,"
+  echo "            every in-reply-to stays valid). If thread.md is missing, create the cover sheet (title, created)."
+  echo "            Running watchers and the push deliver the message once afterwards -- that is the point here."
+  return 0
+}
+
 # --- The fold's header reader (since 10.10.2026) ------------------------------
 # ONE pass over `threads/*/msgs/*.md` that reads only the HEADER of each file: up to the
 # second `---` line, at most 15 lines -- the same bound `fm_field` uses on the delivery
@@ -634,6 +681,7 @@ fold_report() {
   # Also BEFORE the list: a wrong name may have flipped exactly the line the
   # reader is about to take at face value.
   name_hint
+  placement_hint
   stamp_hint
   number_hint
   header_hint
@@ -1101,6 +1149,11 @@ $rxs = 'watch-bridge\.sh\s+\$\(head -1 ([^)]+\.session-id)\)'
 # touches nothing while one is running. An arm nobody can attribute is a structural
 # consequence of the shared-checkout form, not carelessness.
 $rxopt = 'watch-bridge\.sh\s+-'
+# An arm without an id has exactly ONE form: the first argument after the script is a shell
+# expansion (`$(head -1 .session-id)`, quoted or not). Until 12.11.2026 every wrapper that
+# merely MENTIONED the script counted -- a test run's `cp bridge/watch-bridge.sh /tmp/x`
+# showed up as an unattributable arm, and while it ran the arming path cleaned up nothing.
+$rxexp = 'watch-bridge\.sh[''"]?\s+[''"]?\$'
 # A terminated process is not a watcher. WMI keeps an entry alive as long as anyone holds a
 # handle on it, and those corpses were counted as delivering watchers: measured 11 of them
 # across 7 of 13 ids, while all 13 had exactly one live watcher -- so the DOUBLE-ARM warning
@@ -1145,7 +1198,7 @@ foreach ($p in $all.Values) {
     # `handle_existing` filters on its own id and leaves this row alone. One-shot calls
     # (`--status`, `--fold`, ...) are not arms and stay out, or every diagnostic run would
     # report itself.
-    if ($kind -eq 'wrapper' -and $p.CommandLine -like '*watch-bridge.sh*' -and $p.CommandLine -notmatch $rxopt) {
+    if ($kind -eq 'wrapper' -and $p.CommandLine -match $rxexp -and $p.CommandLine -notmatch $rxopt) {
       $uage = [int]($now - $p.CreationDate).TotalSeconds
       # Work out `under-claude` here as well (it used to be a fixed 0): `resolve_unknown_arms`
       # turns this row into a `wrapper` row once it finds the id through /proc, and then this

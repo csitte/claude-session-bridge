@@ -14,7 +14,18 @@ commit it names will say why.
 
 ## Unreleased
 
+### Added
+- **`--fold` names messages outside `msgs/`** (`Placement:`). Watcher, push and fold read
+  only `threads/<topic>/msgs/`; a message placed next to that folder reached nobody and no
+  check saw it. Attachments without a header stay silent. See `docs/watcher.md`.
+
 ### Fixed
+- **A shell that merely mentions `watch-bridge.sh` is no longer an arm without an id.** A
+  test run's `cp bridge/watch-bridge.sh …` was listed by `--status` as unattributable, and
+  while it ran no stale watcher was cleaned up. Only the id-less arm form (a shell expansion
+  as the first argument) counts now.
+- **The signal-word filter in `docs/watcher.md` used the German words** of our own fold, while
+  the script prints English ones: the suggested `grep` dropped every finding.
 - **`--reap` never touches the console of an open terminal.** Every `mintty` window owns an
   orphaned, idle `conhost` -- hand-opened and fleet windows alike; after 24 h `--reap --all`
   listed it as a leftover, and killing it can end the window. A console created at most 3 s

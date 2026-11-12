@@ -629,6 +629,59 @@ test_watcher() {
     ok "only attachments: the NO HEADER advice appears"
   else bad "only attachments: the NO HEADER advice appears" "$fold"; fi
 
+  # --- Placement: a message outside msgs/ reaches nobody ------------------------------
+  # In the field a bot put its message straight into threads/<topic>/, without msgs/ and
+  # without thread.md; for two days no tool saw it. Fixture: that case, a typo folder
+  # (msg/), an attachment without a header next to thread.md (allowed), and the two places
+  # that are never folded (threads/_*, _archiv/).
+  b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety
+  post_state "$b" 001-mine 2026-01-01T000000Z__other__p1 other app OPEN
+  mkdir -p "$b/threads/002-loose" "$b/threads/003-typo/msg" "$b/threads/_template" "$b/_archiv/009-old"
+  printf -- '---\ntitle: t\ncreated: 2026-01-01\n---\n' > "$b/threads/003-typo/thread.md"
+  msg_='---\nfrom: other\nto: app\ntype: request\nsets-owner: app\nsets-status: OPEN\ndate: 2026-01-01T01:00:00Z\n---\n\nbody\n'
+  printf -- "$msg_" > "$b/threads/002-loose/2026-01-01T010000Z__other__p2.md"
+  printf -- "$msg_" > "$b/threads/003-typo/msg/answer.md"
+  printf -- "$msg_" > "$b/threads/_template/2026-01-01T010000Z__other__p3.md"
+  printf -- "$msg_" > "$b/_archiv/009-old/2026-01-01T010000Z__other__p4.md"
+  printf '# Evaluation\n\nno front matter here\n' > "$b/threads/001-mine/evaluation.md"
+  # a message-shaped name without a header (a sync placeholder, still empty) counts too
+  : > "$b/threads/001-mine/2026-01-01T020000Z__other__p5.md"
+  fold="$(bash "$WATCHER" --fold app 2>&1)"
+  if printf '%s\n' "$fold" | grep -qE '^ {12}threads/001-mine/2026-01-01T020000Z__other__p5\.md( |$)'; then
+    ok "the placement check names a message-shaped file even without a header"
+  else bad "the placement check names a message-shaped file even without a header" "$fold"; fi
+  rm "$b/threads/001-mine/2026-01-01T020000Z__other__p5.md"
+  fold="$(bash "$WATCHER" --fold app 2>&1)"
+  if printf '%s\n' "$fold" | grep -q '^Placement: 2 message(s) outside msgs/'; then
+    ok "--fold counts the messages outside msgs/"
+  else bad "--fold counts the messages outside msgs/" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -qE '^ {12}threads/002-loose/2026-01-01T010000Z__other__p2\.md +\(msgs/ missing, thread\.md missing\)$'; then
+    ok "the placement check names a loose message and what its folder lacks"
+  else bad "the placement check names a loose message and what its folder lacks" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -qE '^ {12}threads/003-typo/msg/answer\.md +\(msgs/ missing\)$'; then
+    ok "the placement check finds a message in a mistyped folder"
+  else bad "the placement check finds a message in a mistyped folder" "$fold"; fi
+  if printf '%s\n' "$fold" | grep -qE 'evaluation\.md|_template|_archiv/009'; then
+    bad "attachments without a header, threads/_* and _archiv/ stay silent" "$fold"
+  else ok "attachments without a header, threads/_* and _archiv/ stay silent"; fi
+  pc="$(printf '%s\n' "$fold" | grep -n '^Placement:' | cut -d: -f1)"
+  tl="$(printf '%s\n' "$fold" | grep -n '^001-mine' | cut -d: -f1)"
+  if [[ -n "$pc" && -n "$tl" && "$pc" -lt "$tl" ]]; then
+    ok "--fold prints the placement check ABOVE the thread list"
+  else bad "--fold prints the placement check ABOVE the thread list" "$fold"; fi
+  # the repair: mkdir + mv, name unchanged -- the check falls silent for that file
+  mkdir "$b/threads/002-loose/msgs"
+  mv "$b/threads/002-loose/2026-01-01T010000Z__other__p2.md" "$b/threads/002-loose/msgs/"
+  fold="$(bash "$WATCHER" --fold app 2>&1)"
+  if printf '%s\n' "$fold" | grep -q '^Placement: 1 message(s)' \
+     && printf '%s\n' "$fold" | grep -qE '^002-loose +OPEN'; then
+    ok "after the mv the message is folded and drops out of the placement check"
+  else bad "after the mv the message is folded and drops out of the placement check" "$fold"; fi
+  rm -rf "$b/threads/003-typo/msg"
+  if bash "$WATCHER" --fold app 2>&1 | grep -q 'Placement'; then
+    bad "--fold prints no placement check when every message is in msgs/"
+  else ok "--fold prints no placement check when every message is in msgs/"; fi
+
   # --- stamp check: right form, wrong value (the name lies ahead of the write time) ---
   # the defect: a message stamped in the future beats a younger, well-formed DONE
   b="$(new_bridge)"; export SESSION_BRIDGE_DIR="$b"; check_safety

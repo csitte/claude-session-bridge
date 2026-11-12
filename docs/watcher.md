@@ -53,7 +53,7 @@ If you must shorten the output, filter on the signal words, never on a position:
 
 ```bash
 bash …/watch-bridge.sh --fold <id> \
-  | grep -E 'WARNUNG|ACHTUNG|HINWEIS|VERDACHT|Namensform|Stempel|Threadnummer|^THREAD|^[0-9]'
+  | grep -E 'WARNING|ATTENTION|NOTE|SUSPECT|Name check|Placement|Stamp check|Thread number|Header field|REFERENCED|^THREAD|^[0-9]'
 ```
 
 **Why a command, and not an instruction to "fold the threads".** Every session used to
@@ -1058,6 +1058,29 @@ decided anything; the archive held two `NEED_INFO` and one `DONE. The **…`. Th
 clean; the line stands for the next case. A quiet line without a signal word, like
 `Name check:`. Test group `header`, 14 cases.
 
+### The fold names messages outside `msgs/`
+
+Watcher, push and fold read only `threads/<topic>/msgs/*.md`. In the field a bot put its
+message straight into `threads/<topic>/`, without `msgs/` and without `thread.md`. For two days
+it reached nobody. The fold showed the thread only as "no owner"; the cause sat in the one place
+no tool reads.
+
+```
+Placement: 1 message(s) outside msgs/ -- watcher, push and fold read only threads/<topic>/msgs/, none of them was ever delivered:
+            threads/721-notify-stamp-guard/2026-11-10T142234Z__bot__e543.md   (msgs/ missing, thread.md missing)
+            Repair: move into the thread's msgs/ folder (mkdir if missing; name and content stay,
+            every in-reply-to stays valid). If thread.md is missing, create the cover sheet (title, created).
+            Running watchers and the push deliver the message once afterwards -- that is the point here.
+```
+
+A candidate is every `.md` under `threads/<topic>/` outside `msgs/`, except `thread.md`. It is
+reported only if it **looks like a message**: a header with `from:` or `to:` (the same
+criterion as `NO HEADER`) or a name in message form. Attachments without a header next to
+`thread.md` stay silent — they are common. Only `threads/`, not `_archiv/` (nothing is delivered
+from there). The `mv` keeps the name, so there is no `REFERENCED` caveat. Measured on our bridge:
+zero findings after the repair, output otherwise byte-identical, no measurable extra time. Test
+group `watcher`, 8 cases.
+
 ### Two checkouts, one CLAUDE.md — the wrong id
 
 **What happened.** A background session living in a second checkout armed and folded under
@@ -1135,6 +1158,13 @@ One arm is two `bash.exe` at the Windows level (the `Git\bin` starter and the ms
 it); `/proc` knows only the second, and the starter inherits its id through the Windows parent
 pid. `WATCH_BRIDGE_PROC` overrides the `/proc` root for tests, `0` switches the resolving off;
 on Linux there is no `winpid`, so nothing changes there.
+
+**Only the arm form counts.** Until 12.11.2026 every wrapper whose command line contained
+`watch-bridge.sh` without an id or an option after it was such an arm. A test run that merely
+copied the script (`cp bridge/watch-bridge.sh /tmp/x`) showed up as an unattributable arm, and
+while it ran, the arming path cleaned up nothing. Now only the one id-less form counts: the
+first argument after the script is a shell expansion (`$rxexp`). No real arm disappears with
+that — a literal id and the expansion are the only two forms the installer writes.
 
 **Addendum: inside the bridge the check keeps quiet.** Called from a `threads/<n>/msgs/`
 folder, the check measured the current working directory, failed to find it in any participant
