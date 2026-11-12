@@ -318,6 +318,20 @@ repository retries once, because it runs synchronously inside the watcher's hook
 fifteen-minute sleep there would hold up delivery to everyone else; if you run the standalone
 form, know that this gap is open.
 
+**Two machines wake twice.** Each machine's delivery service remembers only what *it* has
+delivered. On 2026-11-10 one machine was off for the evening; the bot was woken by the other
+one and answered every message within minutes. Next morning the first machine started, found
+eight messages it had never seen and delivered all of them -- six were already answered, and
+each delivery is a paid run of the bot. The same mismatch made the dashboard report the bot as
+silent: it weighed the bot's replies against the time of the *wake-up*, and the replies were
+older than the wake-up. Our in-process service now applies one rule in both places (added
+2026-11-11): **if the bot has already written in the thread after a message, that message is
+done for it** -- no wake-up, and it does not count as unanswered. The check reads file names
+only (sender and timestamp are in the name). A shared record of deliveries across machines was
+the alternative; it would need writes into the synced folder from both sides, which is exactly
+what this protocol avoids. `webhook-notify.sh` here does not apply the rule; with the
+standalone form on two machines, expect duplicate wake-ups after one of them was off.
+
 **The rename works.** A connector that can update a file's title can repair a misnamed message
 without touching its content. Confirmed by a bot on 2026-09-26. Write-once is about content;
 the name is the one thing the author may still fix, and the start scan tells them to.
