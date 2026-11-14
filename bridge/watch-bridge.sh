@@ -2786,6 +2786,27 @@ on_message="${WATCH_BRIDGE_ON_MESSAGE:-}"
 # grow a stand-in mode for owners that have no session of their own.
 wake_on_owner="${WATCH_BRIDGE_WAKE_ON_OWNER:-}"
 
+# --- Local delivery -------------------------------------------------------------------
+#
+# A second inbox next to the bridge: if `<drop>/<id>/` holds a `*.md`, the watcher reports
+# its first line like a bridge message and wakes the session. The first user was a to-do
+# list: when the owner edits an entry that belongs to a session, a local service drops a
+# note here, and the session hears about it without polling anything itself.
+#
+# Why not a bridge message: the bridge travels to every machine, but such a note is meant
+# for the session that runs HERE -- on the other machine it would sit until that session's
+# next start, days later. And a sender without a session has no place in the participants
+# table.
+#
+# Write-once does not apply: the file is a note to one session, not part of the protocol.
+# After reporting it moves to `delivered/` next to it (for looking back; whoever drops
+# notes cleans up). Same order as for the mark: `echo` first, then `mv` -- if the watcher
+# dies on the `echo`, the file is still there for the next arm. Writers must drop
+# atomically (write `.<name>.tmp`, then rename); only `*.md` is read.
+# `WATCH_BRIDGE_DROP=` (empty) turns it off.
+drop_dir="${WATCH_BRIDGE_DROP-$HOME/.config/session-bridge/drop}"
+[[ -n "$drop_dir" ]] && drop_dir="$drop_dir/$me"
+
 # --- The mark: the watcher's state survives a re-arm ---------------------------------
 #
 # If the thing that runs this watcher puts a DEADLINE on it, the watcher is stopped and
@@ -3101,6 +3122,22 @@ while true; do
     fi
     delivered=1
   done
+  # Local delivery (reasons at `drop_dir` above). Also on the baseline pass: a file here is
+  # not history the fold takes care of, it is a note just dropped for this session.
+  if [[ -n "$drop_dir" && -d "$drop_dir" ]]; then
+    for f in "$drop_dir"/*.md; do
+      [[ -f "$f" ]] || continue
+      target="$drop_dir/delivered/$(basename "$f")"
+      shown="$target"
+      command -v cygpath >/dev/null 2>&1 && shown="$(cygpath -m "$target")"
+      head_line="$(head -1 "$f" 2>/dev/null | tr -d '\r')"
+      head_line="${head_line#\# }"
+      echo "Local delivery for '$me': ${head_line:-$(basename "$f")} — file: $shown"
+      mkdir -p "$drop_dir/delivered" 2>/dev/null
+      mv -f "$f" "$target" 2>/dev/null || rm -f "$f"
+      delivered=1
+    done
+  fi
   if (( baseline )); then
     baseline=0
     # Cold-start grace (reason at `baseline_settle` above).

@@ -15,6 +15,9 @@ commit it names will say why.
 ## Unreleased
 
 ### Added
+- **Local delivery** (`WATCH_BRIDGE_DROP`). A `*.md` in `~/.config/session-bridge/drop/<id>/`
+  wakes that session like a bridge message and moves to `delivered/`. For local services
+  that need to reach one session on this machine only. See `docs/watcher.md`.
 - **`--fold` names messages outside `msgs/`** (`Placement:`). Watcher, push and fold read
   only `threads/<topic>/msgs/`; a message placed next to that folder reached nobody and no
   check saw it. Attachments without a header stay silent. See `docs/watcher.md`.

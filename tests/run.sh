@@ -1178,6 +1178,63 @@ test_selftree() {
   else bad "a living predecessor counts even when everything is seconds old" "$out"; fi
 }
 
+# --- local delivery: a note in <drop>/<id>/ wakes the session --------------------------
+test_drop() {
+  head_ "local delivery"
+  local b td out d rc p
+  b="$(new_bridge)"; d="$TMPROOT/drop.$RANDOM"; mkdir -p "$d/app"
+  # 1. A note that is already there when the arm starts is delivered at once.
+  printf '# The owner changed #9 (note): Probe
+
+body
+' > "$d/app/20260301T000000Z-9.md"
+  printf 'half' > "$d/app/.20260301T000001Z-9.md.tmp"
+  td="$TMPROOT/droptmp.$RANDOM"; out="$TMPROOT/drop.out.$RANDOM"; mkdir -p "$td"
+  ( TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 WATCH_BRIDGE_DROP="$d"       timeout 20 bash "$WATCHER" app 1 --once > "$out" 2>"$out.err" ); rc=$?
+  assert_eq "a note present at arm time ends the --once arm" "0" "$rc"
+  if grep -q "^Local delivery for 'app': The owner changed #9 (note): Probe" "$out"; then
+    ok "... and the line carries the note's first line"
+  else bad "... and the line carries the note's first line" "$(cat "$out" "$out.err")"; fi
+  if [[ -f "$d/app/delivered/20260301T000000Z-9.md" && ! -f "$d/app/20260301T000000Z-9.md" ]]; then
+    ok "... and the note moved to delivered/"
+  else bad "... and the note moved to delivered/" "$(find "$d" -type f)"; fi
+  if grep -q "delivered/20260301T000000Z-9.md" "$out"; then ok "... and the line names where it is now"
+  else bad "... and the line names where it is now" "$(cat "$out")"; fi
+  if [[ -f "$d/app/.20260301T000001Z-9.md.tmp" ]] && ! grep -q '\.tmp' "$out"; then
+    ok "a half-written .tmp is neither reported nor moved"
+  else bad "a half-written .tmp is neither reported nor moved" "$(cat "$out"; find "$d" -type f)"; fi
+
+  # 2. A note that arrives while the arm is waiting wakes it.
+  td="$TMPROOT/droptmp2.$RANDOM"; out="$TMPROOT/drop2.out.$RANDOM"; mkdir -p "$td"
+  ( TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 WATCH_BRIDGE_DROP="$d"       timeout 20 bash "$WATCHER" app 1 --once > "$out" 2>"$out.err" ) &
+  p=$!
+  sleep 3
+  printf '# Second note
+' > "$d/app/20260301T000100Z-9.md"
+  wait "$p"; rc=$?
+  assert_eq "a note dropped after the arm wakes it" "0" "$rc"
+  if grep -q "^Local delivery for 'app': Second note" "$out"; then ok "... with its first line"
+  else bad "... with its first line" "$(cat "$out" "$out.err")"; fi
+
+  # 3. Another id's note is not ours, and WATCH_BRIDGE_DROP= turns the inbox off. Without
+  #    the second half, the first would pass even if the inbox read every directory.
+  mkdir -p "$d/app-b"; printf '# for app-b
+' > "$d/app-b/x.md"
+  printf '# off
+' > "$d/app/y.md"
+  td="$TMPROOT/droptmp3.$RANDOM"; out="$TMPROOT/drop3.out.$RANDOM"; mkdir -p "$td"
+  ( TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 WATCH_BRIDGE_DROP=       timeout 6 bash "$WATCHER" app 1 --once > "$out" 2>"$out.err" ); rc=$?
+  assert_eq "WATCH_BRIDGE_DROP= turns local delivery off (timeout, not delivery)" "124" "$rc"
+  if [[ -f "$d/app/y.md" ]]; then ok "... and the note stays where it was"
+  else bad "... and the note stays where it was" "$(find "$d" -type f)"; fi
+  rm -f "$d/app/y.md"
+  td="$TMPROOT/droptmp4.$RANDOM"; out="$TMPROOT/drop4.out.$RANDOM"; mkdir -p "$td"
+  ( TMPDIR="$td" SESSION_BRIDGE_DIR="$b" WATCH_BRIDGE_NO_REAP=1 WATCH_BRIDGE_DROP="$d"       timeout 6 bash "$WATCHER" app 1 --once > "$out" 2>"$out.err" ); rc=$?
+  assert_eq "a note for another id does not wake 'app'" "124" "$rc"
+  if [[ -f "$d/app-b/x.md" ]]; then ok "... and app-b's note is untouched"
+  else bad "... and app-b's note is untouched" "$(find "$d" -type f)"; fi
+}
+
 test_hook() {
   head_ "watcher: the hook, and waking on a hand-over that does not name you in to:"
   local b; b="$(new_bridge)"
@@ -5708,6 +5765,7 @@ case "${1:-all}" in
   stophook) test_stophook ;;
   orphan) test_orphan ;;
   hook) test_hook ;;
+  drop) test_drop ;;
   handover) test_handover ;;
   selftree) test_selftree ;;
   new_message) test_new_message ;;
@@ -5741,7 +5799,7 @@ case "${1:-all}" in
   gitmemory) test_gitmemory ;;
   automemory) test_automemory ;;
   clone) test_clone ;;
-  all)     test_watcher; test_mark; test_markrules; test_stophook; test_orphan; test_hook; test_handover; test_selftree; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_header; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
+  all)     test_watcher; test_mark; test_markrules; test_stophook; test_orphan; test_hook; test_drop; test_handover; test_selftree; test_coverage; test_checkout; test_numbers; test_new_thread; test_new_message; test_header; test_install; test_launcher; test_resume; test_pull; test_clone; test_autostart; test_addedrepos; test_instructions; test_isync; test_reap; test_unknownarm; test_linkmemory; test_gitmemory; test_stamp; test_automemory; test_ruleparity; test_lineendings; test_inventory_ids; test_commands; test_linkcommands; test_linkskills; test_canonicalise; test_indexrename; test_movesnotice; test_secondmachine ;;
   *) echo "usage: run.sh [watcher|mark|coverage|checkout|numbers|newthread|new_message|header|install|launcher|resume|pull|clone|autostart|addedrepos|instructions|isync|reap|unknownarm|linkmemory|gitmemory|automemory|stamp|ruleparity|lineendings|inventoryids|commands|linkcommands|linkskills|canonicalise|all]" >&2; exit 64 ;;
 esac
 

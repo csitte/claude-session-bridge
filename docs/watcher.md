@@ -1405,6 +1405,28 @@ sits hours apart.
 `_archiv/` is included, because an archived thread keeps its number. Like `--fold`, it makes
 one pass over the tree rather than one `ls` per thread, for the same sync-folder reason.
 
+## Local delivery: a note for the session running here
+
+Next to the bridge, the watcher reads a second inbox: if `~/.config/session-bridge/drop/<id>/`
+holds a `*.md`, the watcher reports its first line (`Local delivery for '<id>': ... — file:
+<path>`) and ends the `--once` arm like a bridge message would. The note then moves to
+`delivered/` next to it; the reported path already points there. `WATCH_BRIDGE_DROP=<dir>`
+moves the inbox, `WATCH_BRIDGE_DROP=` (empty) turns it off.
+
+**What it is for.** A local service that wants to wake one session on this machine, without
+going through the bridge. The first user was a to-do list: when the owner edits an entry that
+belongs to a session, a small poller drops a note with the difference, and the session hears
+about it within seconds instead of at its next start.
+
+**Why not a bridge message.** The bridge travels to every machine. A note like this is meant
+for the session that runs here; on the other machine it would wait for that session's next
+start, possibly days later, after the matter has long been answered. And a sender without a
+session has no honest row in the participants table.
+
+**Rules for whoever drops notes.** Write atomically (`.<name>.tmp`, then rename to `*.md`);
+only `*.md` is read. Drop only for sessions that run on this machine. Clean up `delivered/`
+yourself. Write-once does not apply here: the note is not part of the protocol.
+
 ## Busy sessions
 
 A notification arriving mid-turn is not lost: it lands in the conversation flow and is
